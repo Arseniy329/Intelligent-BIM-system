@@ -1,0 +1,20 @@
+{
+  "name": "intellectual-bim-system",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @bim/web",
+    "build": "npm run build --workspace @bim/web",
+    "lint": "npm run lint --workspace @bim/web",
+    "typecheck": "npm run typecheck --workspace @bim/web && npm run typecheck --workspace @bim/contracts",
+    "test": "npm run test --workspace @bim/web && npm run test --workspace @bim/contracts",
+    "contracts:generate": "npm run generate --workspace @bim/contracts"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

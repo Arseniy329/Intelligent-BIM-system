@@ -1,0 +1,33 @@
+# Dependencies and build output
+node_modules/
+.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+
+# User and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Temporary files
+tmp/
+temp/
+uploads/
+*.tmp
+*.log
+
+# Client drawings and licensed standards
+*.dwg
+*.dxf
+docs/standards/private/
+docs/standards/paid/
+
+# Openly licensed fixtures are allowed
+!apps/api/tests/fixtures/**/*.dxf

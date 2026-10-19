@@ -1,0 +1,39 @@
+{
+  "drawing": {
+    "id": "2dcbe698-7658-40c7-90f1-372e669b1277",
+    "ownerId": "bd6e0d7b-87f6-455a-8439-bb9db5bd5ea5",
+    "originalFileName": "office-floor-01.dxf",
+    "storagePath": "bd6e0d7b-87f6-455a-8439-bb9db5bd5ea5/2dcbe698-7658-40c7-90f1-372e669b1277/source.dxf",
+    "resultStoragePath": "bd6e0d7b-87f6-455a-8439-bb9db5bd5ea5/2dcbe698-7658-40c7-90f1-372e669b1277/result.dxf",
+    "units": "mm",
+    "status": "processed",
+    "errorMessage": null,
+    "createdAt": "2026-10-19T12:00:00Z"
+  },
+  "rooms": [
+    {
+      "id": "room-01",
+      "drawingId": "2dcbe698-7658-40c7-90f1-372e669b1277",
+      "name": "Кабінет 101",
+      "type": "office",
+      "height": 3.2,
+      "area": 48,
+      "polygon": [
+        { "x": 0, "y": 0 },
+        { "x": 8000, "y": 0 },
+        { "x": 8000, "y": 6000 },
+        { "x": 0, "y": 6000 }
+      ]
+    }
+  ],
+  "devices": [
+    {
+      "id": "device-01",
+      "drawingId": "2dcbe698-7658-40c7-90f1-372e669b1277",
+      "roomId": "room-01",
+      "type": "smoke_detector",
+      "position": { "x": 4000, "y": 3000 },
+      "layer": "FIRE_DEVICES"
+    }
+  ]
+}
