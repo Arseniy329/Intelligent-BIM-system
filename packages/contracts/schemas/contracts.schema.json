@@ -91,7 +91,7 @@
       "additionalProperties": false,
       "required": ["fileName", "fileSizeBytes", "units"],
       "properties": {
-        "fileName": { "type": "string", "pattern": "\\.dxf$" },
+        "fileName": { "type": "string", "pattern": "\\.[dD][xX][fF]$" },
         "fileSizeBytes": { "type": "integer", "minimum": 1, "maximum": 52428800 },
         "units": { "$ref": "#/$defs/DrawingUnits" }
       }

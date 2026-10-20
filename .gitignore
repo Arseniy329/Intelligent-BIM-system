@@ -1,33 +1,144 @@
-# Dependencies and build output
+# ==============================================================================
+# Dependencies & Package Managers
+# ==============================================================================
 node_modules/
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ==============================================================================
+# Build Outputs, Compilers & Caches
+# ==============================================================================
 .next/
 out/
 dist/
-coverage/
+build/
 *.tsbuildinfo
+.turbo/
+.eslintcache
+.stylelintcache
 
-# Environment files and secrets
+# ==============================================================================
+# Testing & Code Coverage
+# ==============================================================================
+coverage/
+.vitest/
+test-results/
+playwright-report/
+blob-report/
+
+# ==============================================================================
+# Python & FastAPI Backend (apps/api)
+# ==============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+.eggs/
+
+# ==============================================================================
+# Cloud Platforms & Local Dev CLI State (Vercel, Supabase)
+# ==============================================================================
+.vercel/
+supabase/.temp/
+
+# ==============================================================================
+# Environment Variables & Secrets
+# ==============================================================================
 .env
 .env.*
 !.env.example
+!.env.sample
+!.env.template
 
-# User and editor files
-.DS_Store
-.idea/
-.vscode/
+# Certificates, Keys & Credentials
+*.key
+*.pfx
+*.p12
+service-account*.json
+secrets/
 
-# Temporary files
-tmp/
-temp/
-uploads/
+# ==============================================================================
+# Temporary Files, Logs & Local Storage
+# ==============================================================================
+/tmp/
+/temp/
+/uploads/
 *.tmp
 *.log
+*.sqlite
+*.sqlite3
+*.db
 
-# Client drawings and licensed standards
+# ==============================================================================
+# Client Drawings, BIM Models & Proprietary Standards
+# ==============================================================================
+# CAD / Drawings
 *.dwg
 *.dxf
+
+# AutoCAD Lock, Backup & Autosave files
+*.bak
+*.dwl
+*.dwl2
+*.sv$
+*.ac$
+
+# BIM Models & Revit files
+*.rvt
+*.rfa
+*.ifc
+
+# Private and licensed standards documentation
 docs/standards/private/
 docs/standards/paid/
 
-# Openly licensed fixtures are allowed
-!apps/api/tests/fixtures/**/*.dxf
+# Openly licensed test fixtures are explicitly allowed
+!**/tests/fixtures/**/*.dxf
+!**/tests/fixtures/**/*.dwg
+
+# ==============================================================================
+# Operating System Files
+# ==============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ==============================================================================
+# IDEs & Code Editors
+# ==============================================================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+.zed/
