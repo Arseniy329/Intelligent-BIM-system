@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pydantic-settings
+supabase
+ezdxf
+shapely
+datamodel-code-generator

@@ -1,0 +1,1 @@
+"""Vertical slices / domain modules."""
