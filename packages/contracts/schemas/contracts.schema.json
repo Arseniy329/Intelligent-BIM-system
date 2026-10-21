@@ -11,7 +11,8 @@
     "device": { "$ref": "#/$defs/Device" },
     "createDrawingRequest": { "$ref": "#/$defs/CreateDrawingRequest" },
     "createDrawingResponse": { "$ref": "#/$defs/CreateDrawingResponse" },
-    "drawingResult": { "$ref": "#/$defs/DrawingResult" }
+    "drawingResult": { "$ref": "#/$defs/DrawingResult" },
+    "processingJob": { "$ref": "#/$defs/ProcessingJob" }
   },
   "$defs": {
     "DrawingStatus": {
@@ -20,10 +21,17 @@
     },
     "DrawingUnits": {
       "type": "string",
-      "enum": ["mm", "m", "from_file"]
+      "enum": ["mm", "m"],
+      "description": "Фактичні одиниці координат DXF після визначення API"
+    },
+    "RequestedDrawingUnits": {
+      "type": "string",
+      "enum": ["mm", "m", "from_file"],
+      "description": "Одиниці, задані користувачем, або команда визначити їх із DXF"
     },
     "Point": {
       "title": "Point",
+      "description": "Координата у двовимірній світовій системі DXF (WCS): початок (0, 0), +X праворуч, +Y вгору. Значення передаються без масштабування в одиницях Drawing.resolvedUnits; перетворення для Canvas/SVG виконує лише клієнт.",
       "type": "object",
       "additionalProperties": false,
       "required": ["x", "y"],
@@ -36,14 +44,19 @@
       "title": "Drawing",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "ownerId", "originalFileName", "storagePath", "units", "status", "createdAt"],
+      "required": ["id", "ownerId", "originalFileName", "storagePath", "resolvedUnits", "status", "createdAt"],
       "properties": {
         "id": { "type": "string", "format": "uuid" },
         "ownerId": { "type": "string", "format": "uuid" },
         "originalFileName": { "type": "string", "minLength": 1 },
         "storagePath": { "type": "string", "minLength": 1 },
-        "resultStoragePath": { "type": ["string", "null"] },
-        "units": { "$ref": "#/$defs/DrawingUnits" },
+        "resolvedUnits": {
+          "description": "Фактичні одиниці координат. null, доки API не прочитає DXF. Якщо одиниці визначити неможливо, status стає error, а errorMessage пояснює причину.",
+          "oneOf": [
+            { "$ref": "#/$defs/DrawingUnits" },
+            { "type": "null" }
+          ]
+        },
         "status": { "$ref": "#/$defs/DrawingStatus" },
         "errorMessage": { "type": ["string", "null"] },
         "createdAt": { "type": "string", "format": "date-time" }
@@ -59,11 +72,21 @@
         "drawingId": { "type": "string", "format": "uuid" },
         "name": { "type": ["string", "null"] },
         "type": { "type": ["string", "null"] },
-        "height": { "type": ["number", "null"], "exclusiveMinimum": 0 },
-        "area": { "type": "number", "minimum": 0 },
+        "height": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0,
+          "description": "Висота приміщення в метрах або null, якщо її не визначено"
+        },
+        "area": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Площа приміщення у квадратних метрах"
+        },
         "polygon": {
           "type": "array",
           "minItems": 3,
+          "uniqueItems": true,
+          "description": "Вершини контуру в координатах DXF. Полігон логічно замкнений; перша точка наприкінці масиву не повторюється.",
           "items": { "$ref": "#/$defs/Point" }
         }
       }
@@ -76,10 +99,14 @@
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "drawingId": { "type": "string", "format": "uuid" },
-        "roomId": { "type": "string", "minLength": 1 },
+        "roomId": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Ідентифікатор кімнати або null для коридорів і нерозпізнаних зон"
+        },
         "type": {
           "type": "string",
-          "enum": ["smoke_detector", "heat_detector", "sounder"]
+          "enum": ["smoke_detector", "heat_detector", "sounder", "manual_call_point"]
         },
         "position": { "$ref": "#/$defs/Point" },
         "layer": { "type": "string", "minLength": 1 }
@@ -93,7 +120,7 @@
       "properties": {
         "fileName": { "type": "string", "pattern": "\\.[dD][xX][fF]$" },
         "fileSizeBytes": { "type": "integer", "minimum": 1, "maximum": 52428800 },
-        "units": { "$ref": "#/$defs/DrawingUnits" }
+        "units": { "$ref": "#/$defs/RequestedDrawingUnits" }
       }
     },
     "SignedUpload": {
@@ -119,9 +146,14 @@
     },
     "DrawingResult": {
       "title": "DrawingResult",
+      "description": "Публічний результат обробки. GET /drawings/{id} повертає нове тимчасове посилання; підписаний URL не зберігається в базі.",
       "type": "object",
       "additionalProperties": false,
       "required": ["drawing", "rooms", "devices"],
+      "dependentRequired": {
+        "downloadUrl": ["downloadUrlExpiresAt"],
+        "downloadUrlExpiresAt": ["downloadUrl"]
+      },
       "properties": {
         "drawing": { "$ref": "#/$defs/Drawing" },
         "rooms": {
@@ -131,7 +163,34 @@
         "devices": {
           "type": "array",
           "items": { "$ref": "#/$defs/Device" }
+        },
+        "downloadUrl": {
+          "type": ["string", "null"],
+          "format": "uri",
+          "description": "Тимчасове підписане посилання на результат; null, доки результат не готовий"
+        },
+        "downloadUrlExpiresAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "Час завершення дії downloadUrl"
         }
+      }
+    },
+    "ProcessingJobStatus": {
+      "type": "string",
+      "enum": ["queued", "processing", "completed", "failed"]
+    },
+    "ProcessingJob": {
+      "title": "ProcessingJob",
+      "description": "POST /drawings/{id}/process запускає фонову обробку й повертає цю задачу. Статус перевіряється через GET /processing-jobs/{id}; completed відповідає Drawing.status=processed, після чого клієнт отримує результат через GET /drawings/{drawingId}.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "drawingId", "status", "errorMessage"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "drawingId": { "type": "string", "format": "uuid" },
+        "status": { "$ref": "#/$defs/ProcessingJobStatus" },
+        "errorMessage": { "type": ["string", "null"] }
       }
     }
   }
