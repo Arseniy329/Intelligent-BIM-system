@@ -4,8 +4,7 @@
     "ownerId": "bd6e0d7b-87f6-455a-8439-bb9db5bd5ea5",
     "originalFileName": "office-floor-01.dxf",
     "storagePath": "bd6e0d7b-87f6-455a-8439-bb9db5bd5ea5/2dcbe698-7658-40c7-90f1-372e669b1277/source.dxf",
-    "resultStoragePath": "bd6e0d7b-87f6-455a-8439-bb9db5bd5ea5/2dcbe698-7658-40c7-90f1-372e669b1277/result.dxf",
-    "units": "mm",
+    "resolvedUnits": "mm",
     "status": "processed",
     "errorMessage": null,
     "createdAt": "2026-10-19T12:00:00Z"
@@ -34,6 +33,16 @@
       "type": "smoke_detector",
       "position": { "x": 4000, "y": 3000 },
       "layer": "FIRE_DEVICES"
+    },
+    {
+      "id": "device-02",
+      "drawingId": "2dcbe698-7658-40c7-90f1-372e669b1277",
+      "roomId": null,
+      "type": "manual_call_point",
+      "position": { "x": 8500, "y": 1200 },
+      "layer": "FIRE_DEVICES"
     }
-  ]
+  ],
+  "downloadUrl": "https://example.supabase.co/storage/v1/object/sign/drawings/example-result-token",
+  "downloadUrlExpiresAt": "2026-10-19T14:00:00Z"
 }
