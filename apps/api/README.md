@@ -14,7 +14,7 @@ FastAPI backend for the Intelligent BIM system, designed for deployment on Verce
   - `cad/`: CAD geometric extraction and ezdxf/shapely operations
   - `rules/`: Fire safety rules and compliance checks
   - `users/`: User profile and authorization helpers
-- **Developer Experience**: A root `Makefile` orchestrates development tasks, while `requirements-dev.txt` isolates tooling (Ruff, Mypy) from production dependencies.
+- **Developer Experience**: A local `Makefile` orchestrates development tasks (`make dev`, `make test`, `make lint`, `make check`, `make models`), while `requirements-dev.txt` isolates tooling (Ruff, Mypy) from production dependencies.
 
 ## Setup & Local Development
 
@@ -44,6 +44,7 @@ source .venv/bin/activate
    ```bash
    make dev
    ```
+   *(or `make run`)*
 
 5. **Code Quality & Type Checking**:
    ```bash

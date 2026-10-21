@@ -46,7 +46,10 @@ class TestConfig(unittest.TestCase):
                 settings.CORS_ORIGINS,
                 ["http://localhost:3000", "http://127.0.0.1:3000"],
             )
-            self.assertEqual(settings.CORS_ORIGIN_REGEX, r"^https:\/\/.*\.vercel\.app$")
+            self.assertEqual(
+                settings.CORS_ORIGIN_REGEX,
+                r"^https:\/\/(.*\.)?intelligent-bim.*\.vercel\.app$",
+            )
 
     def test_settings_cors_custom(self) -> None:
         env = {

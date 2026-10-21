@@ -68,6 +68,26 @@ class TestCORSMiddleware(unittest.TestCase):
             "true",
         )
 
+    def test_cors_allowed_subdomain_vercel_regex(self) -> None:
+        vercel_origin = "https://feat-123.intelligent-bim.vercel.app"
+        response = self.client.get("/health", headers={"Origin": vercel_origin})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get("access-control-allow-origin"),
+            vercel_origin,
+        )
+        self.assertEqual(
+            response.headers.get("access-control-allow-credentials"),
+            "true",
+        )
+
+    def test_cors_disallowed_arbitrary_vercel_app(self) -> None:
+        response = self.client.get(
+            "/health", headers={"Origin": "https://arbitrary-other-app.vercel.app"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("access-control-allow-origin", response.headers)
+
     def test_cors_disallowed_origin(self) -> None:
         response = self.client.get(
             "/health", headers={"Origin": "https://malicious-site.com"}
