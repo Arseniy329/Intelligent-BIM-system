@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import { DrawingViewer } from "./drawing-viewer";
+import { DEMO_DISPLAY_DXF, DEMO_RESULT } from "@/lib/drawing/demo-drawing";
 
-type LocalDrawing = { url: string; name: string };
+type LocalDrawing = { url: string; name: string; demo: boolean };
 
 export function DrawingPreview() {
   const [drawing, setDrawing] = useState<LocalDrawing | null>(null);
@@ -13,7 +14,7 @@ export function DrawingPreview() {
   const inputRef = useRef<HTMLInputElement>(null);
   const objectUrlRef = useRef<string | null>(null);
 
-  const openFile = useCallback((file: File) => {
+  const openFile = useCallback((file: File, demo = false) => {
     if (!/\.dxf$/i.test(file.name)) {
       setError("Непідтримуваний формат. Виберіть файл із розширенням .dxf.");
       return;
@@ -28,7 +29,7 @@ export function DrawingPreview() {
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = url;
       setError(null);
-      setDrawing({ url, name: file.name });
+      setDrawing({ url, name: file.name, demo });
     } catch {
       setError("Не вдалося відкрити локальний файл. Спробуйте вибрати його знову.");
     }
@@ -99,7 +100,7 @@ export function DrawingPreview() {
 
   return (
     <main className="mx-auto max-w-6xl space-y-5 p-6 text-slate-900">
-      <h1 className="text-2xl font-semibold">Перевірка DrawingViewer · BIM-59</h1>
+      <h1 className="text-2xl font-semibold">Перевірка DrawingViewer · BIM-60</h1>
       <p>Перетягніть локальний DXF на сторінку або виберіть файл. Файл відкривається у браузері й не надсилається на сервер.</p>
       <section
         aria-label="Відкриття DXF-креслення"
@@ -139,6 +140,13 @@ export function DrawingPreview() {
         Тестові файли: apps/api/tests/fixtures/test_drawing_dxf/.
         {" "}TEXT/MTEXT: apps/web/tests/fixtures/dxf/04_ukrainian_text.dxf.
       </p>
+      <section className="space-y-2" aria-label="Демонстрація оверлею">
+        <button type="button" className="min-h-10 rounded border border-slate-400 px-4 focus-visible:outline-2 focus-visible:outline-blue-600"
+          onClick={() => openFile(new File([DEMO_DISPLAY_DXF], DEMO_RESULT.drawing.originalFileName), true)}>
+          Відкрити демо оверлею
+        </button>
+        <p className="text-sm text-slate-600">Три приміщення та чотири типи сповіщувачів на тестовому плані. Працює без бекенду.</p>
+      </section>
       {error && <p role="alert" className="text-red-700">{error}</p>}
       {drawing ? (
         <>
@@ -152,7 +160,10 @@ export function DrawingPreview() {
               Закрити креслення
             </button>
           </div>
-          <DrawingViewer url={drawing.url} fileName={drawing.name} />
+          {drawing.demo && <p role="status">Демонстраційний режим: приміщення відповідають тестовому DXF, розміщення пристроїв ілюстративне.</p>}
+          <DrawingViewer url={drawing.url} fileName={drawing.name}
+            rooms={drawing.demo ? DEMO_RESULT.rooms : undefined}
+            devices={drawing.demo ? DEMO_RESULT.devices : undefined} />
         </>
       ) : <p role="status">Виберіть файл, щоб відкрити креслення.</p>}
     </main>
