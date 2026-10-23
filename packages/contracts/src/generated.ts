@@ -5,6 +5,7 @@
  */
 export type DrawingUnits = "mm" | "m";
 export type DrawingStatus = "uploaded" | "processing" | "processed" | "error";
+export type DrawingDetailStatus = "pending" | "uploaded" | "processing" | "processed" | "failed";
 /**
  * Одиниці, задані користувачем, або команда визначити їх із DXF
  */
@@ -16,6 +17,7 @@ export type ProcessingJobStatus = "queued" | "processing" | "completed" | "faile
  */
 export interface BimContracts {
   drawing?: Drawing;
+  drawingDetailResponse?: DrawingDetailResponse;
   room?: Room;
   device?: Device;
   createDrawingRequest?: CreateDrawingRequest;
@@ -35,6 +37,17 @@ export interface Drawing {
   status: DrawingStatus;
   errorMessage?: string | null;
   createdAt: string;
+}
+export interface DrawingDetailResponse {
+  id: string;
+  ownerId: string;
+  originalFileName: string;
+  storagePath: string;
+  units: DrawingUnits;
+  status: DrawingDetailStatus;
+  createdAt: string;
+  sourceDownloadUrl?: string | null;
+  sourceDownloadUrlExpiresAt?: string | null;
 }
 export interface Room {
   id: string;
