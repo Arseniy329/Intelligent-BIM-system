@@ -1,47 +1,39 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://bim.local/schemas/contracts.schema.json",
+  "$id": "https://example.com/contracts.schema.json",
   "title": "BimContracts",
-  "description": "Спільні контракти вебклієнта й API",
   "type": "object",
   "additionalProperties": false,
-  "properties": {
-    "drawing": { "$ref": "#/$defs/Drawing" },
-    "room": { "$ref": "#/$defs/Room" },
-    "device": { "$ref": "#/$defs/Device" },
-    "createDrawingRequest": { "$ref": "#/$defs/CreateDrawingRequest" },
-    "createDrawingResponse": { "$ref": "#/$defs/CreateDrawingResponse" },
-    "drawingResult": { "$ref": "#/$defs/DrawingResult" }
-  },
   "$defs": {
-    "DrawingStatus": {
-      "type": "string",
-      "enum": ["uploaded", "processing", "processed", "error"]
-    },
     "DrawingUnits": {
       "type": "string",
       "enum": ["mm", "m", "from_file"]
     },
-    "Point": {
-      "title": "Point",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["x", "y"],
-      "properties": {
-        "x": { "type": "number" },
-        "y": { "type": "number" }
-      }
+    "DrawingStatus": {
+      "type": "string",
+      "enum": ["uploaded", "processing", "processed", "error"]
+    },
+    "DrawingDetailStatus": {
+      "type": "string",
+      "enum": ["pending", "uploaded", "processing", "processed", "failed"]
     },
     "Drawing": {
-      "title": "Drawing",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "ownerId", "originalFileName", "storagePath", "units", "status", "createdAt"],
+      "required": [
+        "id",
+        "ownerId",
+        "originalFileName",
+        "storagePath",
+        "units",
+        "status",
+        "createdAt"
+      ],
       "properties": {
-        "id": { "type": "string", "format": "uuid" },
-        "ownerId": { "type": "string", "format": "uuid" },
-        "originalFileName": { "type": "string", "minLength": 1 },
-        "storagePath": { "type": "string", "minLength": 1 },
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "originalFileName": { "type": "string" },
+        "storagePath": { "type": "string" },
         "resultStoragePath": { "type": ["string", "null"] },
         "units": { "$ref": "#/$defs/DrawingUnits" },
         "status": { "$ref": "#/$defs/DrawingStatus" },
@@ -49,90 +41,33 @@
         "createdAt": { "type": "string", "format": "date-time" }
       }
     },
-    "Room": {
-      "title": "Room",
+    "DrawingDetailResponse": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "drawingId", "name", "type", "height", "area", "polygon"],
+      "required": [
+        "id",
+        "ownerId",
+        "originalFileName",
+        "storagePath",
+        "units",
+        "status",
+        "createdAt"
+      ],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "drawingId": { "type": "string", "format": "uuid" },
-        "name": { "type": ["string", "null"] },
-        "type": { "type": ["string", "null"] },
-        "height": { "type": ["number", "null"], "exclusiveMinimum": 0 },
-        "area": { "type": "number", "minimum": 0 },
-        "polygon": {
-          "type": "array",
-          "minItems": 3,
-          "items": { "$ref": "#/$defs/Point" }
-        }
-      }
-    },
-    "Device": {
-      "title": "Device",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "drawingId", "roomId", "type", "position", "layer"],
-      "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "drawingId": { "type": "string", "format": "uuid" },
-        "roomId": { "type": "string", "minLength": 1 },
-        "type": {
-          "type": "string",
-          "enum": ["smoke_detector", "heat_detector", "sounder"]
-        },
-        "position": { "$ref": "#/$defs/Point" },
-        "layer": { "type": "string", "minLength": 1 }
-      }
-    },
-    "CreateDrawingRequest": {
-      "title": "CreateDrawingRequest",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["fileName", "fileSizeBytes", "units"],
-      "properties": {
-        "fileName": { "type": "string", "pattern": "\\.[dD][xX][fF]$" },
-        "fileSizeBytes": { "type": "integer", "minimum": 1, "maximum": 52428800 },
-        "units": { "$ref": "#/$defs/DrawingUnits" }
-      }
-    },
-    "SignedUpload": {
-      "title": "SignedUpload",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["url", "path", "expiresInSeconds"],
-      "properties": {
-        "url": { "type": "string", "format": "uri" },
-        "path": { "type": "string", "minLength": 1 },
-        "expiresInSeconds": { "type": "integer", "minimum": 1 }
-      }
-    },
-    "CreateDrawingResponse": {
-      "title": "CreateDrawingResponse",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["drawing", "upload"],
-      "properties": {
-        "drawing": { "$ref": "#/$defs/Drawing" },
-        "upload": { "$ref": "#/$defs/SignedUpload" }
-      }
-    },
-    "DrawingResult": {
-      "title": "DrawingResult",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["drawing", "rooms", "devices"],
-      "properties": {
-        "drawing": { "$ref": "#/$defs/Drawing" },
-        "rooms": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/Room" }
-        },
-        "devices": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/Device" }
-        }
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "originalFileName": { "type": "string" },
+        "storagePath": { "type": "string" },
+        "units": { "type": "string" },
+        "status": { "$ref": "#/$defs/DrawingDetailStatus" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "sourceDownloadUrl": { "type": ["string", "null"], "format": "uri" },
+        "sourceDownloadUrlExpiresAt": { "type": ["string", "null"], "format": "date-time" }
       }
     }
+  },
+  "properties": {
+    "drawing": { "$ref": "#/$defs/Drawing" },
+    "drawingDetailResponse": { "$ref": "#/$defs/DrawingDetailResponse" }
   }
 }
