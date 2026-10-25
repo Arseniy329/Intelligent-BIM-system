@@ -44,3 +44,23 @@ npm run build
 ## Деплой
 
 Інструкція підготовлена в [docs/deployment.md](docs/deployment.md). У цьому локальному варіанті жодного зовнішнього деплою не виконано.
+
+## Supabase setup
+
+1. Create Supabase project.
+2. Enable Email + password auth:
+   - Authentication → Providers → Email
+   - Enable Email sign in
+3. Create bucket:
+   - Storage → Create bucket
+   - Bucket name: `drawings`
+   - Private: yes
+   - File size limit: 50 MB
+4. Run migrations:
+   ```bash
+   supabase db push
+   ```
+
+For a database where `001` and `002` have already run, apply `003` as a new migration.
+Review existing `admin` profiles separately: a role assigned before this fix cannot
+be distinguished automatically from a legitimate administrator.

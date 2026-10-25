@@ -20,6 +20,7 @@ from pydantic import (
 
 
 class DrawingStatus(Enum):
+    pending = "pending"
     uploaded = "uploaded"
     processing = "processing"
     processed = "processed"

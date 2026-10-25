@@ -99,13 +99,15 @@ export function DrawingPreview() {
   }, [openFile]);
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5 p-6 text-slate-900">
+    <div className="min-w-0 space-y-[var(--bim-spacing-5)] text-[var(--bim-color-text-primary)]">
       <h1 className="text-2xl font-semibold">Перевірка DrawingViewer · BIM-60</h1>
       <p>Перетягніть локальний DXF на сторінку або виберіть файл. Файл відкривається у браузері й не надсилається на сервер.</p>
       <section
         aria-label="Відкриття DXF-креслення"
-        className={`flex min-h-52 flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed p-6 text-center transition-colors ${
-          dragging ? "border-blue-600 bg-blue-50" : "border-slate-300 bg-slate-50"
+        className={`flex min-h-52 min-w-0 flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed p-6 text-center transition-colors ${
+          dragging
+            ? "border-[var(--bim-color-brand-primary)] bg-[var(--bim-color-brand-primary-subtle)]"
+            : "border-[var(--bim-color-border-strong)] bg-[var(--bim-color-surface-subtle)]"
         }`}
       >
         <Upload aria-hidden="true" className="size-8" />
@@ -128,33 +130,40 @@ export function DrawingPreview() {
         />
         <button
           type="button"
-          className="min-h-10 rounded border border-slate-400 bg-white px-4 font-medium hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600"
+          className="min-h-10 rounded-lg border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-4 font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] active:bg-[var(--bim-color-button-secondary-pressed-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)]"
           aria-describedby="drawing-preview-help"
           onClick={() => inputRef.current?.click()}
         >
           Вибрати DXF
         </button>
-        <p className="text-sm text-slate-600">Підтримуваний формат: .dxf</p>
+        <p className="text-sm text-[var(--bim-color-text-secondary)]">Підтримуваний формат: .dxf</p>
       </section>
-      <p id="drawing-preview-help" className="text-sm text-slate-600">
+      <p id="drawing-preview-help" className="break-words text-sm text-[var(--bim-color-text-secondary)]">
         Тестові файли: apps/api/tests/fixtures/test_drawing_dxf/.
         {" "}TEXT/MTEXT: apps/web/tests/fixtures/dxf/04_ukrainian_text.dxf.
       </p>
       <section className="space-y-2" aria-label="Демонстрація оверлею">
-        <button type="button" className="min-h-10 rounded border border-slate-400 px-4 focus-visible:outline-2 focus-visible:outline-blue-600"
+        <button type="button" className="min-h-10 rounded-lg border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-4 font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] active:bg-[var(--bim-color-button-secondary-pressed-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)]"
           onClick={() => openFile(new File([DEMO_DISPLAY_DXF], DEMO_RESULT.drawing.originalFileName), true)}>
           Відкрити демо оверлею
         </button>
-        <p className="text-sm text-slate-600">Три приміщення та чотири типи сповіщувачів на тестовому плані. Працює без бекенду.</p>
+        <p className="text-sm text-[var(--bim-color-text-secondary)]">Три приміщення та чотири типи сповіщувачів на тестовому плані. Працює без бекенду.</p>
       </section>
-      {error && <p role="alert" className="text-red-700">{error}</p>}
+      {error && (
+        <p
+          role="alert"
+          className="rounded-lg border border-[var(--bim-color-semantic-error-border)] bg-[var(--bim-color-semantic-error-bg)] p-3 text-[var(--bim-color-semantic-error)]"
+        >
+          {error}
+        </p>
+      )}
       {drawing ? (
         <>
           <div className="flex flex-wrap items-center gap-3">
             <p className="break-all">{drawing.name}</p>
             <button
               type="button"
-              className="min-h-10 rounded border border-slate-300 px-3 focus-visible:outline-2 focus-visible:outline-blue-600"
+              className="min-h-10 rounded-lg border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-3 text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] active:bg-[var(--bim-color-button-secondary-pressed-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)]"
               onClick={closeDrawing}
             >
               Закрити креслення
@@ -166,6 +175,6 @@ export function DrawingPreview() {
             devices={drawing.demo ? DEMO_RESULT.devices : undefined} />
         </>
       ) : <p role="status">Виберіть файл, щоб відкрити креслення.</p>}
-    </main>
+    </div>
   );
 }

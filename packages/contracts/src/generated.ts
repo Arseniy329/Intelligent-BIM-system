@@ -4,7 +4,7 @@
  * Фактичні одиниці координат DXF після визначення API
  */
 export type DrawingUnits = "mm" | "m";
-export type DrawingStatus = "uploaded" | "processing" | "processed" | "error";
+export type DrawingStatus = "pending" | "uploaded" | "processing" | "processed" | "error";
 /**
  * Одиниці, задані користувачем, або команда визначити їх із DXF
  */
@@ -16,6 +16,7 @@ export type ProcessingJobStatus = "queued" | "processing" | "completed" | "faile
  */
 export interface BimContracts {
   drawing?: Drawing;
+  drawingDetailResponse?: DrawingDetailResponse;
   room?: Room;
   device?: Device;
   createDrawingRequest?: CreateDrawingRequest;
@@ -35,6 +36,17 @@ export interface Drawing {
   status: DrawingStatus;
   errorMessage?: string | null;
   createdAt: string;
+}
+export interface DrawingDetailResponse {
+  id: string;
+  ownerId: string;
+  originalFileName: string;
+  storagePath: string;
+  units: RequestedDrawingUnits;
+  status: DrawingStatus;
+  createdAt: string;
+  sourceDownloadUrl?: string | null;
+  sourceDownloadUrlExpiresAt?: string | null;
 }
 export interface Room {
   id: string;
