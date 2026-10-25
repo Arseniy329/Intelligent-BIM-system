@@ -7,6 +7,7 @@
   "additionalProperties": false,
   "properties": {
     "drawing": { "$ref": "#/$defs/Drawing" },
+    "drawingDetailResponse": { "$ref": "#/$defs/DrawingDetailResponse" },
     "room": { "$ref": "#/$defs/Room" },
     "device": { "$ref": "#/$defs/Device" },
     "createDrawingRequest": { "$ref": "#/$defs/CreateDrawingRequest" },
@@ -18,6 +19,10 @@
     "DrawingStatus": {
       "type": "string",
       "enum": ["uploaded", "processing", "processed", "error"]
+    },
+    "DrawingDetailStatus": {
+      "type": "string",
+      "enum": ["pending", "uploaded", "processing", "processed", "failed"]
     },
     "DrawingUnits": {
       "type": "string",
@@ -174,6 +179,23 @@
           "format": "date-time",
           "description": "Час завершення дії downloadUrl"
         }
+      }
+    },
+    "DrawingDetailResponse": {
+      "title": "DrawingDetailResponse",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "ownerId", "originalFileName", "storagePath", "units", "status", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "ownerId": { "type": "string", "format": "uuid" },
+        "originalFileName": { "type": "string", "minLength": 1 },
+        "storagePath": { "type": "string", "minLength": 1 },
+        "units": { "$ref": "#/$defs/DrawingUnits" },
+        "status": { "$ref": "#/$defs/DrawingDetailStatus" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "sourceDownloadUrl": { "type": ["string", "null"], "format": "uri" },
+        "sourceDownloadUrlExpiresAt": { "type": ["string", "null"], "format": "date-time" }
       }
     },
     "ProcessingJobStatus": {
