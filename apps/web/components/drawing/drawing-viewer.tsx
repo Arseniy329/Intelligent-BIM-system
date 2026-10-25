@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import type { Device, Room } from "@bim/contracts";
 import { useState, type CSSProperties } from "react";
 import type { DrawingViewportController } from "@/lib/drawing/viewer-adapter";
 import tokens from "../../../../tokens.json";
@@ -10,6 +11,10 @@ export type DrawingViewerProps = {
   /** A local object URL or an already obtained signed read URL; no API field is assumed. */
   url: string;
   fileName?: string;
+  rooms?: Room[];
+  devices?: Device[];
+  /** Disable initially for plans with their own room annotations; the toolbar can restore them. */
+  initialRoomLabelsVisible?: boolean;
   onReady?: (controller: DrawingViewportController | null) => void;
 };
 

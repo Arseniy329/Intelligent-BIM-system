@@ -5,19 +5,23 @@ import { createDrawingViewerAdapter, type DrawingViewerAdapter } from "@/lib/dra
 import { LOAD_PHASE_LABELS, logDrawingLoadTimings, measureDrawingLoad, type DrawingLoadTimings } from "@/lib/drawing/load-timings";
 import type { DrawingViewerProps } from "./drawing-viewer";
 import { DrawingToolbar } from "./drawing-toolbar";
+import { DrawingOverlay } from "./drawing-overlay";
 import styles from "./drawing-viewer.module.css";
 
 type LoadState =
   | { status: "loading" }
-  | { status: "ready"; timings: DrawingLoadTimings }
+  | { status: "ready"; timings: DrawingLoadTimings; controller: DrawingViewerAdapter }
   | { status: "error"; message: string; timings?: DrawingLoadTimings };
 
 export default function DrawingCanvas({
-  url, onReady, onRetry,
+  url, onReady, onRetry, rooms, devices, initialRoomLabelsVisible = true,
 }: DrawingViewerProps & { onRetry: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const adapterRef = useRef<DrawingViewerAdapter | null>(null);
   const [state, setState] = useState<LoadState>({ status: "loading" });
+  const [showRooms, setShowRooms] = useState(true);
+  const [showDevices, setShowDevices] = useState(true);
+  const [showRoomLabels, setShowRoomLabels] = useState(initialRoomLabelsVisible);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -45,7 +49,7 @@ export default function DrawingCanvas({
         await adapter.load(url, measurement.progress);
         const timings = measurement.finish(rendererInitMs, cancelled ? "cancelled" : "ready");
         logDrawingLoadTimings(timings);
-        if (!cancelled) setState({ status: "ready", timings });
+        if (!cancelled) setState({ status: "ready", timings, controller: adapter });
       } catch (error) {
         const timings = measurement?.finish(rendererInitMs, cancelled ? "cancelled" : "error");
         logDrawingLoadTimings(timings);
@@ -87,9 +91,16 @@ export default function DrawingCanvas({
         onZoomIn={() => adapterRef.current?.zoomBy(1.25)}
         onZoomOut={() => adapterRef.current?.zoomBy(0.8)}
         onFit={() => adapterRef.current?.fitToDrawing()}
+        roomsLayer={rooms?.length ? { visible: showRooms, toggle: () => setShowRooms((value) => !value) } : undefined}
+        devicesLayer={devices?.length ? { visible: showDevices, toggle: () => setShowDevices((value) => !value) } : undefined}
+        roomLabels={rooms?.length ? { visible: showRoomLabels, toggle: () => setShowRoomLabels((value) => !value) } : undefined}
       />
       <div className={styles.stage} aria-busy={state.status === "loading"}>
         <div ref={hostRef} className={styles.canvas} aria-label="Полотно DXF" />
+        {state.status === "ready" && (rooms?.length || devices?.length) ? (
+          <DrawingOverlay controller={state.controller} rooms={rooms} devices={devices}
+            showRooms={showRooms} showDevices={showDevices} showRoomLabels={showRoomLabels} />
+        ) : null}
         {state.status === "loading" && (
           <div className={styles.message} role="status">Завантаження креслення…</div>
         )}
@@ -100,6 +111,15 @@ export default function DrawingCanvas({
           </div>
         )}
       </div>
+      {state.status === "ready" && showRooms && !!rooms?.length && (
+        <ul className={styles.roomSummary} aria-label="Назви та площі приміщень">
+          {rooms.map((room) => <li key={room.id}>
+            <span>{room.name?.trim() || "Приміщення без назви"}</span>
+            {" · "}{Number.isFinite(room.area) && room.area >= 0
+              ? `${new Intl.NumberFormat("uk-UA", { maximumFractionDigits: 2 }).format(room.area)} м²` : "Площу не визначено"}
+          </li>)}
+        </ul>
+      )}
       <p className={styles.status} role="status">
         {state.status === "ready" ? "Креслення готове до перегляду." :
           state.status === "error" ? "Помилка відкриття креслення." : "Завантаження…"}
