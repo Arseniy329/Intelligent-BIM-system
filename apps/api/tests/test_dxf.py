@@ -1,6 +1,6 @@
-import pytest
-import ezdxf
 from pathlib import Path
+import ezdxf
+import pytest
 
 FIXTURES_DIR = Path("apps/api/tests/fixtures/test_drawing_dxf")
 
