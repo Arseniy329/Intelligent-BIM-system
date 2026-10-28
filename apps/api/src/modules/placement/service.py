@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
 
 from shapely.geometry import Point, Polygon
 
@@ -36,13 +35,13 @@ def place_devices_from_rule(
     offset = step / 2.0
     min_x, min_y, max_x, max_y = polygon.bounds
 
-    xs = []
+    xs: list[float] = []
     x = min_x + offset
     while x + offset <= max_x:
         xs.append(x)
         x += step
 
-    ys = []
+    ys: list[float] = []
     y = min_y + offset
     while y + offset <= max_y:
         ys.append(y)
@@ -53,7 +52,11 @@ def place_devices_from_rule(
     for x in xs:
         for y in ys:
             candidate = Point(x, y)
-            if polygon.contains(candidate) or polygon.covers(candidate) or polygon.touches(candidate):
+            if (
+                polygon.contains(candidate)
+                or polygon.covers(candidate)
+                or polygon.touches(candidate)
+            ):
                 devices.append(
                     DevicePlacement(
                         x=float(x),
@@ -75,5 +78,4 @@ def place_devices_from_rule(
     return devices
 
 
-# compatibility alias if router still uses old name
 generate_devices_for_polygon = place_devices_from_rule

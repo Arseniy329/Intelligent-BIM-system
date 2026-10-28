@@ -15,11 +15,9 @@ def test_rectangle_room():
     assert all(device.y >= 1.0 for device in devices)
     assert all(device.y <= 7.0 for device in devices)
 
-    # distance between neighbours not greater than step
     xs = sorted(device.x for device in devices)
     ys = sorted(device.y for device in devices)
 
-    # simple sanity check:
     assert max(xs) - min(xs) <= 8.0
     assert max(ys) - min(ys) <= 6.0
 
@@ -34,7 +32,11 @@ def test_l_shape_room():
     for device in devices:
         point = Point(device.x, device.y)
         polygon = __import__("shapely.geometry").geometry.Polygon(room)
-        assert polygon.contains(point) or polygon.touches(point) or polygon.covers(point)
+        assert (
+            polygon.contains(point)
+            or polygon.touches(point)
+            or polygon.covers(point)
+        )
 
 
 def test_small_room_has_at_least_one_device():

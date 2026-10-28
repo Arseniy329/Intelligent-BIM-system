@@ -1,8 +1,7 @@
-from typing import Optional
+from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from typing import Annotated
 
 from src.core.config import Settings, get_settings
 from src.infrastructure.supabase import (
@@ -13,7 +12,7 @@ from src.infrastructure.supabase import (
 
 class CurrentUser(BaseModel):
     id: str
-    email: Optional[str] = None
+    email: str | None = None
     role: str = "engineer"
 
 

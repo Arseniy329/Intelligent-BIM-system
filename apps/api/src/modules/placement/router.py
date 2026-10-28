@@ -1,6 +1,4 @@
-from typing import Any
-
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from src.core.auth import CurrentUser, get_current_user

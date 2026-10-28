@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -34,11 +34,7 @@ async def create_drawing(
         "status": "uploaded",
     }
 
-    inserted = (
-        supabase.table("drawings")
-        .insert(insert_payload)
-        .execute()
-    )
+    inserted = supabase.table("drawings").insert(insert_payload).execute()
 
     if not inserted.data:
         raise HTTPException(
@@ -130,11 +126,13 @@ async def process_drawing(
     if drawing["owner_id"] != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    # Заглушка до готовності реальної обробки
     return {
         "drawing_id": drawing_id,
         "status": "accepted",
-        "message": "Processing stub accepted. BIM-54/BIM-55/BIM-57 will be connected later.",
+        "message": (
+            "Processing stub accepted. "
+            "BIM-54/BIM-55/BIM-57 will be connected later."
+        ),
     }
 
 
@@ -167,11 +165,14 @@ async def get_drawing_detail(
             .from_(settings.SUPABASE_STORAGE_BUCKET)
             .create_signed_url(drawing["storage_path"], expires_in=3600)
         )
-        source_url = signed_url_response.get("signedUrl") or signed_url_response.get("url")
+        source_url = (
+            signed_url_response.get("signedUrl")
+            or signed_url_response.get("url")
+        )
     except Exception:
         source_url = None
 
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=3600)
+    expires_at = datetime.now(UTC) + timedelta(seconds=3600)
 
     return {
         "id": str(drawing["id"]),
