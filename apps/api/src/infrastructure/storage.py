@@ -3,6 +3,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from supabase import Client
 
@@ -37,12 +38,23 @@ def download_dxf_to_tmp(
 
     # 1. URL download (strictly restricted to configured Supabase URL to prevent SSRF)
     if cleaned_path.startswith(("http://", "https://")):
-        if not cleaned_path.startswith(settings.SUPABASE_URL):
+        requested_url = urlsplit(cleaned_path)
+        trusted_url = urlsplit(settings.SUPABASE_URL)
+        if (
+            requested_url.scheme != trusted_url.scheme
+            or requested_url.hostname != trusted_url.hostname
+            or requested_url.port != trusted_url.port
+            or requested_url.username is not None
+            or requested_url.password is not None
+        ):
             raise StorageError(f"Untrusted URL domain: '{cleaned_path}'")
 
         try:
+            safe_url = f"{trusted_url.scheme}://{trusted_url.netloc}{requested_url.path}"
+            if requested_url.query:
+                safe_url = f"{safe_url}?{requested_url.query}"
             req = urllib.request.Request(
-                cleaned_path,
+                safe_url,
                 headers={"User-Agent": "Intelligent-BIM-API/1.0"},
             )
             with urllib.request.urlopen(req, timeout=30.0) as resp:
