@@ -49,6 +49,43 @@ class DatabaseError(BIMException):
         super().__init__(message=message, status_code=502, details=details)
 
 
+class StorageError(BIMException):
+    def __init__(
+        self,
+        message: str = "Storage operation failed",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message=message, status_code=400, details=details)
+
+
+class CADParsingError(BIMException):
+    def __init__(
+        self,
+        message: str = "CAD parsing failed",
+        status_code: int = 400,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message=message, status_code=status_code, details=details)
+
+
+class LayerNotFoundError(CADParsingError):
+    def __init__(
+        self,
+        message: str = "Required layer 'FIRE_ROOMS' not found in DXF file",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message=message, status_code=400, details=details)
+
+
+class NoValidContoursError(CADParsingError):
+    def __init__(
+        self,
+        message: str = "No valid closed room contours found on layer 'FIRE_ROOMS'",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message=message, status_code=400, details=details)
+
+
 async def bim_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Global exception handler for custom BIM exceptions."""
     if isinstance(exc, BIMException):
