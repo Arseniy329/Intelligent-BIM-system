@@ -1,6 +1,6 @@
-from typing import Optional
+from typing import Any, cast
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
 
 from src.core.config import get_settings
@@ -9,7 +9,7 @@ from src.infrastructure.supabase import get_supabase_auth_client, get_supabase_c
 
 class CurrentUser(BaseModel):
     id: str
-    email: Optional[str] = None
+    email: str | None = None
     role: str = "engineer"
 
 
@@ -28,7 +28,8 @@ async def get_current_user(request: Request) -> CurrentUser:
             detail="Missing bearer token",
         )
 
-    supabase = get_supabase_auth_client()
+    settings = get_settings()
+    supabase = get_supabase_auth_client(settings)
 
     try:
         user_response = supabase.auth.get_user(token)
@@ -45,7 +46,7 @@ async def get_current_user(request: Request) -> CurrentUser:
             detail="Invalid or expired token",
         )
 
-    admin_client = get_supabase_client()
+    admin_client = get_supabase_client(settings)
     profile_response = (
         admin_client.table("profiles")
         .select("id, email, role")
@@ -55,14 +56,15 @@ async def get_current_user(request: Request) -> CurrentUser:
     )
 
     profile_data = getattr(profile_response, "data", None)
-    if not profile_data:
+    if not isinstance(profile_data, dict):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Profile not found",
         )
+    profile = cast(dict[str, Any], profile_data)
 
     return CurrentUser(
         id=str(user.id),
         email=user.email,
-        role=profile_data.get("role", "engineer"),
+        role=str(profile.get("role", "engineer")),
     )

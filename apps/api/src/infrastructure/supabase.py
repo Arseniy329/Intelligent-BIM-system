@@ -15,10 +15,16 @@ def _get_cached_client(supabase_url: str, supabase_key: str) -> Client:
 def get_supabase_client(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Client:
-    return _get_cached_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+    return _get_cached_client(
+        settings.SUPABASE_URL,
+        settings.SUPABASE_SERVICE_ROLE_KEY,
+    )
 
 
 def get_supabase_auth_client(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Client:
-    return _get_cached_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)
+    return _get_cached_client(
+        settings.SUPABASE_URL,
+        settings.SUPABASE_ANON_KEY,
+    )
