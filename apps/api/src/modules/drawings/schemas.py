@@ -1,5 +1,9 @@
 from datetime import datetime
+<<<<<<< HEAD
 from typing import Literal, Optional
+=======
+from typing import Literal
+>>>>>>> origin/dev
 
 from pydantic import BaseModel, Field
 
@@ -41,5 +45,10 @@ class DrawingDetailResponse(BaseModel):
     units: str
     status: DrawingStatus
     created_at: datetime
+<<<<<<< HEAD
     source_download_url: Optional[str] = None
     source_download_url_expires_at: Optional[datetime] = None
+=======
+    source_download_url: str | None = None
+    source_download_url_expires_at: datetime | None = None
+>>>>>>> origin/dev

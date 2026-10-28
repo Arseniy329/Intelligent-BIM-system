@@ -4,8 +4,12 @@
  * Фактичні одиниці координат DXF після визначення API
  */
 export type DrawingUnits = "mm" | "m";
+<<<<<<< HEAD
 export type DrawingStatus = "uploaded" | "processing" | "processed" | "error";
 export type DrawingDetailStatus = "pending" | "uploaded" | "processing" | "processed" | "failed";
+=======
+export type DrawingStatus = "pending" | "uploaded" | "processing" | "processed" | "error";
+>>>>>>> origin/dev
 /**
  * Одиниці, задані користувачем, або команда визначити їх із DXF
  */
@@ -43,8 +47,13 @@ export interface DrawingDetailResponse {
   ownerId: string;
   originalFileName: string;
   storagePath: string;
+<<<<<<< HEAD
   units: DrawingUnits;
   status: DrawingDetailStatus;
+=======
+  units: RequestedDrawingUnits;
+  status: DrawingStatus;
+>>>>>>> origin/dev
   createdAt: string;
   sourceDownloadUrl?: string | null;
   sourceDownloadUrlExpiresAt?: string | null;

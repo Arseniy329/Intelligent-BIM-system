@@ -5,7 +5,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     SUPABASE_URL: str
+<<<<<<< HEAD
     SUPABASE_ANON_KEY: str
+=======
+    SUPABASE_ANON_KEY: str = ""
+>>>>>>> origin/dev
     SUPABASE_SERVICE_ROLE_KEY: str
     SUPABASE_STORAGE_BUCKET: str = "drawings"
 
@@ -27,4 +31,8 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+<<<<<<< HEAD
     return Settings()
+=======
+    return Settings()  # type: ignore[call-arg]
+>>>>>>> origin/dev

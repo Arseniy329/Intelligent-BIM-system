@@ -1,1 +1,70 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: light;
+
+  --background: var(--bim-color-surface-page);
+  --foreground: var(--bim-color-text-primary);
+  --card: var(--bim-color-surface-default);
+  --card-foreground: var(--bim-color-text-primary);
+  --popover: var(--bim-color-surface-raised);
+  --popover-foreground: var(--bim-color-text-primary);
+  --primary: var(--bim-color-brand-primary);
+  --primary-foreground: var(--bim-color-brand-on-primary);
+  --secondary: var(--bim-color-button-secondary-bg);
+  --secondary-foreground: var(--bim-color-button-secondary-text);
+  --muted: var(--bim-color-surface-subtle);
+  --muted-foreground: var(--bim-color-text-secondary);
+  --accent: var(--bim-color-brand-primary-subtle);
+  --accent-foreground: var(--bim-color-text-primary);
+  --destructive: var(--bim-color-button-danger-bg);
+  --destructive-foreground: var(--bim-color-button-danger-text);
+  --border: var(--bim-color-border-default);
+  --input: var(--bim-color-input-border);
+  --ring: var(--bim-color-border-focus);
+  --radius: var(--bim-radius-md);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: var(--bim-radius-sm);
+  --radius-md: var(--radius);
+  --radius-lg: var(--bim-radius-lg);
+  --radius-xl: var(--bim-radius-xl);
+  --radius-full: var(--bim-radius-full);
+
+  --font-sans: var(--bim-typography-font-family-base);
+  --font-mono: var(--bim-typography-font-family-mono);
+}
+
+html {
+  background: var(--bim-color-surface-page);
+}
+
+body {
+  min-height: 100vh;
+  background: var(--bim-color-surface-page);
+  color: var(--bim-color-text-primary);
+  font-family: var(--bim-typography-font-family-base);
+  font-size: var(--bim-typography-text-style-body-font-size);
+  line-height: var(--bim-typography-text-style-body-line-height);
+}
