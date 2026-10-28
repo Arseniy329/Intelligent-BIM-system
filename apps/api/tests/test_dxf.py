@@ -18,7 +18,7 @@ MM2_IN_M2 = 1_000_000
 
 def _polygon_area(points):
     total = 0.0
-    for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1]):
+    for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1], strict=False):
         total += x1 * y2 - x2 * y1
     return abs(total) / 2
 
