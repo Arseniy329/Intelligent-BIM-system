@@ -50,7 +50,9 @@ def download_dxf_to_tmp(
             raise StorageError(f"Untrusted URL domain: '{cleaned_path}'")
 
         try:
-            safe_url = f"{trusted_url.scheme}://{trusted_url.netloc}{requested_url.path}"
+            safe_url = (
+                f"{trusted_url.scheme}://{trusted_url.netloc}{requested_url.path}"
+            )
             if requested_url.query:
                 safe_url = f"{safe_url}?{requested_url.query}"
             req = urllib.request.Request(

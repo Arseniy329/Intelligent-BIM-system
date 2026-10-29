@@ -20,6 +20,10 @@
       "type": "string",
       "enum": ["pending", "uploaded", "processing", "processed", "error"]
     },
+    "DrawingDetailStatus": {
+      "type": "string",
+      "enum": ["pending", "uploaded", "processing", "processed", "failed"]
+    },
     "DrawingUnits": {
       "type": "string",
       "enum": ["mm", "m"],
@@ -187,8 +191,10 @@
         "ownerId": { "type": "string", "format": "uuid" },
         "originalFileName": { "type": "string", "minLength": 1 },
         "storagePath": { "type": "string", "minLength": 1 },
-        "units": { "$ref": "#/$defs/RequestedDrawingUnits" },
-        "status": { "$ref": "#/$defs/DrawingStatus" },
+
+        "units": { "$ref": "#/$defs/DrawingUnits" },
+        "status": { "$ref": "#/$defs/DrawingDetailStatus" },
+
         "createdAt": { "type": "string", "format": "date-time" },
         "sourceDownloadUrl": { "type": ["string", "null"], "format": "uri" },
         "sourceDownloadUrlExpiresAt": { "type": ["string", "null"], "format": "date-time" }

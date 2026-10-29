@@ -45,6 +45,14 @@ npm run build
 
 Інструкція підготовлена в [docs/deployment.md](docs/deployment.md). У цьому локальному варіанті жодного зовнішнього деплою не виконано.
 
+<<<<<<< HEAD
+## Фрагмент коду
+
+NEXT_PUBLIC_SUPABASE_URL=[https://qgkxerxiyzpbeczkpbpj.supabase.co](https://qgkxerxiyzpbeczkpbpj.supabase.co)
+NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_QzDEiRpdtdNWmx-ASHI-QA_3CQiU3zB
+
+=======
+>>>>>>> origin/dev
 ## Supabase setup
 
 1. Create Supabase project.
@@ -58,9 +66,13 @@ npm run build
    - File size limit: 50 MB
 4. Run migrations:
    ```bash
+<<<<<<< HEAD
+   supabase db push
+=======
    supabase db push
    ```
 
 For a database where `001` and `002` have already run, apply `003` as a new migration.
 Review existing `admin` profiles separately: a role assigned before this fix cannot
 be distinguished automatically from a legitimate administrator.
+>>>>>>> origin/dev

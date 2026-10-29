@@ -1,7 +1,7 @@
-import unittest
 from pathlib import Path
 
 import ezdxf
+import pytest
 
 TESTS_DIR = Path(__file__).resolve().parent
 FIXTURES_DIR = TESTS_DIR / "fixtures" / "test_drawing_dxf"
@@ -45,70 +45,57 @@ def _validate_drawing(doc):
         raise ValueError(f"Немає шару {ROOMS_LAYER}")
     if doc.units != ezdxf.units.MM:
         raise ValueError("Одиниці виміру мають бути в міліметрах")
-    unclosed = [
-        room for room in _room_polylines(doc) if not room.closed
-    ]
+    unclosed = [room for room in _room_polylines(doc) if not room.closed]
     if unclosed:
-        raise ValueError(
-            f"Знайдено незамкнених контурів: {len(unclosed)}"
-        )
+        raise ValueError(f"Знайдено незамкнених контурів: {len(unclosed)}")
 
 
 def _good_fixtures():
     if not FIXTURES_DIR.exists():
         return []
     return sorted(
-        path
-        for path in FIXTURES_DIR.glob("*.dxf")
-        if "bad" not in path.name.lower()
+        path for path in FIXTURES_DIR.glob("*.dxf") if "bad" not in path.name.lower()
     )
 
 
-class TestDxf(unittest.TestCase):
-    def test_room_metrics_accuracy(self) -> None:
-        fixtures = _good_fixtures()
-        if not fixtures:
-            self.skipTest("Немає тестових DXF-файлів у каталозі fixtures")
+def test_room_metrics_accuracy():
+    fixtures = _good_fixtures()
+    if not fixtures:
+        pytest.skip("Немає тестових DXF-файлів у каталозі fixtures")
 
-        doc = ezdxf.readfile(fixtures[0])
+    doc = ezdxf.readfile(fixtures[0])
+    _validate_drawing(doc)
+    rooms = _room_polylines(doc)
+    area = _total_area_m2(doc, rooms)
+
+    assert len(rooms) == EXPECTED_ROOMS, (
+        f"Невірна кількість приміщень: очікувалось {EXPECTED_ROOMS}, "
+        f"отримано {len(rooms)}"
+    )
+    assert area == pytest.approx(EXPECTED_AREA_M2, rel=AREA_TOLERANCE), (
+        f"Площа поза допуском ±1%: очікувалось {EXPECTED_AREA_M2} м², "
+        f"отримано {area:.2f} м²"
+    )
+
+
+def test_negative_dxf_errors():
+    if not BAD_DXF.exists():
+        pytest.skip(f"Файл {BAD_DXF.name} не знайдено")
+
+    with pytest.raises((ValueError, ezdxf.DXFError)) as exc_info:
+        doc = ezdxf.readfile(BAD_DXF)
         _validate_drawing(doc)
-        rooms = _room_polylines(doc)
-        area = _total_area_m2(doc, rooms)
 
-        self.assertEqual(
-            len(rooms),
-            EXPECTED_ROOMS,
-            f"Невірна кількість приміщень: очікувалось {EXPECTED_ROOMS}, "
-            f"отримано {len(rooms)}",
-        )
-        self.assertAlmostEqual(
-            area,
-            EXPECTED_AREA_M2,
-            delta=EXPECTED_AREA_M2 * AREA_TOLERANCE,
-            msg=f"Площа поза допуском ±1%: очікувалось {EXPECTED_AREA_M2} м², "
-            f"отримано {area:.2f} м²",
-        )
+    message = str(exc_info.value)
+    assert message, "Помилка має містити зрозуміле повідомлення"
 
-    def test_negative_dxf_errors(self) -> None:
-        if not BAD_DXF.exists():
-            self.skipTest(f"Файл {BAD_DXF.name} не знайдено")
 
-        with self.assertRaises((ValueError, ezdxf.DXFError)) as exc_info:
-            doc = ezdxf.readfile(BAD_DXF)
-            _validate_drawing(doc)
+def test_output_dxf_layer():
+    if not OUTPUT_DXF.exists():
+        pytest.skip("Вихідний DXF-файл ще не створено")
 
-        self.assertTrue(
-            str(exc_info.exception),
-            "Помилка має містити зрозуміле повідомлення",
-        )
+    doc = ezdxf.readfile(OUTPUT_DXF)
 
-    def test_output_dxf_layer(self) -> None:
-        if not OUTPUT_DXF.exists():
-            self.skipTest("Вихідний DXF-файл ще не створено")
-
-        doc = ezdxf.readfile(OUTPUT_DXF)
-        self.assertIn(
-            SENSORS_LAYER,
-            doc.layers,
-            f"У вихідному DXF відсутній обов'язковий шар {SENSORS_LAYER}",
-        )
+    assert SENSORS_LAYER in doc.layers, (
+        f"У вихідному DXF відсутній обов'язковий шар {SENSORS_LAYER}"
+    )
