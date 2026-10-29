@@ -22,7 +22,7 @@ async def create_drawing(
     payload: CreateDrawingRequest,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    supabase = get_supabase_client()
+    supabase = get_supabase_client(settings)
 
     storage_path = f"{current_user.id}/{uuid4()}/{payload.original_file_name}"
 
@@ -43,28 +43,41 @@ async def create_drawing(
         )
 
     drawing_data = inserted.data[0]
+    if not isinstance(drawing_data, dict):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unexpected response shape from database",
+        )
+
+    try:
+        drawing = DrawingRecord.model_validate(drawing_data)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to parse created drawing record",
+        ) from exc
 
     try:
         upload_response = supabase.storage.from_(
             settings.SUPABASE_STORAGE_BUCKET
-        ).create_signed_upload_url(storage_path, expires_in=3600)
-        signed_url = upload_response.get("signedUrl") or upload_response.get("url")
+        ).create_signed_upload_url(storage_path)
+        signed_url = None
+        if isinstance(upload_response, dict):
+            signed_url = upload_response.get("signedUrl") or upload_response.get("url")
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate signed upload URL",
         ) from exc
 
+    if not signed_url or not isinstance(signed_url, str):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate signed upload URL",
+        )
+
     return {
-        "drawing": DrawingRecord(
-            id=str(drawing_data["id"]),
-            owner_id=str(drawing_data["owner_id"]),
-            original_file_name=drawing_data["original_file_name"],
-            storage_path=drawing_data["storage_path"],
-            units=drawing_data["units"],
-            status=drawing_data["status"],
-            created_at=drawing_data["created_at"],
-        ),
+        "drawing": drawing,
         "upload": {
             "url": signed_url,
             "path": storage_path,
@@ -77,7 +90,7 @@ async def create_drawing(
 async def list_drawings(
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    supabase = get_supabase_client()
+    supabase = get_supabase_client(settings)
 
     response = (
         supabase.table("drawings")
@@ -87,18 +100,26 @@ async def list_drawings(
         .execute()
     )
 
-    return [
-        DrawingRecord(
-            id=str(row["id"]),
-            owner_id=str(row["owner_id"]),
-            original_file_name=row["original_file_name"],
-            storage_path=row["storage_path"],
-            units=row["units"],
-            status=row["status"],
-            created_at=row["created_at"],
-        )
-        for row in response.data
-    ]
+    rows = response.data
+    if not isinstance(rows, list):
+        return []
+
+    drawings: list[DrawingRecord] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Invalid drawing record format in database",
+            )
+        try:
+            drawings.append(DrawingRecord.model_validate(row))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to parse drawing record",
+            ) from exc
+
+    return drawings
 
 
 @router.post("/{drawing_id}/process")
@@ -106,18 +127,25 @@ async def process_drawing(
     drawing_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    supabase = get_supabase_client()
+    supabase = get_supabase_client(settings)
 
     drawing_response = (
         supabase.table("drawings").select("*").eq("id", drawing_id).single().execute()
     )
 
-    if not drawing_response.data:
+    drawing_data = drawing_response.data
+    if not isinstance(drawing_data, dict):
         raise HTTPException(status_code=404, detail="Drawing not found")
 
-    drawing = drawing_response.data
+    try:
+        drawing = DrawingRecord.model_validate(drawing_data)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to parse drawing record",
+        ) from exc
 
-    if drawing["owner_id"] != current_user.id and current_user.role != "admin":
+    if drawing.owner_id != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Forbidden")
 
     return {
@@ -134,40 +162,51 @@ async def get_drawing_detail(
     drawing_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    supabase = get_supabase_client()
+    supabase = get_supabase_client(settings)
 
     drawing_response = (
         supabase.table("drawings").select("*").eq("id", drawing_id).single().execute()
     )
 
-    if not drawing_response.data:
+    drawing_data = drawing_response.data
+    if not isinstance(drawing_data, dict):
         raise HTTPException(status_code=404, detail="Drawing not found")
 
-    drawing = drawing_response.data
+    try:
+        drawing = DrawingRecord.model_validate(drawing_data)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to parse drawing record",
+        ) from exc
 
-    if drawing["owner_id"] != current_user.id and current_user.role != "admin":
+    if drawing.owner_id != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Forbidden")
 
+    source_url: str | None = None
     try:
         signed_url_response = supabase.storage.from_(
             settings.SUPABASE_STORAGE_BUCKET
-        ).create_signed_url(drawing["storage_path"], expires_in=3600)
-        source_url = signed_url_response.get("signedUrl") or signed_url_response.get(
-            "url"
-        )
+        ).create_signed_url(drawing.storage_path, 3600)
+        if isinstance(signed_url_response, dict):
+            url_val = signed_url_response.get(
+                "signedUrl"
+            ) or signed_url_response.get("url")
+            if isinstance(url_val, str):
+                source_url = url_val
     except Exception:
         source_url = None
 
     expires_at = datetime.now(UTC) + timedelta(seconds=3600)
 
     return {
-        "id": str(drawing["id"]),
-        "owner_id": str(drawing["owner_id"]),
-        "original_file_name": drawing["original_file_name"],
-        "storage_path": drawing["storage_path"],
-        "units": drawing["units"],
-        "status": drawing["status"],
-        "created_at": drawing["created_at"],
+        "id": drawing.id,
+        "owner_id": drawing.owner_id,
+        "original_file_name": drawing.original_file_name,
+        "storage_path": drawing.storage_path,
+        "units": drawing.units,
+        "status": drawing.status,
+        "created_at": drawing.created_at,
         "source_download_url": source_url,
         "source_download_url_expires_at": expires_at,
     }

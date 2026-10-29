@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from src.core.auth import CurrentUser, get_current_user
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/placement", tags=["placement"])
 class PlacementRequest(BaseModel):
     rule_id: str
     room_id: str | None = None
-    polygon: list[list[float]] = Field(..., min_items=3)
+    polygon: list[list[float]] = Field(..., min_length=3)
 
 
 class DeviceResponse(BaseModel):
@@ -37,16 +37,33 @@ async def compute_placement(
         supabase.table("rules").select("*").eq("id", payload.rule_id).single().execute()
     )
 
-    if not rule_response.data:
-        raise HTTPException(status_code=404, detail="Rule not found")
-
     rule_data = rule_response.data
+    if not isinstance(rule_data, dict):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Rule not found",
+        )
+
+    if "id" not in rule_data or "threshold" not in rule_data:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Invalid rule record format",
+        )
+
+    try:
+        threshold_val = float(rule_data["threshold"])
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Invalid rule threshold",
+        ) from exc
+
     room_polygon = [(float(x), float(y)) for x, y in payload.polygon]
 
     rule = RuleRecord(
         id=str(rule_data["id"]),
-        threshold=float(rule_data["threshold"]),
-        status=rule_data.get("status", "needs_review"),
+        threshold=threshold_val,
+        status=str(rule_data.get("status") or "needs_review"),
     )
 
     points = place_devices_from_rule(room_polygon, rule)
