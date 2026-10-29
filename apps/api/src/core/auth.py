@@ -14,6 +14,7 @@ class CurrentUser(BaseModel):
     id: str
     email: str | None = None
     role: str = "engineer"
+    is_active: bool = True
 
 
 async def get_current_user(
@@ -55,7 +56,7 @@ async def get_current_user(
 
     profile_response = (
         admin_client.table("profiles")
-        .select("id, email, role")
+        .select("id, email, role, is_active")
         .eq("id", user.id)
         .single()
         .execute()
@@ -69,8 +70,15 @@ async def get_current_user(
             detail="Profile not found",
         )
 
+    if not profile_data.get("is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User is deactivated",
+        )
+
     return CurrentUser(
         id=str(user.id),
         email=user.email,
         role=profile_data.get("role", "engineer"),
+        is_active=bool(profile_data.get("is_active", True)),
     )
