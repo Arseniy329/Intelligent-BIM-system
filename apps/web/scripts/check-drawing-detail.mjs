@@ -5,6 +5,7 @@
 // Local test server only. Never point a deployed application at this auth stub.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 const output = process.env.BIM_EXPECT_DEMO === "false" ? "tmp/bim63-production" : "tmp/bim63";
@@ -12,10 +13,6 @@ await mkdir(output, { recursive: true });
 const origin = "http://127.0.0.1:4318";
 const app = process.env.BIM_APP_URL ?? "http://localhost:3100";
 const fixture = await readFile("apps/api/tests/fixtures/test_drawing_dxf/01_simple_rooms_mm.dxf", "utf8");
-const rooms = [
-  { id: "r1", name: "Перша кімната", area: 20, polygon: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 5000 }, { x: 0, y: 5000 }] },
-  { id: "r2", name: "Друга кімната", area: 25, polygon: [{ x: 4000, y: 0 }, { x: 9000, y: 0 }, { x: 9000, y: 5000 }, { x: 4000, y: 5000 }] },
-];
 const expires = Math.floor(Date.now() / 1000) + 3600;
 const user = { id: "11111111-1111-4111-8111-111111111111", aud: "authenticated", role: "authenticated", email: "test@example.invalid" };
 const encode = value => Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -29,46 +26,53 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url, origin);
   response.setHeader("Access-Control-Allow-Origin", app);
   response.setHeader("Access-Control-Allow-Headers", "authorization, apikey, x-client-info, content-type");
-  response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
   if (request.method === "OPTIONS") { response.writeHead(204).end(); return; }
   const json = (value, status = 200) => { response.writeHead(status, { "Content-Type": "application/json" }); response.end(JSON.stringify(value)); };
   if (url.pathname === "/auth/v1/user") { json(user); return; }
+  if (url.pathname.startsWith("/signed-upload/")) {
+    assert.equal(request.method, "PUT");
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    states.get(url.pathname.split("/")[2]).file = Buffer.concat(chunks);
+    calls.push({ path: url.pathname, method: request.method });
+    json({}); return;
+  }
   if (url.pathname.startsWith("/file/")) {
     calls.push({ path: url.pathname, revision: url.searchParams.get("revision"), auth: !!request.headers.authorization });
     if (failure === "file") { response.writeHead(403).end(); return; }
-    response.writeHead(200, { "Content-Type": "application/dxf" }); response.end(fixture); return;
+    response.writeHead(200, { "Content-Type": "application/dxf" });
+    response.end(states.get(url.pathname.split("/")[2])?.file ?? fixture); return;
   }
   if (request.headers.authorization !== `Bearer ${token}`) { json({}, 401); return; }
-  const segments = url.pathname.split("/");
-  const id = segments[2];
   calls.push({ path: url.pathname, method: request.method });
-  if (segments[1] === "processing-jobs") {
-    const drawingId = id.replace(/^job-/, "");
-    const state = states.get(drawingId);
-    const complete = drawingId !== "slow" && Date.now() > state.readyAt;
-    if (complete) state.status = drawingId === "failed" ? "error" : "processed";
-    json({ id, drawingId, status: complete ? drawingId === "failed" ? "failed" : "completed" : "processing", errorMessage: null }); return;
-  }
-  if (segments[1] !== "drawings") { json({}, 404); return; }
+  // Exact wire format of BIM-47; no synthetic jobs/results in this HTTP adapter.
+  if (!url.pathname.startsWith("/api/v1/drawings")) { json({}, 404); return; }
+  const segments = url.pathname.split("/");
+  const id = segments[4];
   if (failure === "network") { request.socket.destroy(); return; }
   if (typeof failure === "number") { json({}, failure); return; }
-  let state = states.get(id);
-  if (!state) { state = { status: ["empty", "room-only", "ready"].includes(id) ? "processed" : "uploaded", readyAt: 0 }; states.set(id, state); }
-  if (request.method === "POST") {
-    state.status = "processing"; state.readyAt = Date.now() + 700;
-    // Delay the response to exercise the synchronous double-click lock.
-    setTimeout(() => json({ id: `job-${id}`, drawingId: id, status: "queued", errorMessage: null }), 300); return;
+  if (url.pathname === "/api/v1/drawings" && request.method === "POST") {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const input = JSON.parse(Buffer.concat(chunks).toString());
+    const drawing = { id: "uploaded-from-bim62", owner_id: user.id, original_file_name: input.original_file_name,
+      storage_path: `test/${input.original_file_name}`, units: input.units, status: "uploaded", created_at: "2026-10-29T00:00:00Z" };
+    states.set(drawing.id, drawing);
+    json({ drawing, upload: { url: `${origin}/signed-upload/${drawing.id}`, path: drawing.storage_path, expires_in_seconds: 3600 } }); return;
   }
-  const drawing = { id, ownerId: user.id, originalFileName: `${id}.dxf`, storagePath: `test/${id}.dxf`, status: state.status, createdAt: "2026-10-25T00:00:00Z" };
+  if (!id) { json({}, 404); return; }
+  if (!states.has(id)) states.set(id, { id, owner_id: user.id, original_file_name: `${id}.dxf`, storage_path: `test/${id}.dxf`,
+    status: id === "failed" ? "failed" : id === "processing" ? "processing" : "uploaded", units: "from_file", created_at: "2026-10-29T00:00:00Z" });
+  const state = states.get(id);
+  if (request.method === "POST" && segments[5] === "process") {
+    setTimeout(() => json({ drawing_id: id, status: "accepted", message: "Processing stub accepted. BIM-54/BIM-55/BIM-57 will be connected later." }), 300); return;
+  }
   const link = `${origin}/file/${id}?revision=${++revision}`;
-  const expiry = new Date(Date.now() + (failure === "expired" ? -1000 : 3600000)).toISOString();
-  if (state.status === "processed") json({
-    drawing: { ...drawing, resolvedUnits: "mm" },
-    rooms: id === "empty" ? [] : rooms.map(room => ({ ...room, drawingId: id, type: null, height: null })),
-    devices: ["empty", "room-only"].includes(id) ? [] : [{ id: "smoke", drawingId: id, roomId: "r1", type: "smoke_detector", position: { x: 2000, y: 2500 }, layer: "FIRE_DEVICES" }],
-    downloadUrl: failure === "missing" ? null : link, downloadUrlExpiresAt: expiry,
-  });
-  else json({ ...drawing, units: "mm", sourceDownloadUrl: failure === "missing" ? null : link, sourceDownloadUrlExpiresAt: expiry });
+  json({ id: state.id, owner_id: state.owner_id, original_file_name: state.original_file_name, storage_path: state.storage_path,
+    units: state.units, status: state.status, created_at: state.created_at,
+    source_download_url: failure === "missing" ? null : link,
+    source_download_url_expires_at: new Date(Date.now() + (failure === "expired" ? -1000 : 3600000)).toISOString() });
 });
 await new Promise(resolve => server.listen(4318, "127.0.0.1", resolve));
 const pages = await (await fetch(`${process.env.BIM_CDP_URL ?? "http://127.0.0.1:9334"}/json/list`)).json();
@@ -118,58 +122,60 @@ try {
   await cdp("Network.setCookie", { name: "sb-127-auth-token", value: `base64-${encode(session)}`, url: app, path: "/", sameSite: "Lax" });
   await navigate("/drawings/first"); await ready();
   check("protected ID route opens source DXF before processing", await evaluate(body("Завантажити оригінальний DXF")));
+  check("from_file units stay unresolved", await evaluate(body("очікується визначення з файла")));
+  check("result download is disabled with an explanation", await evaluate("Array.from(document.querySelectorAll('button')).some(b => b.textContent.trim()==='Завантажити DXF результату' && b.disabled) && !!document.querySelector('#result-download-help')"));
   await evaluate("window.__canvas = document.querySelector('canvas')");
-  await evaluate("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Обробити').click(); Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Обробити')?.click()");
-  await until(body("Обробка…"));
-  await until(body("Приміщень: 2 · Сповіщувачів: 1"));
-  check("POST processing updates results and prevents duplicate starts", calls.filter(call => call.path === "/drawings/first/process").length === 1);
-  check("new result retains loaded source canvas", await evaluate("window.__canvas === document.querySelector('canvas')"));
-  check("API rooms and devices reach overlay", await evaluate("document.querySelectorAll('[data-room-id]').length === 2 && document.querySelectorAll('[data-device-id]').length === 1"));
+  await evaluate("const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Обробити'); b.click(); b.click()");
+  await until(body("Обробку не запущено, результат не створено"));
+  await delay(300);
+  const afterAccepted = calls.length;
+  await delay(4300);
+  check("accepted does not start polling or fabricate a result", calls.length === afterAccepted && await evaluate(`${body("Статус: Готове до обробки")} && !document.querySelector('[data-room-id]') && !document.querySelector('[data-device-id]')`));
+  check("duplicate clicks send one POST", calls.filter(call => call.path === "/api/v1/drawings/first/process").length === 1);
   const loads = calls.filter(call => call.path.startsWith("/file/")).length;
-  await click("Приміщення"); await click("Приміщення"); await click("Сповіщувачі"); await click("Сповіщувачі");
   await click("Оновити стан"); await delay(300);
-  check("layer toggles and refreshed signed URLs do not reload DXF", calls.filter(call => call.path.startsWith("/file/")).length === loads && await evaluate("window.__canvas === document.querySelector('canvas')"));
-  await screenshot("result-desktop");
-  // Capture file delivery without leaving artifacts in the user's Downloads folder.
+  check("metadata refresh retains the source canvas", calls.filter(call => call.path.startsWith("/file/")).length === loads && await evaluate("window.__canvas === document.querySelector('canvas')"));
+  await screenshot("source-desktop");
   await evaluate("window.__saved = []; HTMLAnchorElement.prototype.click = function(){window.__saved.push(this.download)}");
   const beforeDownload = calls.length;
-  await click("Завантажити DXF результату"); await until(body("DXF передано браузеру"));
+  await click("Завантажити оригінальний DXF"); await until(body("DXF передано браузеру"));
   const downloadCalls = calls.slice(beforeDownload);
-  check("download GETs fresh metadata then fetches the file without bearer credentials", downloadCalls[0].path === "/drawings/first" && downloadCalls[1].path === "/file/first" && !downloadCalls[1].auth);
-  check("generated DXF uses a distinct filename", await evaluate("window.__saved[0] === 'first-processed.dxf'"));
+  check("download refreshes GET before fetching the source without bearer credentials", downloadCalls[0].path === "/api/v1/drawings/first" && downloadCalls[1].path === "/file/first" && !downloadCalls[1].auth);
+  check("source filename is not relabeled as processed", await evaluate("window.__saved[0] === 'first.dxf'"));
   for (const [mode, message] of [["expired", "Термін дії"], ["missing", "Посилання на цей DXF ще недоступне"], ["file", "Посилання відхилено"]]) {
-    failure = mode; await click("Завантажити DXF результату"); await until(body(message)); check(`download reports ${mode}`);
+    failure = mode; await click("Завантажити оригінальний DXF"); await until(body(message)); check(`download reports ${mode}`);
   }
   failure = null;
   await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await delay(300);
   check("mobile layout fits viewport", await evaluate("document.documentElement.scrollWidth <= innerWidth"));
-  await screenshot("result-mobile");
+  await screenshot("source-mobile");
   await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
-  // Exercise real App Router navigation without a full document reload.
-  await evaluate("window.next.router.push('/drawings/empty')");
-  await until("location.pathname === '/drawings/empty'"); await until(body("Приміщень: 0 · Сповіщувачів: 0"));
-  check("client navigation clears previous drawing overlay", await evaluate("!document.querySelector('[data-room-id]') && !document.querySelector('[data-device-id]')"));
-  await navigate("/drawings/room-only"); await ready();
-  check("rooms without detectors render", await evaluate(`${body("Приміщень: 2 · Сповіщувачів: 0")} && document.querySelectorAll('[data-room-id]').length === 2`));
+  await evaluate("window.next.router.push('/drawings/second')");
+  await until("location.pathname === '/drawings/second'"); await until(body("second.dxf")); await ready();
+  check("client navigation clears previous drawing state", !await evaluate(body("Обробку не запущено, результат не створено")));
   await navigate("/drawings/first"); await ready();
-  check("reopening processed drawing restores results", await evaluate(body("Приміщень: 2 · Сповіщувачів: 1")));
+  check("reopening source drawing works without mock results", !await evaluate("!!document.querySelector('[data-room-id]')"));
   for (const [status, message] of [[401, "Сеанс завершився"], [403, "немає доступу"], [404, "не знайдено"], ["network", "Перевірте з’єднання"]]) {
     failure = status; await navigate(`/drawings/error-${status}`); await until(body(message));
     failure = null; await click("Спробувати знову"); await ready(); check(`GET ${status} recovers through user retry`);
   }
-  await navigate("/drawings/failed"); await ready(); await click("Обробити");
-  await until(body("Не вдалося обробити креслення"));
-  check("failed asynchronous job allows another attempt", await evaluate("Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Обробити' && !b.disabled)"));
-  // Accelerate only the deadline, preserving normal polling intervals.
-  const timerScript = await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "const originalTimer = window.setTimeout; window.setTimeout = (fn, ms, ...args) => originalTimer(fn, ms === 120000 ? 2500 : ms, ...args);" });
-  await navigate("/drawings/slow"); await ready(); await click("Обробити");
-  await until(body("Автоматичне оновлення зупинено"));
-  const afterTimeout = calls.length; await delay(2300);
-  check("polling stops at deadline", calls.length === afterTimeout);
-  await click("Оновити стан"); await delay(100);
-  check("manual refresh resumes status checks", calls.length > afterTimeout);
-  await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier: timerScript.identifier });
+  failure = "missing"; await navigate("/drawings/missing"); await until(body("Файл для перегляду недоступний"));
+  check("missing source URL has an explicit empty state", true);
+  failure = null; await click("Оновити файл"); await ready();
+  await navigate("/drawings/failed"); await ready();
+  check("FastAPI failed status is displayed correctly", await evaluate(body("Статус: Помилка обробки")));
+  await navigate("/drawings/processing"); await ready();
+  const whileProcessing = calls.length; await delay(2300);
+  check("no automatic polling without a jobs capability", calls.length === whileProcessing);
+  await navigate("/upload"); await until("!!document.querySelector('input[type=file]')");
+  const { root } = await cdp("DOM.getDocument");
+  const { nodeId } = await cdp("DOM.querySelector", { nodeId: root.nodeId, selector: "input[type=file]" });
+  await cdp("DOM.setFileInputFiles", { nodeId, files: [fileURLToPath(new URL("../../api/tests/fixtures/test_drawing_dxf/01_simple_rooms_mm.dxf", import.meta.url))] });
+  await evaluate("document.querySelector('form').requestSubmit()");
+  await until("location.pathname === '/drawings/uploaded-from-bim62'"); await ready();
+  check("BIM-62 upload navigates to BIM-63 and renders the uploaded source", await evaluate(body("01_simple_rooms_mm.dxf")) && states.get("uploaded-from-bim62").file.length > 0);
+  check("all drawing requests share /api/v1 and no job endpoint is requested", calls.filter(c=>c.path.includes('drawings')).every(c=>c.path.startsWith('/api/v1/drawings')) && !calls.some(c=>c.path.includes('processing-jobs')));
   await navigate("/drawing-preview?result=true");
   if (process.env.BIM_EXPECT_DEMO === "false") {
     await until("!!document.querySelector('input[type=file]')");
@@ -189,6 +195,6 @@ try {
   }
   check("no uncaught browser exceptions", exceptions.length === 0);
 } finally {
-  await writeFile(`${output}/results.json`, JSON.stringify({ results, exceptions, scope: "Local mocked API/auth; real backend acceptance remains blocked by BIM-47." }, null, 2));
+  await writeFile(`${output}/results.json`, JSON.stringify({ results, exceptions, scope: "Local HTTP fixture matching BIM-47 snake_case/accepted and test auth; no live Supabase acceptance claimed." }, null, 2));
   socket.close(); server.closeAllConnections(); server.close();
 }

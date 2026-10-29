@@ -3,16 +3,16 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import type { DrawingStatus } from "@bim/contracts";
+import type { DrawingStatus, DrawingDetailStatus } from "@bim/contracts";
 import { DrawingViewer, type DrawingViewerProps } from "./drawing-viewer";
 import { EmptyState } from "@/components/ui/empty-state";
 import { drawingApi, drawingErrorMessage, drawingMetadata, downloadLink, fetchDrawingDownload, isDrawingResult,
   type DownloadKind, type DrawingApi, type DrawingResponse } from "@/lib/drawing/drawing-api";
 import { useDrawingDetail } from "@/lib/drawing/use-drawing-detail";
 
-const labels: Record<DrawingStatus, string> = {
+const labels: Record<DrawingStatus | DrawingDetailStatus, string> = {
   pending: "Очікує завантаження", uploaded: "Готове до обробки", processing: "Обробляється",
-  processed: "Оброблено", error: "Помилка обробки",
+  processed: "Оброблено", failed: "Помилка обробки", error: "Помилка обробки",
 };
 const button = "inline-flex min-h-10 items-center justify-center rounded-lg border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-4 py-2 text-sm font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] disabled:cursor-not-allowed disabled:opacity-50";
 const primaryButton = "inline-flex min-h-10 items-center justify-center rounded-lg bg-[var(--bim-color-button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--bim-color-button-primary-text)] hover:bg-[var(--bim-color-button-primary-hover-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] disabled:cursor-not-allowed disabled:bg-[var(--bim-color-button-disabled-bg)] disabled:text-[var(--bim-color-button-disabled-text)]";
@@ -82,31 +82,40 @@ function DrawingDetailContent({ id, api, demo }: { id: string; api: DrawingApi; 
   const metadata = drawingMetadata(data);
   const result = isDrawingResult(data) && metadata.status === "processed" ? data : null;
   const url = previewUrl(data);
-  const kind: DownloadKind = isDrawingResult(data) ? "result" : "source";
+  const resultDownloadAvailable = !!result?.downloadUrl;
   const error = state.detail.error || state.process.error || state.jobError;
   const processingFailed = state.currentJob?.status === "failed";
 
   return (
     <div className="min-w-0 space-y-5">
+      <Link className={button} href="/upload">Завантажити інше креслення</Link>
       {demo && <p role="status" className="rounded-lg border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-subtle)] p-3">Демонстраційний режим. Локальний тестовий DXF та ілюстративні дані; реальна обробка не виконується.</p>}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 space-y-2">
           <h1 className="break-all text-2xl font-semibold">{metadata.originalFileName}</h1>
-          <p role="status">Статус: {state.busy ? "Обробляється" : labels[metadata.status]}</p>
+          <p role="status">Статус: {labels[metadata.status]}</p>
+          {!isDrawingResult(data) && <p className="text-sm text-[var(--bim-color-text-secondary)]">Одиниці: {data.units === "from_file" ? "очікується визначення з файла" : data.units === "mm" ? "міліметри" : "метри"}</p>}
         </div>
         <div className="flex flex-wrap gap-2">
           <button className={primaryButton} onClick={state.start} disabled={state.busy || state.detail.isError || metadata.status === "pending"}>
-            {state.busy ? "Обробка…" : "Обробити"}
+            {state.process.isPending ? "Надсилання запиту…" : state.busy ? "Обробка…" : "Обробити"}
           </button>
-          <button className={button} disabled={download.isPending || kind === "result" && metadata.status !== "processed"}
-            onClick={() => startDownload(kind)}>
-            {download.isPending ? "Завантаження DXF…" : kind === "source" ? "Завантажити оригінальний DXF" : "Завантажити DXF результату"}
+          {!isDrawingResult(data) && <button className={button} disabled={download.isPending}
+            onClick={() => startDownload("source")}>
+            {download.isPending ? "Завантаження DXF…" : "Завантажити оригінальний DXF"}
+          </button>}
+          <button className={button} disabled={download.isPending || !resultDownloadAvailable}
+            aria-describedby={!resultDownloadAvailable ? "result-download-help" : undefined}
+            onClick={() => startDownload("result")}>
+            {download.isPending && isDrawingResult(data) ? "Завантаження DXF…" : "Завантажити DXF результату"}
           </button>
           <button className={button} disabled={state.detail.isFetching} onClick={() => void state.refresh()}>Оновити стан</button>
         </div>
       </div>
+      {!resultDownloadAvailable && <p id="result-download-help" className="text-sm text-[var(--bim-color-text-secondary)]">DXF результату недоступний: сервер ще не надав посилання на оброблений файл. Оригінальний DXF є окремим файлом.</p>}
+      {state.accepted && <p role="status" className="rounded-lg border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-subtle)] p-3">Запит прийнято сервером, але повна обробка ще недоступна. Обробку не запущено, результат не створено.</p>}
       {error && <p role="alert" className={errorMessage}>{drawingErrorMessage(error)}</p>}
-      {(metadata.status === "error" || processingFailed) && <p role="alert" className={errorMessage}>Не вдалося обробити креслення. Спробуйте запустити обробку ще раз.</p>}
+      {(metadata.status === "failed" || metadata.status === "error" || processingFailed) && <p role="alert" className={errorMessage}>Не вдалося обробити креслення. Спробуйте запустити обробку ще раз.</p>}
       {state.timedOut && <p role="status">Автоматичне оновлення зупинено через 2 хвилини. Обробка може тривати на сервері. Натисніть «Оновити стан», щоб перевірити результат.</p>}
       {download.isError && <p role="alert" className={errorMessage}>{drawingErrorMessage(download.error)}</p>}
       {download.isSuccess && <p role="status">DXF передано браузеру для збереження.</p>}

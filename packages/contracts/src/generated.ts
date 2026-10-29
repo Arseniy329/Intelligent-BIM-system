@@ -5,6 +5,7 @@
  */
 export type DrawingUnits = "mm" | "m";
 export type DrawingStatus = "pending" | "uploaded" | "processing" | "processed" | "error";
+export type DrawingDetailStatus = "pending" | "uploaded" | "processing" | "processed" | "failed";
 /**
  * Одиниці, задані користувачем, або команда визначити їх із DXF
  */
@@ -42,8 +43,8 @@ export interface DrawingDetailResponse {
   ownerId: string;
   originalFileName: string;
   storagePath: string;
-  units: RequestedDrawingUnits;
-  status: DrawingStatus;
+  units: DrawingUnits;
+  status: DrawingDetailStatus;
   createdAt: string;
   sourceDownloadUrl?: string | null;
   sourceDownloadUrlExpiresAt?: string | null;

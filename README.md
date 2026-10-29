@@ -11,7 +11,7 @@
 ```text
 apps/
   web/                 Next.js інтерфейс
-  api/                 місце для FastAPI (BIM-53)
+  api/                 FastAPI: креслення, CAD-парсер і розміщення пристроїв
 packages/
   contracts/           JSON Schema, TypeScript-типи та приклади JSON
 docs/                   архітектурні й процесні документи
@@ -47,16 +47,11 @@ npm run build
 
 ## Supabase setup
 
-1. Create Supabase project.
-2. Enable Email + password auth:
-   - Authentication → Providers → Email
-   - Enable Email sign in
-3. Create bucket:
-   - Storage → Create bucket
-   - Bucket name: `drawings`
-   - Private: yes
-   - File size limit: 50 MB
+1. Create a Supabase project and enable Email + password authentication.
+2. Create a private Storage bucket named `drawings` with a 50 MB file size limit.
+3. Set its name in `SUPABASE_STORAGE_BUCKET` in your local/server environment.
 4. Run migrations:
+
    ```bash
    supabase db push
    ```
@@ -64,3 +59,19 @@ npm run build
 For a database where `001` and `002` have already run, apply `003` as a new migration.
 Review existing `admin` profiles separately: a role assigned before this fix cannot
 be distinguished automatically from a legitimate administrator.
+
+## BIM-62 → BIM-63
+
+Після upload сторінка `/drawings/[id]` отримує метадані через
+`GET /api/v1/drawings/{id}`, відкриває оригінальний DXF у DrawingViewer
+і дозволяє скачати його після повторного GET для актуального signed URL.
+`NEXT_PUBLIC_API_URL` задає адресу API-сервера. Спільний клієнт використовує
+префікс `/api/v1` рівно один раз, зокрема для конфігурації, що вже містить цей префікс.
+
+`POST /api/v1/drawings/{id}/process` наразі повертає HTTP 200 `accepted`:
+це заглушка, яка не запускає обробку. Jobs endpoint, результат із приміщеннями
+та пристроями й URL згенерованого DXF ще не підключені до цього потоку.
+Клієнт пояснює обмеження, не запускає polling і не підміняє результат оригіналом.
+
+Деморежим, межі перевірки та інструкції тестів описані в
+[README DrawingViewer/BIM-63](apps/web/components/drawing/README.md#bim-63--інтеграція-bim-47bim-62-29102026).

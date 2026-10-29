@@ -6,7 +6,7 @@ import type { DrawingViewerProps } from "@/components/drawing/drawing-viewer";
 import { DrawingDetail } from "@/components/drawing/drawing-detail";
 import DrawingPage from "../app/(protected)/drawings/[id]/page";
 import { DEMO_RESULT } from "@/lib/drawing/demo-drawing";
-import { DrawingApiError } from "@/lib/drawing/drawing-api";
+import { ApiHttpError } from "@/lib/api";
 
 const { state, viewer } = vi.hoisted(() => ({ state: { value: {} as Record<string, unknown> }, viewer: vi.fn() }));
 vi.mock("@/lib/drawing/use-drawing-detail", () => ({ useDrawingDetail: () => state.value }));
@@ -52,7 +52,7 @@ it("shows loading and distinct access errors with retry", () => {
   state.value.detail = { isPending: true };
   expect(render(<DrawingDetail id="one" />)).toContain("Завантаження креслення…");
   for (const [status, message] of [[401, "Сеанс завершився"], [403, "немає доступу"], [404, "не знайдено"]] as const) {
-    state.value.detail = { error: new DrawingApiError(status) };
+    state.value.detail = { error: new ApiHttpError(status) };
     const html = render(<DrawingDetail id="one" />);
     expect(html).toContain(message);
     expect(html).toContain("Спробувати знову");
@@ -64,9 +64,29 @@ it("shows a bounded polling timeout with a manual refresh", () => {
 });
 
 it("hides cached drawing data after access is revoked", () => {
-  state.value.detail = { data: result, isError: true, error: new DrawingApiError(403) };
+  state.value.detail = { data: result, isError: true, error: new ApiHttpError(403) };
   const html = render(<DrawingDetail id={result.drawing.id} />);
   expect(html).toContain("немає доступу");
   expect(html).not.toContain(result.drawing.originalFileName);
   expect(viewer).not.toHaveBeenCalled();
+});
+
+it("shows the real source, failed status, unresolved units and disabled result download", () => {
+  state.value.detail = { data: { id: "one", originalFileName: "one.dxf", units: "from_file", status: "failed", sourceDownloadUrl: result.downloadUrl, sourceDownloadUrlExpiresAt: result.downloadUrlExpiresAt } };
+  const html = render(<DrawingDetail id="one" />);
+  expect(html).toContain("Статус: Помилка обробки");
+  expect(html).toContain("очікується визначення з файла");
+  expect(html).toContain("Завантажити оригінальний DXF");
+  expect(html).toMatch(/disabled="" aria-describedby="result-download-help">Завантажити DXF результату/);
+  expect(html).toContain('href="/upload"');
+  expect(viewer.mock.calls[0][0].rooms).toBeUndefined();
+});
+
+it("explains accepted without presenting a processing result", () => {
+  state.value.detail = { data: { id: "one", originalFileName: "one.dxf", units: "mm", status: "uploaded" } };
+  state.value.accepted = true;
+  const html = render(<DrawingDetail id="one" />);
+  expect(html).toContain("Обробку не запущено, результат не створено");
+  expect(html).toContain("Статус: Готове до обробки");
+  expect(html).not.toContain("Приміщень: 3");
 });

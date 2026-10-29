@@ -474,126 +474,118 @@ npm пропонує eslint-config-next 14.2.35 як major fix. Пониженн
 інтеграція FastAPI після погодження з Дарією та перевірка трьох DXF
 на хостингу після публікації. Публікацію, BIM-60/63 та Backend не виконували.
 
-## BIM-63 — сторінка результату (25.10.2026)
+## BIM-63 — інтеграція BIM-47/BIM-62 (29.10.2026)
 
-`/drawings/[id]` розташована у `(protected)` і успадковує чинну перевірку
-Supabase та AppShell. `DrawingDetail` використовує TanStack Query через
-`useDrawingDetail`; `drawing-api.ts` надсилає запити через наявний `apiFetch`.
-DrawingViewer, DrawingOverlay, камера, координати й інструменти BIM-59/60
-не змінювалися. Приміщення та пристрої передаються без перетворення координат;
-площі вже задані контрактом у м².
+Маршрут `/drawings/[id]` зберігає повний `DrawingDetail` BIM-63 та отримує ID
+після upload BIM-62. Наявний `(protected)/layout.tsx` забезпечує Supabase
+авторизацію й AppShell. DrawingViewer, DrawingOverlay, камера та координати
+BIM-59/60 не змінювалися. Посилання «Завантажити інше креслення» повертає на `/upload`.
 
-Після POST клієнт опитує документований `GET /processing-jobs/{id}` кожні
-2 секунди, максимум 2 хвилини. Паралельно оновлює деталі креслення; це також
-дозволяє відкрити сторінку вже запущеної обробки без збереженого job ID.
-Термінальний job оновлює GET креслення. Тайм-аут не скасовує серверну обробку:
-користувач може продовжити перевірку кнопкою «Оновити стан».
-Таймер очищується, запити перериваються при зміні ID/демонтуванні;
-після тайм-ауту скасовуються поточні GET. Повторний POST блокується також
-синхронним блокуванням подвійного натискання.
+### Фактичний API
 
-Ключі кешу містять ID та режим API/demo; піддерево сторінки перемонтовується
-при зміні ID. Підписані URL зберігаються лише в оперативній пам’яті;
-невикористаний query видаляється одразу. Уже відкритий план залишається
-на місці при оновленні підписаного URL або шарів. «Оновити файл» отримує
-нові деталі та явно перезавантажує перегляд.
+Спільний `lib/api.ts` надає `apiFetch`, Supabase access token, `ApiHttpError`
+і шлях `DRAWINGS_API_PATH`. BIM-62 та BIM-63 використовують `/api/v1/drawings`.
+`NEXT_PUBLIC_API_URL` рекомендовано задавати як origin API; клієнт також
+не подвоює `/api/v1`, якщо цей префікс уже присутній у базовій адресі.
 
-Кнопка завантаження завжди робить свіжий GET, перевіряє URL і строк дії,
-завантажує blob без API bearer token і передає його браузеру для збереження.
-Object URL звільняється. Відсутній URL, прострочення, HTTP-помилки та порожній
-файл мають окремі повідомлення. Оригінал і результат мають різні підписи кнопок
-та імена файлів. Посилання оригіналу ніколи не використовується замість результату.
+`GET /api/v1/drawings/{id}` реально існує й повертає плоску Pydantic-модель
+у snake_case: `owner_id`, `original_file_name`, `storage_path`, `created_at`,
+`source_download_url`, `source_download_url_expires_at`, а також `id`, `units`,
+`status`. `normalizeDrawingDetail` перевіряє ID/поля і переводить назви в camelCase.
+Дати FastAPI передає як рядки. Статус помилки деталей — `failed`, не `error`.
 
-### Залежності від BIM-47 і межі перевірки
+FastAPI зберігає `units: "from_file"` до визначення одиниць. Клієнт зберігає
+це значення й показує «очікується визначення з файла», не підміняючи його `mm`.
+Спільний `DrawingDetailResponse` поки звужує units до `mm | m`; локальний тип
+`DrawingDetail = Omit<DrawingDetailResponse, "units"> & { units: RequestedDrawingUnits }`
+описує цю відмінність без зміни схем чи generated-файлів.
 
-У поточному checkout `apps/api/src/modules/drawings/router.py` містить лише
-порожній APIRouter. Endpoint’ів GET/POST креслень і processing jobs ще немає.
-Тому перевірено готовність фронтенд-клієнта та інтеграцію з локальним тестовим
-HTTP API; наскрізну роботу з реальним бекендом/сховищем не підтверджено.
+`POST /api/v1/drawings/{id}/process` повертає HTTP 200 із
+`{ drawing_id, status: "accepted", message }`. Це `ProcessingAccepted`,
+а не `ProcessingJob`: заглушка не створює job, не змінює статус креслення
+й не запускає повний пайплайн. UI показує: «Запит прийнято сервером, але повна
+обробка ще недоступна. Обробку не запущено, результат не створено».
+Клієнт один раз оновлює деталі після POST; автоматичного polling немає.
+Повторне натискання під час запиту блокується, включно з подвійним click.
 
-Контракти BIM-61 описують дві різні форми `GET /drawings/{id}`:
+Реальний адаптер навмисно не має `getJob`: `/processing-jobs/{id}` відсутній.
+Опитування кожні 2 секунди з лімітом 2 хвилини збережене тільки для адаптера
+з підтримкою jobs — зараз це явний локальний деморежим. Статус `processing`
+у реальному GET сам по собі не вмикає polling. «Оновити стан» працює вручну.
+Запити перериваються, а таймери очищуються при зміні ID/демонтуванні.
 
-- `DrawingDetailResponse`: плоскі метадані, `units`, `sourceDownloadUrl` і
-  `sourceDownloadUrlExpiresAt`; немає Room[]/Device[] чи URL результату.
-- `DrawingResult`: `drawing` з `resolvedUnits`, `rooms`, `devices`,
-  `downloadUrl` і `downloadUrlExpiresAt`; немає URL оригіналу.
+### Оригінал і результат
 
-Клієнт приймає ці наявні форми як union і перевіряє відповідність ID.
-Нового endpoint або власної об’єднаної API-схеми не додано. Потрібно погодити
-остаточну форму GET та доступність оригіналу після обробки. Якщо GET повертає
-лише метадані зі статусом processed, сторінка прямо повідомляє, що результат
-ще недоступний. Якщо повернуто DrawingResult без downloadUrl, збережений
-у поточному перегляді оригінал залишається відкритим; після нового відкриття
-сторінки файл недоступний, доки API не надасть URL. Це залежність контракту,
-а не привід вигадувати production URL.
+Оригінал відкривається за `sourceDownloadUrl`, навіть без обробки. Кеш містить
+ID і режим API/demo; стан сторінки скидається при зміні ID. Уже завантажений
+DXF не перезавантажується через ротацію signed URL чи перемикання шарів.
+«Оновити файл» отримує свіжі деталі й явно оновлює перегляд.
 
-Для повного приймання потрібні готові endpoint’и BIM-47, фактичний згенерований
-DXF і CORS сховища, що дозволяє читати файл через fetch. Перевірки на хостингу
-та реального Supabase не виконувалися. Реальних секретів у тестах немає.
+«Завантажити оригінальний DXF» завжди спочатку робить GET, перевіряє URL і expiry,
+а потім читає файл без bearer token API. Blob URL звільняється після передачі
+браузеру. Відсутній URL, прострочення, HTTP-помилки та порожній файл обробляються
+окремо. Signed URL не записуються в localStorage і не логуються клієнтом.
 
-### Явний деморежим без бекенду
+GET наразі не повертає Room[]/Device[] або URL обробленого DXF.
+Кнопка «Завантажити DXF результату» вимкнена, доки немає готового результату
+з власним downloadUrl; поруч є пояснення. `sourceDownloadUrl` не використовується
+замість нього. Фронтенд не створює згенерований DXF.
+Навіть GET зі статусом processed без результату не створює фіктивних масивів.
 
-1. Задати `NEXT_PUBLIC_DRAWING_DEMO=true` у локальному середовищі.
-2. Запустити `npm.cmd run dev --workspace @bim/web -- --port 3100`.
-3. Відкрити `http://localhost:3100/drawing-preview?result=true` і натиснути
-   «Відкрити демо результату», потім «Обробити».
+BIM-54 має окремий `/api/v1/cad/extract-rooms`; він ще не підключений до `/process`.
+Автоматичний розрахунок, jobs, отримання результату й згенерованого DXF залишаються
+залежними від бекенду. Бекенд Дарії в цій інтеграції не редагувався.
 
-Демо повторно використовує DXF та Room[]/Device[] BIM-60. Перемикач ID дозволяє
-перевірити порожній результат, кімнати без пристроїв, помилку обробки,
-відсутні/протерміновані посилання та HTTP/мережеві помилки.
-Сценарії з результатами починаються з оригінального файла; натискання
-«Обробити» імітує фонову задачу. Демо не має згенерованого DXF: його URL
-навмисно null, оригінал не видається за результат.
+### Деморежим
 
-Обидва opt-in потрібні лише для development/test. У production прапорець
-ігнорується, а `/drawing-preview` вимагає чинну сесію, як і раніше.
-`/drawings/[id]` вимагає авторизацію в усіх середовищах. Деморежим не змінює
-ProtectedLayout, proxy або відповіді реального API.
+Задати `NEXT_PUBLIC_DRAWING_DEMO=true`, запустити development-сервер і відкрити
+`/drawing-preview?result=true`. Кнопка «Відкрити демо результату» використовує
+локальний DXF та Room[]/Device[] BIM-60, без мережевого API. Перемикання ID
+перевіряє порожні результати, кімнати без пристроїв, failed, відсутні й прострочені
+посилання та HTTP/мережеві помилки. Згенерованого DXF у демо немає: downloadUrl=null.
 
-### Автоматична перевірка
+Production ігнорує прапорець. `/drawings/[id]` завжди захищений; production
+`/drawing-preview` також вимагає сесію. Моки не підміняють production-відповіді.
 
-- З кореня: `npm.cmd run lint`, `npm.cmd run typecheck`, `npm.cmd run test`,
-  `npm.cmd run build`. У PowerShell використовується `.cmd`, бо виконання
-  npm.ps1 заборонено локальною execution policy.
-- Vitest: 95 вебтестів і 7 тестів контрактів успішні.
-- `node apps/web/scripts/check-drawing-detail.mjs`: Chrome CDP, локальний
-  HTTP API та Supabase stub на 127.0.0.1:4318, 25 перевірок development.
-  Параметри запуску Next зазначені на початку скрипта. Потрібен Chrome CDP
-  на 9334; нових npm-залежностей не встановлено.
-- Production: build із тими ж тестовими env і `NEXT_PUBLIC_DRAWING_DEMO=true`,
-  `next start` на 3101; запустити скрипт із `BIM_APP_URL=http://localhost:3101`
-  та `BIM_EXPECT_DEMO=false`. Перевіряється реальний production bundle,
-  захист маршруту та відсутність нового деморежиму навіть із прапорцем;
-  усі 25 перевірок успішні.
+### Перевірки та відтворення
+
+- `npm.cmd run lint`, `npm.cmd run typecheck`, `npm.cmd run test`, `npm.cmd run build`.
+  У PowerShell `.cmd` обходить локальну заборону виконання npm.ps1.
+- 102 вебтести та 7 тестів контрактів: префікс BIM-62/BIM-63, snake_case,
+  failed/from_file, accepted, авторизація, помилки, новий GET перед download,
+  відсутній URL, disabled result, деморежим і production-захист.
+- `node apps/web/scripts/check-drawing-detail.mjs`: HTTP fixture повторює
+  фактичний формат BIM-47 (snake_case та accepted, без jobs/results).
+  Браузер перевіряє відсутність polling, завантаження оригіналу, помилки,
+  перемикання ID, mobile та повний перехід через форму upload BIM-62.
+- Для скрипта потрібні Chrome CDP на 9334 і Next dev на 3100 із тестовими env,
+  зазначеними на початку скрипта. Скрипт сам запускає локальний API/auth stub
+  на 127.0.0.1:4318. Реальних секретів немає.
+- Production: build із тими ж env, `next start` на 3101, скрипт із
+  `BIM_APP_URL=http://localhost:3101` і `BIM_EXPECT_DEMO=false`. Навіть із
+  `NEXT_PUBLIC_DRAWING_DEMO=true` перевіряються авторизація та вимкнений новий деморежим.
 - `node apps/web/scripts/check-drawing-overlay.mjs`: регресії BIM-59/60,
-  pan/zoom/fit, шари, tooltip, WebGL retry, локальні DXF і повторне відкриття
-  важкого DXF 9 506 254 байтів. Усі 73 перевірки успішні.
-  Файл не змінювався й не додавався до Git.
-- Локальні звіти/скриншоти: `tmp/bim63/`, `tmp/bim63-production/` та
-  `tmp/bim60-layer-browser/` (виключені з Git). Браузерні перевірки headless,
-  без ручного приймання нативного діалогу збереження Windows.
+  DXF-фікстури, TEXT/MTEXT, pan/zoom/fit, tooltip, шари, WebGL retry і важкий DXF.
+- Next build/dev виконуються з копії tracked worktree у `tmp/bim63-merge-verify`,
+  щоб генератор Next не змінив виключений `apps/web/next-env.d.ts`. Копія не містить
+  локальних `.env` чи важкого untracked DXF; npm-залежності надані junction.
+  Браузерні скрипти запускаються з оригінального кореня й читають локальні фікстури.
+- Звіти та скриншоти: `tmp/bim63/`, `tmp/bim63-production/`, `tmp/bim60-layer-browser/`.
+  Це headless-перевірки з локальним HTTP API/auth, а не приймання з живим Supabase
+  чи ручним діалогом збереження Windows. Сховище/CORS і фактичні 401/403/404
+  потрібно перевірити на цільовому середовищі. Зокрема `.single()` у бекенді
+  може кинути виняток раніше явного 404 — клієнт обробляє також загальну помилку.
 
-### Файли для рев’ю та майбутнього коміту
+Результат цього проходу: lint/typecheck/test/build успішні; 109 автоматичних
+тестів, 27 браузерних перевірок development, 27 production та 73 регресійні
+перевірки BIM-59/60. Неперехоплених браузерних винятків немає.
 
-Створено:
+### Межі merge
 
-- `apps/web/app/(protected)/drawings/[id]/page.tsx`
-- `apps/web/components/drawing/drawing-detail.tsx`
-- `apps/web/components/drawing/drawing-result-demo.tsx`
-- `apps/web/lib/drawing/drawing-api.ts`
-- `apps/web/lib/drawing/use-drawing-detail.ts`
-- `apps/web/lib/drawing/demo-api.ts`
-- `apps/web/lib/drawing/demo-mode.ts`
-- `apps/web/tests/drawing-api.test.ts`
-- `apps/web/tests/drawing-detail.test.tsx`
-- `apps/web/scripts/check-drawing-detail.mjs`
-
-Змінено:
-
-- `.env.example`
-- `apps/web/app/drawing-preview/page.tsx`
-- `apps/web/tests/drawing-preview-page.test.tsx`
-- `apps/web/components/drawing/README.md`
-
-Backend, контракти, залежності та локальний важкий DXF не входять до змін.
-Commit, push і PR не створювалися.
+Контрольна точка — `0a058f7`, вхідна dev — `16e8a54`. Конфлікт маршруту розв’язано
+зі збереженням DrawingDetail; `.env.example` містить порожні поля конфігурації
+та `NEXT_PUBLIC_DRAWING_DEMO=false`. Кореневий README очищено від старих маркерів
+конфлікту та конкретної конфігурації Supabase. Ключі в Supabase й Git-історія
+не змінювалися; їх опрацьовують власники сервісів.
+`next-env.d.ts` і важкий DXF не змінюються та не додаються до індексу.
+Merge залишається без фінального коміту; push і PR не виконуються.
