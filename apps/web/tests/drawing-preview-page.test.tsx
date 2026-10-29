@@ -12,6 +12,7 @@ vi.mock("@/lib/supabase/server", () => ({
 }));
 vi.mock("next/navigation", () => ({ redirect: vi.fn(() => { throw new Error("redirect:/login"); }) }));
 vi.mock("@/components/drawing/drawing-preview", () => ({ DrawingPreview: () => <div>Drawing preview</div> }));
+vi.mock("@/components/drawing/drawing-result-demo", () => ({ DrawingResultDemo: () => <div>Drawing result demo</div> }));
 vi.mock("@/components/layout/app-shell", () => ({ AppShell: ({ children }: { children: ReactNode }) => <main>{children}</main> }));
 
 beforeEach(() => { vi.clearAllMocks(); getClaims.mockResolvedValue({ data: null, error: null }); });
@@ -46,4 +47,22 @@ it("keeps other protected routes authenticated in development", async () => {
   vi.stubEnv("NODE_ENV", "development");
   await expect(ProtectedLayout({ children: "Upload" })).rejects.toThrow("redirect:/login");
   expect(getClaims).toHaveBeenCalledOnce();
+});
+
+it("opens the result harness only with both explicit development opt-ins", async () => {
+  vi.stubEnv("NODE_ENV", "development");
+  vi.stubEnv("NEXT_PUBLIC_DRAWING_DEMO", "true");
+  expect(renderToStaticMarkup(await DrawingPreviewPage({ searchParams: Promise.resolve({ result: "true" }) }))).toContain("Drawing result demo");
+  expect(renderToStaticMarkup(await DrawingPreviewPage())).toContain("Drawing preview");
+  vi.stubEnv("NEXT_PUBLIC_DRAWING_DEMO", "false");
+  expect(renderToStaticMarkup(await DrawingPreviewPage({ searchParams: Promise.resolve({ result: "true" }) }))).toContain("Drawing preview");
+});
+
+it("keeps production authentication and disables result mocks even with the demo flag", async () => {
+  vi.stubEnv("NODE_ENV", "production");
+  vi.stubEnv("NEXT_PUBLIC_DRAWING_DEMO", "true");
+  await expect(DrawingPreviewPage({ searchParams: Promise.resolve({ result: "true" }) })).rejects.toThrow("redirect:/login");
+  await expect(ProtectedLayout({ children: "Drawing" })).rejects.toThrow("redirect:/login");
+  getClaims.mockResolvedValue({ data: { claims: { sub: "test-user" } }, error: null });
+  expect(renderToStaticMarkup(await DrawingPreviewPage({ searchParams: Promise.resolve({ result: "true" }) }))).toContain("Drawing preview");
 });
