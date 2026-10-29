@@ -54,9 +54,7 @@ def _good_fixtures():
     if not FIXTURES_DIR.exists():
         return []
     return sorted(
-        path
-        for path in FIXTURES_DIR.glob("*.dxf")
-        if "bad" not in path.name.lower()
+        path for path in FIXTURES_DIR.glob("*.dxf") if "bad" not in path.name.lower()
     )
 
 

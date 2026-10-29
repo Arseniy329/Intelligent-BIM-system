@@ -33,9 +33,7 @@ def test_l_shape_room():
         point = Point(device.x, device.y)
         polygon = __import__("shapely.geometry").geometry.Polygon(room)
         assert (
-            polygon.contains(point)
-            or polygon.touches(point)
-            or polygon.covers(point)
+            polygon.contains(point) or polygon.touches(point) or polygon.covers(point)
         )
 
 

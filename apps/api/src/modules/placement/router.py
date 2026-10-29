@@ -34,11 +34,7 @@ async def compute_placement(
     supabase = get_supabase_client_for_settings(settings)
 
     rule_response = (
-        supabase.table("rules")
-        .select("*")
-        .eq("id", payload.rule_id)
-        .single()
-        .execute()
+        supabase.table("rules").select("*").eq("id", payload.rule_id).single().execute()
     )
 
     if not rule_response.data:
@@ -63,6 +59,4 @@ async def compute_placement(
     if rows:
         supabase.table("devices").insert(rows).execute()
 
-    return {
-        "devices": [{"x": p.x, "y": p.y, "rule_id": p.rule_id} for p in points]
-    }
+    return {"devices": [{"x": p.x, "y": p.y, "rule_id": p.rule_id} for p in points]}

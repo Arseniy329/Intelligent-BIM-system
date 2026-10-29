@@ -45,11 +45,9 @@ async def create_drawing(
     drawing_data = inserted.data[0]
 
     try:
-        upload_response = (
-            supabase.storage
-            .from_(settings.SUPABASE_STORAGE_BUCKET)
-            .create_signed_upload_url(storage_path, expires_in=3600)
-        )
+        upload_response = supabase.storage.from_(
+            settings.SUPABASE_STORAGE_BUCKET
+        ).create_signed_upload_url(storage_path, expires_in=3600)
         signed_url = upload_response.get("signedUrl") or upload_response.get("url")
     except Exception as exc:
         raise HTTPException(
@@ -111,11 +109,7 @@ async def process_drawing(
     supabase = get_supabase_client()
 
     drawing_response = (
-        supabase.table("drawings")
-        .select("*")
-        .eq("id", drawing_id)
-        .single()
-        .execute()
+        supabase.table("drawings").select("*").eq("id", drawing_id).single().execute()
     )
 
     if not drawing_response.data:
@@ -130,8 +124,7 @@ async def process_drawing(
         "drawing_id": drawing_id,
         "status": "accepted",
         "message": (
-            "Processing stub accepted. "
-            "BIM-54/BIM-55/BIM-57 will be connected later."
+            "Processing stub accepted. BIM-54/BIM-55/BIM-57 will be connected later."
         ),
     }
 
@@ -144,11 +137,7 @@ async def get_drawing_detail(
     supabase = get_supabase_client()
 
     drawing_response = (
-        supabase.table("drawings")
-        .select("*")
-        .eq("id", drawing_id)
-        .single()
-        .execute()
+        supabase.table("drawings").select("*").eq("id", drawing_id).single().execute()
     )
 
     if not drawing_response.data:
@@ -160,14 +149,11 @@ async def get_drawing_detail(
         raise HTTPException(status_code=403, detail="Forbidden")
 
     try:
-        signed_url_response = (
-            supabase.storage
-            .from_(settings.SUPABASE_STORAGE_BUCKET)
-            .create_signed_url(drawing["storage_path"], expires_in=3600)
-        )
-        source_url = (
-            signed_url_response.get("signedUrl")
-            or signed_url_response.get("url")
+        signed_url_response = supabase.storage.from_(
+            settings.SUPABASE_STORAGE_BUCKET
+        ).create_signed_url(drawing["storage_path"], expires_in=3600)
+        source_url = signed_url_response.get("signedUrl") or signed_url_response.get(
+            "url"
         )
     except Exception:
         source_url = None
