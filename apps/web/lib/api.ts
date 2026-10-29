@@ -1,5 +1,7 @@
-import type { DrawingStatus, RequestedDrawingUnits } from "@bim/contracts";
+import type { DrawingDetailStatus, RequestedDrawingUnits } from "@bim/contracts";
 import { createClient } from "@/lib/supabase/client";
+
+export const DRAWINGS_API_PATH = "/api/v1/drawings";
 
 export class ApiAuthenticationError extends Error {
   constructor() {
@@ -50,7 +52,7 @@ export interface NormalizedDrawingRecord {
   originalFileName: string;
   storagePath: string;
   units: RequestedDrawingUnits;
-  status: DrawingStatus;
+  status: DrawingDetailStatus;
   createdAt: string;
 }
 
@@ -100,7 +102,9 @@ function getApiUrl(path: string): URL {
   const baseUrl = getApiBaseUrl();
   const basePath = baseUrl.pathname.replace(/\/{2,}/g, "/").replace(/\/+$/, "");
   try {
-    const url = new URL(`${baseUrl.origin}${basePath}${path}`);
+    // Accept an existing /api/v1 base configuration without doubling its prefix.
+    const endpoint = basePath.endsWith("/api/v1") && path.startsWith("/api/v1/") ? path.slice("/api/v1".length) : path;
+    const url = new URL(`${baseUrl.origin}${basePath}${endpoint}`);
 
     if (url.origin !== baseUrl.origin || (basePath && !url.pathname.startsWith(`${basePath}/`))) {
       throw new ApiPathError();
@@ -163,7 +167,7 @@ export function normalizeCreateDrawingResponse(
         rawDrawing.storagePath ?? rawDrawing.storage_path ?? "",
       ),
       units: (rawDrawing.units ?? "mm") as RequestedDrawingUnits,
-      status: (rawDrawing.status ?? "uploaded") as DrawingStatus,
+      status: (rawDrawing.status ?? "uploaded") as DrawingDetailStatus,
       createdAt: String(rawDrawing.createdAt ?? rawDrawing.created_at ?? ""),
     },
     upload: {
@@ -190,7 +194,7 @@ export async function createDrawing(
     units: input.units,
   };
 
-  const response = await apiFetch("/api/v1/drawings", {
+  const response = await apiFetch(DRAWINGS_API_PATH, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
