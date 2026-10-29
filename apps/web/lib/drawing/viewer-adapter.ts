@@ -1,5 +1,5 @@
 import { DxfViewer, type DxfViewerLoadParams } from "dxf-viewer";
-import { Color, Vector3 } from "three";
+import { Color, RawShaderMaterial, Vector3, type WebGLRenderer } from "three";
 import tokens from "../../../../tokens.json";
 import { DRAWING_FONT_URLS } from "./fonts";
 
@@ -22,10 +22,30 @@ export interface DrawingViewportController {
 /** Narrow public library boundary also used by the camera/lifecycle tests. */
 export type ViewerPort = Pick<
   DxfViewer,
-  | "Load" | "Destroy" | "GetOrigin" | "GetBounds" | "GetCamera"
+  | "Load" | "Destroy" | "GetOrigin" | "GetBounds" | "GetCamera" | "GetScene"
   | "SetView" | "FitView" | "Render" | "SetSize"
   | "SceneToCanvasCoord" | "CanvasToSceneCoord" | "Subscribe" | "Unsubscribe"
->;
+> & { GetRenderer(): Pick<WebGLRenderer, "getPixelRatio" | "setPixelRatio"> | null };
+
+/** Recolour the existing batches through the public scene API; retain instancing and shaders.
+ * The library batches TEXT/MTEXT and geometry by colour, not semantic entity type, so use
+ * the primary line token for both. Secondary/text tokens cannot reliably identify those batches.
+ * Only the DXF scene is touched; BIM-60's DOM/SVG overlay keeps its own colours.
+ */
+function applyDrawingPalette(viewer: ViewerPort) {
+  const seen = new Set<RawShaderMaterial>();
+  viewer.GetScene().traverse(object => {
+    if (!("material" in object)) return;
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    for (const material of materials) {
+      if (!(material instanceof RawShaderMaterial) || seen.has(material)) continue;
+      seen.add(material);
+      const color = material.uniforms.color?.value;
+      if (color instanceof Color) color.set(tokens.color.plan.dxfPrimaryLine);
+    }
+  });
+  viewer.Render();
+}
 
 export class DrawingViewerAdapter implements DrawingViewportController {
   private ready = false;
@@ -57,6 +77,7 @@ export class DrawingViewerAdapter implements DrawingViewportController {
       if (!this.viewer.GetBounds()) {
         throw new Error("DXF не містить геометрії для відображення.");
       }
+      applyDrawingPalette(this.viewer);
       this.ready = true;
       this.notify();
     } finally {
@@ -123,6 +144,15 @@ export class DrawingViewerAdapter implements DrawingViewportController {
     this.viewer.SetSize(Math.floor(width), Math.floor(height));
   }
 
+  setPixelRatio(ratio: number): void {
+    if (this.disposed || !Number.isFinite(ratio) || ratio <= 0) return;
+    const renderer = this.viewer.GetRenderer();
+    if (!renderer || renderer.getPixelRatio() === ratio) return;
+    // Three updates the physical buffer using its existing CSS size. No camera change or Load.
+    renderer.setPixelRatio(ratio);
+    this.viewer.Render();
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -160,14 +190,28 @@ export function createDrawingViewerAdapter(container: HTMLElement): DrawingViewe
   }
 
   const canvas = viewer.GetCanvas();
+  let resolution = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  const updatePixelRatio = () => {
+    adapter.setPixelRatio(window.devicePixelRatio);
+    resolution.removeEventListener("change", updatePixelRatio);
+    resolution = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    resolution.addEventListener("change", updatePixelRatio);
+  };
   const observer = new ResizeObserver((entries) => {
     const entry = entries[0];
-    if (entry) adapter.resize(entry.contentRect.width, entry.contentRect.height);
+    if (entry) {
+      adapter.setPixelRatio(window.devicePixelRatio);
+      adapter.resize(entry.contentRect.width, entry.contentRect.height);
+    }
   });
   const adapter = new DrawingViewerAdapter(viewer, () => {
     observer.disconnect();
+    resolution.removeEventListener("change", updatePixelRatio);
+    window.removeEventListener("resize", updatePixelRatio);
     canvas.remove();
   });
   observer.observe(container);
+  resolution.addEventListener("change", updatePixelRatio);
+  window.addEventListener("resize", updatePixelRatio);
   return adapter;
 }

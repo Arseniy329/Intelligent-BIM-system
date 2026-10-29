@@ -23,7 +23,7 @@ const errorMessage = "rounded-lg border border-[var(--bim-color-semantic-error-b
 function StableViewer({ candidate, attempt, ...props }: Omit<DrawingViewerProps, "url"> & { candidate: string | null; attempt: number }) {
   const [file, setFile] = useState({ url: candidate, attempt });
   if (attempt !== file.attempt || !file.url && candidate) setFile({ url: candidate, attempt });
-  return file.url ? <DrawingViewer {...props} url={file.url} />
+  return file.url ? <DrawingViewer key={file.attempt} {...props} url={file.url} />
     : <EmptyState title="Файл для перегляду недоступний" description="Оновіть посилання на файл. Результат обробки з’явиться після його підготовки." />;
 }
 
@@ -40,6 +40,17 @@ export function DrawingDetail({ id, api = drawingApi, demo = false }: { id: stri
 function DrawingDetailContent({ id, api, demo }: { id: string; api: DrawingApi; demo: boolean }) {
   const state = useDrawingDetail(id, api, demo);
   const [viewerAttempt, setViewerAttempt] = useState(0);
+  const refreshFileLock = useRef(false);
+  const refreshFile = async () => {
+    if (refreshFileLock.current) return;
+    refreshFileLock.current = true;
+    try {
+      const refreshed = await state.detail.refetch({ cancelRefetch: false });
+      if (refreshed.isSuccess) setViewerAttempt(value => value + 1);
+    } finally {
+      refreshFileLock.current = false;
+    }
+  };
   const fileOperation = useRef<AbortController | null>(null);
   const downloadLock = useRef(false);
   useEffect(() => () => fileOperation.current?.abort(), []);
@@ -120,11 +131,9 @@ function DrawingDetailContent({ id, api, demo }: { id: string; api: DrawingApi; 
       {download.isError && <p role="alert" className={errorMessage}>{drawingErrorMessage(download.error)}</p>}
       {download.isSuccess && <p role="status">DXF передано браузеру для збереження.</p>}
       <section aria-label="План креслення" className="min-w-0 space-y-3">
-        <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices} />
-        <button className={button} disabled={state.detail.isFetching} onClick={async () => {
-          const refreshed = await state.detail.refetch();
-          if (refreshed.isSuccess) setViewerAttempt(value => value + 1);
-        }}>Оновити файл</button>
+        <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
+          onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
+        <button className={button} disabled={state.detail.isFetching} onClick={refreshFile}>Оновити файл</button>
       </section>
       {result ? <section aria-label="Результат обробки" className="space-y-3 rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-4 sm:p-6">
         <h2 className="text-xl font-semibold">Результат обробки</h2>
