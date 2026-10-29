@@ -1,3 +1,4 @@
+import type { DrawingStatus, RequestedDrawingUnits } from "@bim/contracts";
 import { createClient } from "@/lib/supabase/client";
 
 export class ApiAuthenticationError extends Error {
@@ -19,6 +20,43 @@ export class ApiPathError extends Error {
     super("The API path is invalid.");
     this.name = "ApiPathError";
   }
+}
+
+export class ApiHttpError extends Error {
+  statusCode: number;
+  detail?: string;
+
+  constructor(statusCode: number, detail?: string) {
+    super(
+      detail
+        ? `API request failed with status ${statusCode}: ${detail}`
+        : `API request failed with status ${statusCode}`,
+    );
+    this.name = "ApiHttpError";
+    this.statusCode = statusCode;
+    this.detail = detail;
+  }
+}
+
+export interface NormalizedSignedUpload {
+  url: string;
+  path: string;
+  expiresInSeconds: number;
+}
+
+export interface NormalizedDrawingRecord {
+  id: string;
+  ownerId: string;
+  originalFileName: string;
+  storagePath: string;
+  units: RequestedDrawingUnits;
+  status: DrawingStatus;
+  createdAt: string;
+}
+
+export interface NormalizedCreateDrawingResponse {
+  drawing: NormalizedDrawingRecord;
+  upload: NormalizedSignedUpload;
 }
 
 function getApiBaseUrl(): URL {
@@ -102,4 +140,76 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
   headers.set("Authorization", `Bearer ${accessToken}`);
 
   return fetch(url, { ...init, headers });
+}
+
+/**
+ * Normalizes the backend POST /api/v1/drawings response into a single,
+ * consistent contract-aligned shape (handling camelCase vs snake_case).
+ */
+export function normalizeCreateDrawingResponse(
+  raw: Record<string, unknown>,
+): NormalizedCreateDrawingResponse {
+  const rawDrawing = (raw?.drawing as Record<string, unknown>) || {};
+  const rawUpload = (raw?.upload as Record<string, unknown>) || {};
+
+  return {
+    drawing: {
+      id: String(rawDrawing.id || ""),
+      ownerId: String(rawDrawing.ownerId ?? rawDrawing.owner_id ?? ""),
+      originalFileName: String(
+        rawDrawing.originalFileName ?? rawDrawing.original_file_name ?? "",
+      ),
+      storagePath: String(
+        rawDrawing.storagePath ?? rawDrawing.storage_path ?? "",
+      ),
+      units: (rawDrawing.units ?? "mm") as RequestedDrawingUnits,
+      status: (rawDrawing.status ?? "uploaded") as DrawingStatus,
+      createdAt: String(rawDrawing.createdAt ?? rawDrawing.created_at ?? ""),
+    },
+    upload: {
+      url: String(rawUpload.url || ""),
+      path: String(rawUpload.path || ""),
+      expiresInSeconds: Number(
+        rawUpload.expiresInSeconds ?? rawUpload.expires_in_seconds ?? 3600,
+      ),
+    },
+  };
+}
+
+/**
+ * Creates a drawing record via authenticated apiFetch.
+ * Sends ONLY the fields accepted by FastAPI's CreateDrawingRequest:
+ * `original_file_name` and `units`.
+ */
+export async function createDrawing(
+  input: { fileName: string; units: RequestedDrawingUnits },
+  signal?: AbortSignal,
+): Promise<NormalizedCreateDrawingResponse> {
+  const payload = {
+    original_file_name: input.fileName,
+    units: input.units,
+  };
+
+  const response = await apiFetch("/api/v1/drawings", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  if (!response.ok) {
+    let errorDetail = "";
+    try {
+      const errData = await response.json();
+      errorDetail = errData?.detail || errData?.message || "";
+    } catch {
+      // Ignore JSON parsing errors for non-JSON responses
+    }
+    throw new ApiHttpError(response.status, errorDetail);
+  }
+
+  const rawJson = (await response.json()) as Record<string, unknown>;
+  return normalizeCreateDrawingResponse(rawJson);
 }
