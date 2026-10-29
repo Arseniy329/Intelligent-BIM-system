@@ -22,6 +22,8 @@ const states = new Map();
 const calls = [];
 let revision = 0;
 let failure = null;
+const expiredRevisions = new Set();
+let detailDelay = 0;
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, origin);
   response.setHeader("Access-Control-Allow-Origin", app);
@@ -41,6 +43,8 @@ const server = createServer(async (request, response) => {
   if (url.pathname.startsWith("/file/")) {
     calls.push({ path: url.pathname, revision: url.searchParams.get("revision"), auth: !!request.headers.authorization });
     if (failure === "file") { response.writeHead(403).end(); return; }
+    if (failure === "expired-file") expiredRevisions.add(url.searchParams.get("revision"));
+    if (expiredRevisions.has(url.searchParams.get("revision"))) { response.writeHead(403).end(); return; }
     response.writeHead(200, { "Content-Type": "application/dxf" });
     response.end(states.get(url.pathname.split("/")[2])?.file ?? fixture); return;
   }
@@ -50,6 +54,7 @@ const server = createServer(async (request, response) => {
   if (!url.pathname.startsWith("/api/v1/drawings")) { json({}, 404); return; }
   const segments = url.pathname.split("/");
   const id = segments[4];
+  if (detailDelay) await new Promise(resolve => setTimeout(resolve, detailDelay));
   if (failure === "network") { request.socket.destroy(); return; }
   if (typeof failure === "number") { json({}, failure); return; }
   if (url.pathname === "/api/v1/drawings" && request.method === "POST") {
@@ -68,7 +73,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && segments[5] === "process") {
     setTimeout(() => json({ drawing_id: id, status: "accepted", message: "Processing stub accepted. BIM-54/BIM-55/BIM-57 will be connected later." }), 300); return;
   }
-  const link = `${origin}/file/${id}?revision=${++revision}`;
+  const link = `${origin}/file/${id}?revision=${id === "same-link" ? 0 : ++revision}`;
   json({ id: state.id, owner_id: state.owner_id, original_file_name: state.original_file_name, storage_path: state.storage_path,
     units: state.units, status: state.status, created_at: state.created_at,
     source_download_url: failure === "missing" ? null : link,
@@ -146,6 +151,33 @@ try {
     failure = mode; await click("Завантажити оригінальний DXF"); await until(body(message)); check(`download reports ${mode}`);
   }
   failure = null;
+  failure = "expired-file"; await navigate("/drawings/retry-expired");
+  await until(body("Не вдалося відкрити DXF"));
+  const rejectedRevision = calls.at(-1).revision;
+  failure = null; detailDelay = 300;
+  const beforeRetry = calls.length;
+  await evaluate("const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Спробувати знову'); b.click(); b.click()");
+  await until(body("Оновлення посилання…"));
+  check("remote retry is disabled while refreshing metadata", await evaluate("Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Оновлення посилання…' && b.disabled)"));
+  await ready(); detailDelay = 0;
+  const retried = calls.slice(beforeRetry);
+  check("expired viewer retry performs one fresh GET before loading a new signed URL", retried.length === 2 && retried[0].path === "/api/v1/drawings/retry-expired" && retried[1].path === "/file/retry-expired" && retried[1].revision !== rejectedRevision);
+  for (const [mode, message] of [["missing", "Файл для перегляду недоступний"], [401, "Сеанс завершився"], [403, "немає доступу"], [404, "не знайдено"], ["network", "Перевірте з’єднання"]]) {
+    failure = "file"; await navigate(`/drawings/retry-${mode}`); await until(body("Не вдалося відкрити DXF"));
+    failure = mode;
+    await click("Спробувати знову"); await until(body(message));
+    const settled = calls.length; await delay(500);
+    check(`remote retry handles ${mode} without stale canvas or request loop`, calls.length === settled && !await evaluate("!!document.querySelector('canvas')"));
+    failure = null;
+    await click(mode === "missing" ? "Оновити файл" : "Спробувати знову"); await ready();
+    check(`remote retry recovers after ${mode}`);
+  }
+  await navigate("/drawings/same-link"); await ready();
+  await evaluate("window.__lostCanvas=document.querySelector('canvas'); window.__lostCanvas.dispatchEvent(new Event('webglcontextlost',{bubbles:true,cancelable:true}))");
+  await until(body("Втрачено WebGL-контекст"));
+  await click("Спробувати знову"); await ready();
+  check("retry remounts even when refreshed signed URL is unchanged", await evaluate("window.__lostCanvas !== document.querySelector('canvas')"));
+  await navigate("/drawings/first"); await ready();
   await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await delay(300);
   check("mobile layout fits viewport", await evaluate("document.documentElement.scrollWidth <= innerWidth"));

@@ -14,7 +14,7 @@ type LoadState =
   | { status: "error"; message: string; timings?: DrawingLoadTimings };
 
 export default function DrawingCanvas({
-  url, onReady, onRetry, rooms, devices, initialRoomLabelsVisible = true,
+  url, onReady, onRetry, retryPending = false, rooms, devices, initialRoomLabelsVisible = true,
 }: DrawingViewerProps & { onRetry: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const adapterRef = useRef<DrawingViewerAdapter | null>(null);
@@ -107,7 +107,9 @@ export default function DrawingCanvas({
         {state.status === "error" && (
           <div className={styles.message} role="alert">
             <p>{state.message}</p>
-            <button type="button" onClick={onRetry}>Спробувати знову</button>
+            <button type="button" onClick={onRetry} disabled={retryPending}>
+              {retryPending ? "Оновлення посилання…" : "Спробувати знову"}
+            </button>
           </div>
         )}
       </div>
