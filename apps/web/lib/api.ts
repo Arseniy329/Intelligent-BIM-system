@@ -1,7 +1,9 @@
-import type { DrawingDetailStatus, RequestedDrawingUnits } from "@bim/contracts";
+import type { DrawingDetailStatus, DrawingStatus, RequestedDrawingUnits } from "@bim/contracts";
 import { createClient } from "@/lib/supabase/client";
 
 export const DRAWINGS_API_PATH = "/api/v1/drawings";
+
+export type DrawingUiStatus = DrawingDetailStatus | DrawingStatus;
 
 export class ApiAuthenticationError extends Error {
   constructor() {
@@ -52,7 +54,7 @@ export interface NormalizedDrawingRecord {
   originalFileName: string;
   storagePath: string;
   units: RequestedDrawingUnits;
-  status: DrawingDetailStatus;
+  status: DrawingUiStatus;
   createdAt: string;
 }
 
@@ -147,6 +149,41 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
 }
 
 /**
+ * Normalizes a raw drawing object from the backend (snake_case or camelCase)
+ * into a single consistent frontend DrawingUiStatus-typed shape.
+ */
+export function normalizeDrawingRecord(
+  raw: Record<string, unknown>,
+): NormalizedDrawingRecord {
+  const rawStatus = String(raw?.status ?? "uploaded");
+  let status: DrawingUiStatus = "uploaded";
+  if (
+    rawStatus === "pending" ||
+    rawStatus === "uploaded" ||
+    rawStatus === "processing" ||
+    rawStatus === "processed" ||
+    rawStatus === "failed" ||
+    rawStatus === "error"
+  ) {
+    status = rawStatus;
+  }
+
+  return {
+    id: String(raw.id || ""),
+    ownerId: String(raw.ownerId ?? raw.owner_id ?? ""),
+    originalFileName: String(
+      raw.originalFileName ?? raw.original_file_name ?? "",
+    ),
+    storagePath: String(
+      raw.storagePath ?? raw.storage_path ?? "",
+    ),
+    units: (raw.units ?? "mm") as RequestedDrawingUnits,
+    status,
+    createdAt: String(raw.createdAt ?? raw.created_at ?? ""),
+  };
+}
+
+/**
  * Normalizes the backend POST /api/v1/drawings response into a single,
  * consistent contract-aligned shape (handling camelCase vs snake_case).
  */
@@ -157,19 +194,7 @@ export function normalizeCreateDrawingResponse(
   const rawUpload = (raw?.upload as Record<string, unknown>) || {};
 
   return {
-    drawing: {
-      id: String(rawDrawing.id || ""),
-      ownerId: String(rawDrawing.ownerId ?? rawDrawing.owner_id ?? ""),
-      originalFileName: String(
-        rawDrawing.originalFileName ?? rawDrawing.original_file_name ?? "",
-      ),
-      storagePath: String(
-        rawDrawing.storagePath ?? rawDrawing.storage_path ?? "",
-      ),
-      units: (rawDrawing.units ?? "mm") as RequestedDrawingUnits,
-      status: (rawDrawing.status ?? "uploaded") as DrawingDetailStatus,
-      createdAt: String(rawDrawing.createdAt ?? rawDrawing.created_at ?? ""),
-    },
+    drawing: normalizeDrawingRecord(rawDrawing),
     upload: {
       url: String(rawUpload.url || ""),
       path: String(rawUpload.path || ""),
@@ -178,6 +203,39 @@ export function normalizeCreateDrawingResponse(
       ),
     },
   };
+}
+
+/**
+ * Lists the authenticated user's drawings via GET /api/v1/drawings.
+ * Normalizes backend snake_case records into camelCase NormalizedDrawingRecord items.
+ */
+export async function listDrawings(
+  signal?: AbortSignal,
+): Promise<NormalizedDrawingRecord[]> {
+  const response = await apiFetch(DRAWINGS_API_PATH, {
+    method: "GET",
+    signal,
+  });
+
+  if (!response.ok) {
+    let errorDetail = "";
+    try {
+      const errData = await response.json();
+      errorDetail = errData?.detail || errData?.message || "";
+    } catch {
+      // Ignore JSON parsing errors for non-JSON responses
+    }
+    throw new ApiHttpError(response.status, errorDetail);
+  }
+
+  const rawJson = (await response.json()) as unknown;
+  if (!Array.isArray(rawJson)) {
+    return [];
+  }
+
+  return rawJson.map((item) =>
+    normalizeDrawingRecord((item as Record<string, unknown>) || {}),
+  );
 }
 
 /**
