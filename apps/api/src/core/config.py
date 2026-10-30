@@ -18,9 +18,8 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "https://intelligent-bim-web.vercel.app",
     ]
-    CORS_ORIGIN_REGEX: str | None = None
+    CORS_ORIGIN_REGEX: str | None = r"^https:\/\/(.*\.)?intelligent-bim.*\.vercel\.app$"
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../../.env"),
@@ -48,7 +47,6 @@ class Settings(BaseSettings):
                 ],
             )
         return self
-
 
 @lru_cache
 def get_settings() -> Settings:
