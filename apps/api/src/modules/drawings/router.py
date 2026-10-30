@@ -30,6 +30,7 @@ async def create_drawing(
         "owner_id": current_user.id,
         "original_file_name": payload.original_file_name,
         "storage_path": storage_path,
+        "file_path": storage_path,
         "units": payload.units,
         "status": "uploaded",
     }
