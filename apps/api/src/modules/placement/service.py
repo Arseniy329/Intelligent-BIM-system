@@ -32,8 +32,24 @@ def place_devices_from_rule(
     if step <= 0:
         raise ValueError("Rule threshold must be > 0")
 
-    offset = step / 2.0
     min_x, min_y, max_x, max_y = polygon.bounds
+    width = max_x - min_x
+    height = max_y - min_y
+
+    estimated_points = (width / step) * (height / step)
+
+    if estimated_points > 5000:
+        # Obvious unit mismatch (e.g. m vs mm). Auto-correct by scaling step by 1000.
+        step *= 1000.0
+        estimated_points = (width / step) * (height / step)
+
+        # If it's STILL too dense, fail fast instead of hanging the server.
+        if estimated_points > 5000:
+            raise ValueError(
+                f"Grid too dense. Threshold {step} is too small for room dimensions."
+            )
+
+    offset = step / 2.0
 
     xs: list[float] = []
     x = min_x + offset
