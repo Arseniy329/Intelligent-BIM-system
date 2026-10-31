@@ -142,3 +142,4 @@ $RECYCLE.BIN/
 *.sublime-workspace
 *.sublime-project
 .zed/
+.zcode/
