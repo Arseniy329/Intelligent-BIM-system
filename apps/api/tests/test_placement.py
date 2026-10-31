@@ -45,3 +45,26 @@ def test_small_room_has_at_least_one_device():
 
     assert len(devices) >= 1
     assert all(device.rule_id == "rule-3" for device in devices)
+
+
+def test_unit_mismatch_auto_scaling():
+    # 10m x 8m room represented in millimeters (10000 x 8000), threshold in meters (2.0)
+    room = [(0, 0), (10000, 0), (10000, 8000), (0, 8000)]
+    rule = RuleRecord(id="rule-mm", threshold=2.0)
+
+    devices = place_devices_from_rule(room, rule)
+
+    assert 0 < len(devices) <= 50
+    assert all(device.x >= 1000.0 for device in devices)
+    assert all(device.y >= 1000.0 for device in devices)
+
+
+def test_extreme_density_circuit_breaker():
+    # Enormous dimensions that exceed 5000 points even after scaling by 1000
+    room = [(0, 0), (1_000_000, 0), (1_000_000, 1_000_000), (0, 1_000_000)]
+    rule = RuleRecord(id="rule-extreme", threshold=1.0)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="Grid too dense"):
+        place_devices_from_rule(room, rule)
