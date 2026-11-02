@@ -100,13 +100,21 @@ async def list_drawings(
 ):
     supabase = get_supabase_client(settings)
 
-    response = (
-        supabase.table("drawings")
-        .select("*")
-        .eq("owner_id", current_user.id)
-        .order("created_at", desc=True)
-        .execute()
-    )
+    if current_user.role == "admin":
+        response = (
+            supabase.table("drawings")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
+    else:
+        response = (
+            supabase.table("drawings")
+            .select("*")
+            .eq("owner_id", current_user.id)
+            .order("created_at", desc=True)
+            .execute()
+        )
 
     rows = response.data
     if not isinstance(rows, list):
@@ -128,7 +136,6 @@ async def list_drawings(
             ) from exc
 
     return drawings
-
 
 @router.post("/{drawing_id}/process")
 async def process_drawing(
@@ -247,64 +254,35 @@ async def get_drawing_detail(
 ):
     supabase = get_supabase_client(settings)
 
-    drawing_response = (
-        supabase.table("drawings").select("*").eq("id", drawing_id).single().execute()
-    )
+    if current_user.role == "admin":
+        response = (
+            supabase.table("drawings")
+            .select("*")
+            .eq("id", drawing_id)
+            .single()
+            .execute()
+        )
+    else:
+        response = (
+            supabase.table("drawings")
+            .select("*")
+            .eq("id", drawing_id)
+            .eq("owner_id", current_user.id)
+            .single()
+            .execute()
+        )
 
-    drawing_data = drawing_response.data
-    if not isinstance(drawing_data, dict):
-        raise HTTPException(status_code=404, detail="Drawing not found")
+    row = response.data
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
 
     try:
-        drawing = DrawingRecord.model_validate(drawing_data)
+        return DrawingDetailResponse.model_validate(row)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to parse drawing record",
+            detail="Failed to parse drawing detail",
         ) from exc
-
-    if drawing.owner_id != current_user.id and current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    source_url: str | None = None
-    try:
-        signed_url_response = supabase.storage.from_(
-            settings.SUPABASE_STORAGE_BUCKET
-        ).create_signed_url(drawing.storage_path, 3600)
-        if isinstance(signed_url_response, dict):
-            url_val = signed_url_response.get("signedUrl") or signed_url_response.get(
-                "url"
-            )
-            if isinstance(url_val, str):
-                source_url = url_val
-    except Exception:
-        source_url = None
-
-    expires_at = datetime.now(UTC) + timedelta(seconds=3600)
-
-    result_url: str | None = None
-    if drawing.status == "processed":
-        expected_result_path = f"{drawing.owner_id}/{drawing.id}/result.dxf"
-        try:
-            r_resp = supabase.storage.from_(
-                settings.SUPABASE_STORAGE_BUCKET
-            ).create_signed_url(expected_result_path, 3600)
-            if isinstance(r_resp, dict):
-                r_val = r_resp.get("signedUrl") or r_resp.get("url")
-                if isinstance(r_val, str):
-                    result_url = r_val
-        except Exception:
-            pass
-
-    return {
-        "id": drawing.id,
-        "owner_id": drawing.owner_id,
-        "original_file_name": drawing.original_file_name,
-        "storage_path": drawing.storage_path,
-        "units": drawing.units,
-        "status": drawing.status,
-        "created_at": drawing.created_at,
-        "source_download_url": source_url,
-        "source_download_url_expires_at": expires_at,
-        "result_download_url": result_url,
-    }
