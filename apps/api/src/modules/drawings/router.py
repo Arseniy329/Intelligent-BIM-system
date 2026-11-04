@@ -2,16 +2,21 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from supabase import Client
 
 from src.core.auth import CurrentUser, get_current_user
 from src.core.config import get_settings
+from src.infrastructure.storage import cleanup_file, download_dxf_to_tmp
 from src.infrastructure.supabase import get_supabase_client
+from src.modules.cad.parser import parse_dxf_rooms
+from src.modules.cad.writer import add_sensors_to_dxf
 from src.modules.drawings.schemas import (
     CreateDrawingRequest,
     CreateDrawingResponse,
     DrawingDetailResponse,
     DrawingRecord,
 )
+from src.modules.placement.service import RuleRecord, place_devices_from_rule
 
 router = APIRouter(prefix="/drawings", tags=["drawings"])
 settings = get_settings()
@@ -30,6 +35,7 @@ async def create_drawing(
         "owner_id": current_user.id,
         "original_file_name": payload.original_file_name,
         "storage_path": storage_path,
+        "file_path": storage_path,
         "units": payload.units,
         "status": "uploaded",
     }
@@ -121,13 +127,35 @@ async def list_drawings(
 
     return drawings
 
+    rows = response.data
+    if not isinstance(rows, list):
+        return []
+
+    drawings: list[DrawingRecord] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Invalid drawing record format in database",
+            )
+        try:
+            drawings.append(DrawingRecord.model_validate(row))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to parse drawing record",
+            ) from exc
+
+    return drawings
 
 @router.post("/{drawing_id}/process")
 async def process_drawing(
     drawing_id: str,
     current_user: CurrentUser = Depends(get_current_user),
+    supabase: Annotated[Client | None, Depends(get_supabase_client)] = None,
 ):
-    supabase = get_supabase_client(settings)
+    if supabase is None:
+        supabase = get_supabase_client(settings)
 
     drawing_response = (
         supabase.table("drawings").select("*").eq("id", drawing_id).single().execute()
@@ -197,7 +225,12 @@ async def get_drawing_detail(
     except Exception:
         source_url = None
 
-    expires_at = datetime.now(UTC) + timedelta(seconds=3600)
+    row = response.data
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
 
     return {
         "id": drawing.id,

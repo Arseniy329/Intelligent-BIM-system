@@ -16,6 +16,9 @@ export type DrawingViewerProps = {
   /** Disable initially for plans with their own room annotations; the toolbar can restore them. */
   initialRoomLabelsVisible?: boolean;
   onReady?: (controller: DrawingViewportController | null) => void;
+  /** Remote owners can renew a signed URL; local/demo viewers simply reopen their file. */
+  onRetry?: () => void;
+  retryPending?: boolean;
 };
 
 const DrawingCanvas = dynamic(() => import("./drawing-canvas"), {
@@ -42,7 +45,7 @@ export function DrawingViewer(props: DrawingViewerProps) {
       <DrawingCanvas
         key={`${props.url}:${attempt}`}
         {...props}
-        onRetry={() => setAttempt((value) => value + 1)}
+        onRetry={props.onRetry ?? (() => setAttempt((value) => value + 1))}
       />
     </section>
   );

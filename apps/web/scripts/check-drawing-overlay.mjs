@@ -16,6 +16,7 @@ let sequence = 0;
 const pending = new Map();
 const exceptions = [];
 const results = [];
+const dprMeasurements = [];
 socket.onmessage = ({ data }) => {
   const message = JSON.parse(data);
   if (message.id) {
@@ -144,6 +145,25 @@ try {
   check("three polygons and four markers align with fixture WCS", aligned(initial));
   check("areas are already square metres", await evaluate(`['20 м²','25 м²','36 м²'].every(s => document.body.textContent.includes(s))`));
   check("only markers intercept pointer events", await evaluate(`getComputedStyle(document.querySelector('[data-drawing-overlay]')).pointerEvents === 'none' && getComputedStyle(document.querySelector('[data-device-id]')).pointerEvents === 'auto'`));
+  const overlayBeforeDpr = await layerSnapshot();
+  const markerColours = () => evaluate(`Array.from(document.querySelectorAll('[data-device-id] svg *')).map(el => [getComputedStyle(el).fill, getComputedStyle(el).stroke])`);
+  const coloursBeforeDpr = await markerColours();
+  check("BIM-60 retains coloured glyphs", coloursBeforeDpr.flat().some(value => {
+    const rgb = value.match(/^rgb\((\d+), (\d+), (\d+)\)$/);
+    return rgb && (rgb[1] !== rgb[2] || rgb[2] !== rgb[3]);
+  }));
+  for (const ratio of [1, 2, 1]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 1000, deviceScaleFactor: ratio, mobile: false });
+    // CDP changes devicePixelRatio without emitting the native resize/media-query events
+    // of a monitor/zoom change. Supply the resize signal while keeping CSS dimensions fixed.
+    await evaluate(`window.dispatchEvent(new Event('resize'))`);
+    await until(`(() => {const c=document.querySelector('canvas'),r=c.getBoundingClientRect();return Math.abs(c.width-r.width*${ratio})<=1 && Math.abs(c.height-r.height*${ratio})<=1;})()`);
+    dprMeasurements.push(await evaluate(`(() => {const c=document.querySelector('canvas'),r=c.getBoundingClientRect();return {dpr:devicePixelRatio,css:[r.width,r.height],buffer:[c.width,c.height]};})()`));
+    check(`DPR ${ratio}: physical buffer updates without moving overlay or reloading DXF`,
+      JSON.stringify(await layerSnapshot()) === JSON.stringify(overlayBeforeDpr) &&
+      await evaluate(`window.__dxfLoads === 1 && window.__originalCanvas === document.querySelector('canvas')`));
+    check(`DPR ${ratio}: BIM-60 colours are unchanged`, JSON.stringify(await markerColours()) === JSON.stringify(coloursBeforeDpr));
+  }
   await screenshot("demo-fit");
   check("demo has one Room[] label set and no native English annotations in loaded DXF", await evaluate(`document.querySelectorAll('[data-room-label]').length === 3 && !/Room_10[123]/.test(window.__lastDxfText)`));
   check("all four device glyphs are 20 CSS px and keep 40 px hit targets", await evaluate(`Array.from(document.querySelectorAll('[data-device-id]')).every(marker => marker.getBoundingClientRect().width === 40 && marker.querySelector('svg').getBoundingClientRect().width === 20)`));
@@ -222,10 +242,12 @@ try {
   for (const name of ["01_simple_rooms_mm.dxf", "02_cafe_office_plan_mm.dxf", "03_bad_unclosed_meters.dxf"]) {
     await openFile(`apps/api/tests/fixtures/test_drawing_dxf/${name}`);
     check(`local ${name} opens without demo data`, await evaluate(`!document.querySelector('[data-drawing-overlay]') && !document.querySelector('[aria-pressed]')`));
+    await screenshot(`gray-${name}`);
     if (name === "01_simple_rooms_mm.dxf") check("normal-mode DXF keeps all three native English labels", await evaluate(`['Room_101','Room_102','Room_103'].every(text => window.__lastDxfText.includes(text))`));
   }
   await openFile("apps/web/tests/fixtures/dxf/04_ukrainian_text.dxf");
   check("BIM-59 Ukrainian TEXT/MTEXT opens unchanged", await evaluate(`!document.querySelector('[data-drawing-overlay]') && window.__lastDxfText.includes('Ґґ Єє Іі Її')`));
+  await screenshot("gray-ukrainian-text-mtext");
   await evaluate(`(() => {const transfer=new DataTransfer();transfer.items.add(new File(['not a DXF'],'broken.dxf'));document.querySelector('main').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));})()`);
   await until(`document.body.textContent.includes('Не вдалося відкрити DXF')`);
   await click("Спробувати знову");
@@ -265,6 +287,6 @@ try {
   }
   check("no uncaught browser exceptions", exceptions.length === 0);
 } finally {
-  await writeFile(`${output}/results.json`, JSON.stringify({ results, exceptions, scope: "Chrome CDP browser checks, not native Windows Explorer or manual headed acceptance" }, null, 2));
+  await writeFile(`${output}/results.json`, JSON.stringify({ results, dprMeasurements, exceptions, scope: "Chrome CDP browser checks, not hosting or real Supabase acceptance" }, null, 2));
   socket.close();
 }

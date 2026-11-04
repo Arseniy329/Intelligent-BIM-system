@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { OrthographicCamera, Vector2 } from "three";
+import { Color, LineSegments, Mesh, OrthographicCamera, RawShaderMaterial, Scene, Vector2 } from "three";
+import tokens from "../../../tokens.json";
 import { DrawingViewerAdapter, type ViewerPort } from "@/lib/drawing/viewer-adapter";
 import { DRAWING_FONT_URLS } from "@/lib/drawing/fonts";
 
@@ -9,12 +10,17 @@ function makeViewer(load: () => Promise<void> = async () => {}) {
   camera.zoom = 2;
   const events = new Map<string, Set<(event: unknown) => void>>();
   const origin = new Vector2(1000, -2000);
+  const scene = new Scene();
+  let pixelRatio = 1;
+  const renderer = { getPixelRatio: () => pixelRatio, setPixelRatio: vi.fn((value: number) => { pixelRatio = value; }) };
   const viewer: ViewerPort = {
     Load: vi.fn(load),
     Destroy: vi.fn(),
     GetOrigin: () => origin,
     GetBounds: () => ({ minX: 900, maxX: 1100, minY: -2050, maxY: -1950 }),
     GetCamera: () => camera,
+    GetScene: () => scene,
+    GetRenderer: () => renderer,
     SetView: vi.fn(),
     FitView: vi.fn(),
     Render: vi.fn(),
@@ -31,7 +37,7 @@ function makeViewer(load: () => Promise<void> = async () => {}) {
   const detach = vi.fn();
   const adapter = new DrawingViewerAdapter(viewer, detach);
   const emit = (name: string) => events.get(name)?.forEach((listener) => listener({}));
-  return { viewer, adapter, camera, detach, emit };
+  return { viewer, adapter, camera, detach, emit, scene, renderer };
 }
 
 describe("drawing viewport adapter", () => {
@@ -61,7 +67,7 @@ describe("drawing viewport adapter", () => {
     await adapter.load("blob:test");
     adapter.fitToDrawing();
     expect(viewer.FitView).toHaveBeenCalledWith(-100, 100, -50, 50);
-    expect(viewer.Render).toHaveBeenCalledOnce();
+    expect(viewer.Render).toHaveBeenCalledTimes(2); // Palette after Load, then fit.
     adapter.dispose();
   });
 
@@ -130,5 +136,42 @@ describe("drawing viewport adapter", () => {
     adapter.dispose();
     adapter.resize(900, 700);
     expect(viewer.SetSize).toHaveBeenCalledTimes(1);
+  });
+
+  it("mutes shared line and glyph materials without replacing geometry or shaders", async () => {
+    const { adapter, scene } = makeViewer();
+    const material = new RawShaderMaterial({ uniforms: { color: { value: new Color("red") } } });
+    const line = new LineSegments(undefined, material);
+    const glyph = new Mesh(undefined, material);
+    const geometry = glyph.geometry;
+    const shader = material.vertexShader;
+    scene.add(line, glyph);
+    await adapter.load("blob:coloured-text");
+    expect(material.uniforms.color.value.getHexString()).toBe(tokens.color.plan.dxfPrimaryLine.slice(1).toLowerCase());
+    expect(glyph.geometry).toBe(geometry);
+    expect(glyph.material).toBe(material);
+    expect(material.vertexShader).toBe(shader);
+    adapter.dispose();
+  });
+
+  it("updates DPR 1 → 2 → 1 without loading or changing camera/CSS mappings", async () => {
+    const { adapter, viewer, renderer } = makeViewer();
+    await adapter.load("blob:test");
+    const viewport = adapter.getViewport();
+    const point = adapter.worldToScreen({ x: 1025, y: -1990 });
+    adapter.setPixelRatio(2);
+    adapter.setPixelRatio(2);
+    adapter.setPixelRatio(1);
+    adapter.setPixelRatio(0);
+    adapter.setPixelRatio(NaN);
+    expect(renderer.setPixelRatio.mock.calls).toEqual([[2], [1]]);
+    expect(adapter.getViewport()).toEqual(viewport);
+    expect(adapter.worldToScreen({ x: 1025, y: -1990 })).toEqual(point);
+    expect(viewer.Load).toHaveBeenCalledOnce();
+    expect(viewer.SetSize).not.toHaveBeenCalled();
+    expect(viewer.SetView).not.toHaveBeenCalled();
+    adapter.dispose();
+    adapter.setPixelRatio(2);
+    expect(renderer.setPixelRatio).toHaveBeenCalledTimes(2);
   });
 });

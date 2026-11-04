@@ -13,7 +13,13 @@ export function AppHeader() {
           Інтелектуальна BIM-система
         </Link>
         <div className="flex flex-wrap items-center gap-2 sm:gap-4">
-          <nav aria-label="Основна навігація">
+          <nav aria-label="Основна навігація" className="flex items-center gap-1 sm:gap-2">
+            <Link
+              href="/drawings"
+              className="inline-flex min-h-10 items-center rounded-sm px-2 text-sm font-medium text-[var(--bim-color-text-primary)] hover:bg-[var(--bim-color-surface-subtle)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)]"
+            >
+              Мої креслення
+            </Link>
             <Link
               href="/upload"
               className="inline-flex min-h-10 items-center rounded-sm px-2 text-sm font-medium text-[var(--bim-color-border-focus)] hover:bg-[var(--bim-color-surface-subtle)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)]"
