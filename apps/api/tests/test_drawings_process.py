@@ -405,7 +405,8 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
 
         uploaded_doc = ezdxf.read(
             io.StringIO(
-                uploaded_payloads[0]["file_data"].decode("utf-8", errors="ignore")
+                uploaded_payloads[0]["file_data"].decode("utf-8", errors="ignore"),
+                newline=None,
             )
         )
         self.assertIn("SYS_FIRE_SENSORS", uploaded_doc.layers)
@@ -609,6 +610,29 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertEqual(result.devices[0].position.x, 2500.0)
         self.assertIsNotNone(result.downloadUrl)
         self.assertIsNotNone(result.downloadUrlExpiresAt)
+
+        for state in ("processing", "error", "failed"):
+            with self.subTest(state=state):
+                drawing_record["status"] = state
+                drawing_record["error_message"] = "LayerNotFoundError"
+                response = self.client.get(f"/api/v1/drawings/{drawing_id}")
+                self.assertEqual(response.status_code, 200)
+                partial = DrawingResult.model_validate(response.json())
+                self.assertEqual(len(partial.rooms), 1)
+                self.assertEqual(partial.devices, [])
+                self.assertIsNone(partial.downloadUrl)
+                self.assertIsNotNone(partial.sourceDownloadUrl)
+                self.assertEqual(partial.drawing.errorMessage, "LayerNotFoundError")
+
+        # Signing failure does not discard the geometry result.
+        drawing_record["status"] = "processed"
+        mock_bucket.create_signed_url.side_effect = RuntimeError("storage unavailable")
+        unavailable = self.client.get(f"/api/v1/drawings/{drawing_id}")
+        self.assertEqual(unavailable.status_code, 200)
+        self.assertEqual(len(unavailable.json()["rooms"]), 1)
+        self.assertEqual(len(unavailable.json()["devices"]), 1)
+        self.assertIsNone(unavailable.json()["downloadUrl"])
+        self.assertIsNone(unavailable.json()["sourceDownloadUrl"])
 
     def test_get_drawing_detail_unprocessed(self) -> None:
         """Verify GET /drawings/{id} for uploaded drawing returns flat format."""
@@ -847,16 +871,16 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertEqual(db["drawings"][0]["status"], "processing")
         self.assertGreater(len(db["rooms"]), 0)
 
-        # Intermediate check: GET while processing returns flat DrawingDetailResponse
+        # Rooms are visible before placement; original and generated files differ.
         mid_get_resp = self.client.get(f"/api/v1/drawings/{drawing_id}")
         self.assertEqual(mid_get_resp.status_code, 200)
         mid_data = mid_get_resp.json()
-        self.assertNotIn("drawing", mid_data)
-        self.assertEqual(mid_data["status"], "processing")
-        self.assertTrue(
-            mid_data["source_download_url"].startswith("https://mock.supabase.co")
-        )
-        self.assertIsNotNone(mid_data["source_download_url_expires_at"])
+        self.assertEqual(mid_data["drawing"]["status"], "processing")
+        self.assertEqual(len(mid_data["rooms"]), len(db["rooms"]))
+        self.assertEqual(mid_data["devices"], [])
+        self.assertIsNone(mid_data["downloadUrl"])
+        self.assertTrue(mid_data["sourceDownloadUrl"].endswith("/source.dxf"))
+        self.assertIsNotNone(mid_data["sourceDownloadUrlExpiresAt"])
 
         # Step 2: POST /drawings/{id}/place
         place_resp = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
@@ -879,6 +903,30 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertIsNotNone(result.downloadUrl)
         self.assertTrue(str(result.downloadUrl).startswith("https://mock.supabase.co"))
         self.assertIsNotNone(result.downloadUrlExpiresAt)
+
+        # Reopening and refreshing do not rerun processing or duplicate overlays.
+        reopened = self.client.get(f"/api/v1/drawings/{drawing_id}").json()
+        self.assertEqual(reopened["rooms"], get_resp.json()["rooms"])
+        self.assertEqual(reopened["devices"], get_resp.json()["devices"])
+        self.assertTrue(reopened["sourceDownloadUrl"].endswith("/source.dxf"))
+        self.assertTrue(reopened["downloadUrl"].endswith("/result.dxf"))
+        exported = ezdxf.read(
+            io.StringIO(storage_uploaded[result_key].decode("utf-8"), newline=None)
+        )
+        inserts = list(exported.modelspace().query('INSERT[layer=="SYS_FIRE_SENSORS"]'))
+        self.assertEqual(len(inserts), len(result.devices))
+        self.assertEqual(
+            [(entity.dxf.insert.x, entity.dxf.insert.y) for entity in inserts],
+            [(device.position.x, device.position.y) for device in result.devices],
+        )
+
+        # A repeat process must never offer the old generated result or devices.
+        repeated = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
+        self.assertEqual(repeated.status_code, 200)
+        intermediate = self.client.get(f"/api/v1/drawings/{drawing_id}").json()
+        self.assertEqual(len(intermediate["rooms"]), len(result.rooms))
+        self.assertEqual(intermediate["devices"], [])
+        self.assertIsNone(intermediate["downloadUrl"])
 
 
 if __name__ == "__main__":

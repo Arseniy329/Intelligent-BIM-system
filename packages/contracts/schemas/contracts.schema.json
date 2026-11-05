@@ -327,6 +327,8 @@
         "devices"
       ],
       "dependentRequired": {
+        "sourceDownloadUrl": ["sourceDownloadUrlExpiresAt"],
+        "sourceDownloadUrlExpiresAt": ["sourceDownloadUrl"],
         "downloadUrl": [
           "downloadUrlExpiresAt"
         ],
@@ -335,6 +337,16 @@
         ]
       },
       "properties": {
+        "sourceDownloadUrl": {
+          "type": ["string", "null"],
+          "format": "uri",
+          "description": "Тимчасове посилання на оригінальний DXF для підкладки оверлею"
+        },
+        "sourceDownloadUrlExpiresAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "Час завершення дії sourceDownloadUrl"
+        },
         "drawing": {
           "$ref": "#/$defs/Drawing"
         },

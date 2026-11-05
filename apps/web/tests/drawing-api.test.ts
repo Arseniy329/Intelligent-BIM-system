@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DrawingDetailResponse } from "@bim/contracts";
 import { ApiAuthenticationError, ApiHttpError, createDrawing } from "@/lib/api";
-import { drawingApi, drawingErrorMessage, downloadLink, fetchDrawingDownload, normalizeDrawingDetail, parseDrawing, parseJob, parseProcessingAccepted } from "@/lib/drawing/drawing-api";
+import { drawingApi, drawingErrorMessage, downloadLink, fetchDrawingDownload, normalizeDrawingDetail, parseDrawing, parseJob, parseDrawingOperation, processingErrorMessage } from "@/lib/drawing/drawing-api";
 import { DEMO_RESULT } from "@/lib/drawing/demo-drawing";
 import { createDemoDrawingApi } from "@/lib/drawing/demo-api";
 import { isDrawingDemoEnabled } from "@/lib/drawing/demo-mode";
@@ -55,16 +55,18 @@ it("reports a network failure in Ukrainian", async () => {
   const error = await drawingApi.getDrawing(id).catch(error => error);
   expect(drawingErrorMessage(error)).toContain("Перевірте з’єднання");
 });
-it("POSTs to the real endpoint and distinguishes accepted from a job", async () => {
-  const accepted = { drawing_id: id, status: "accepted", message: "Processing stub accepted." };
-  fetchMock.mockResolvedValue(new Response(JSON.stringify(accepted), { status: 200 }));
-  expect(await drawingApi.processDrawing(id)).toEqual({ drawingId: id, status: "accepted", message: accepted.message });
-  expect(fetchMock.mock.calls[0][0].pathname).toBe(`/api/v1/drawings/${id}/process`);
+it.each(["process", "place"] as const)("POSTs the synchronous %s endpoint without a job", async operation => {
+  const status = operation === "process" ? "processing" : "processed";
+  const response = { drawing_id: id, status };
+  fetchMock.mockResolvedValue(new Response(JSON.stringify(response)));
+  const method = operation === "process" ? drawingApi.processDrawing : drawingApi.placeDrawing!;
+  expect(await method(id)).toEqual({ drawingId: id, status });
+  expect(fetchMock.mock.calls[0][0].pathname).toBe(`/api/v1/drawings/${id}/${operation}`);
   expect(fetchMock.mock.calls[0][1].method).toBe("POST");
   expect(drawingApi.getJob).toBeUndefined();
   expect(fetchMock).toHaveBeenCalledOnce();
-  expect(() => parseJob(accepted)).toThrow();
-  expect(() => parseProcessingAccepted({ ...accepted, drawing_id: "other" }, id)).toThrow();
+  expect(() => parseDrawingOperation({ ...response, drawing_id: "other" }, id, status)).toThrow();
+  expect(() => parseDrawingOperation({ drawing_id: id, status: "accepted" }, id, status)).toThrow();
 });
 it("rejects mismatched IDs, absent data and invalid jobs", async () => {
   expect(() => parseDrawing(null, id)).toThrow();
@@ -72,7 +74,7 @@ it("rejects mismatched IDs, absent data and invalid jobs", async () => {
   expect(() => parseDrawing({ ...DEMO_RESULT, rooms: [{ ...DEMO_RESULT.rooms[0], drawingId: "another-id" }] }, id)).toThrow();
   expect(() => parseJob({ id: "job", status: "invented" })).toThrow();
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ id: "job", drawingId: "other", status: "queued", errorMessage: null })));
-  await expect(drawingApi.processDrawing(id)).rejects.toThrow("acceptance");
+  await expect(drawingApi.processDrawing(id)).rejects.toThrow("operation");
 });
 it.each(["https://api.example", "https://api.example/api/v1", "https://api.example/api/v1/"])("shares a single API prefix with BIM-62 for base %s", async base => {
   vi.stubEnv("NEXT_PUBLIC_API_URL", base);
@@ -86,7 +88,7 @@ it.each(["https://api.example", "https://api.example/api/v1", "https://api.examp
 it("preserves failed and unresolved from_file units from FastAPI", async () => {
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ ...rawDetail, status: "failed", units: "from_file" })));
   expect(await drawingApi.getDrawing(id)).toEqual({ ...detail, status: "failed", units: "from_file" });
-  expect(() => normalizeDrawingDetail({ ...rawDetail, status: "error" }, id)).toThrow();
+  expect(normalizeDrawingDetail({ ...rawDetail, status: "error" }, id).status).toBe("error");
   expect(() => normalizeDrawingDetail({ ...rawDetail, units: "feet" }, id)).toThrow();
 });
 it("preserves unavailable source URLs without synthesizing a result", async () => {
@@ -97,6 +99,29 @@ it("accepts results, rooms without devices and empty results", () => {
   expect(parseDrawing(DEMO_RESULT, id)).toEqual(DEMO_RESULT);
   expect(parseDrawing({ ...DEMO_RESULT, devices: [] }, id)).toMatchObject({ devices: [] });
   expect(parseDrawing({ ...DEMO_RESULT, rooms: [], devices: [] }, id)).toMatchObject({ rooms: [], devices: [] });
+});
+
+it("reads DrawingResult from GET and accepts a contract result from POST", async () => {
+  fetchMock.mockImplementation(async () => Response.json(DEMO_RESULT));
+  expect(await drawingApi.getDrawing(id)).toEqual(DEMO_RESULT);
+  expect(await drawingApi.processDrawing(id)).toEqual(DEMO_RESULT);
+  expect(await drawingApi.placeDrawing!(id)).toEqual(DEMO_RESULT);
+});
+it("rejects malformed results and duplicate overlay identities", () => {
+  for (const changes of [
+    { rooms: [DEMO_RESULT.rooms[0], DEMO_RESULT.rooms[0]] },
+    { devices: [DEMO_RESULT.devices[0], DEMO_RESULT.devices[0]] },
+    { downloadUrl: { token: "private" } },
+    { drawing: { ...DEMO_RESULT.drawing, resolvedUnits: "from_file" } },
+    { rooms: [{ ...DEMO_RESULT.rooms[0], area: Infinity }] },
+  ]) expect(() => parseDrawing({ ...DEMO_RESULT, ...changes }, id)).toThrow();
+});
+it("translates public processing errors and hides untrusted diagnostics", async () => {
+  fetchMock.mockResolvedValue(Response.json({ error: "LayerNotFoundError", message: "private storage path" }, { status: 400 }));
+  const error = await drawingApi.processDrawing(id).catch(error => error);
+  expect(drawingErrorMessage(error)).toContain("FIRE_ROOMS");
+  expect(processingErrorMessage("LayerNotFoundError")).toContain("FIRE_ROOMS");
+  expect(processingErrorMessage("SQL password=secret token=private")).not.toMatch(/SQL|password|secret|private/);
 });
 
 describe("DXF download", () => {

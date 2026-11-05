@@ -106,6 +106,14 @@ export interface SignedUpload {
  * Публічний результат обробки. GET /drawings/{id} повертає нове тимчасове посилання; підписаний URL не зберігається в базі.
  */
 export interface DrawingResult {
+  /**
+   * Тимчасове посилання на оригінальний DXF для підкладки оверлею
+   */
+  sourceDownloadUrl?: string | null;
+  /**
+   * Час завершення дії sourceDownloadUrl
+   */
+  sourceDownloadUrlExpiresAt?: string | null;
   drawing: Drawing;
   rooms: Room[];
   devices: Device[];
