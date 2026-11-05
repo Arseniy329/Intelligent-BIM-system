@@ -3,7 +3,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-DrawingStatus = Literal["pending", "uploaded", "processing", "processed", "failed"]
+DrawingStatus = Literal[
+    "pending", "uploaded", "processing", "processed", "failed", "error"
+]
 DrawingUnits = Literal["mm", "m", "from_file"]
 
 
