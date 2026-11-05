@@ -1,0 +1,57 @@
+[
+  {
+    "code": "office",
+    "name": "Офіс, кабінет",
+    "examples": ["Office", "Manager_Office", "Кабінет"]
+  },
+  {
+    "code": "service_room",
+    "name": "Службове приміщення",
+    "examples": ["Staff_Room", "Персонал"]
+  },
+  {
+    "code": "corridor",
+    "name": "Коридор, шлях евакуації",
+    "examples": ["Corridor", "Main_Corridor", "Коридор"]
+  },
+  {
+    "code": "staircase",
+    "name": "Сходова клітка",
+    "examples": ["Stairs", "Сходи"]
+  },
+  {
+    "code": "hall",
+    "name": "Зала, хол, кафе",
+    "examples": ["Hall", "Cafe_Hall", "Зал"]
+  },
+  {
+    "code": "bedroom",
+    "name": "Спальне приміщення",
+    "examples": ["Bedroom", "Room", "Номер", "Спальня"]
+  },
+  {
+    "code": "kitchen",
+    "name": "Кухня",
+    "examples": ["Kitchen", "Кухня"]
+  },
+  {
+    "code": "storage",
+    "name": "Склад, комора",
+    "examples": ["Storage", "Storage_Room", "Склад"]
+  },
+  {
+    "code": "restroom",
+    "name": "Санвузол, душова",
+    "examples": ["Restroom", "WC", "Санвузол"]
+  },
+  {
+    "code": "technical",
+    "name": "Технічне приміщення",
+    "examples": ["Electrical", "Server", "Електрощитова", "Серверна", "Венткамера"]
+  },
+  {
+    "code": "unknown",
+    "name": "Тип не визначено",
+    "examples": []
+  }
+]

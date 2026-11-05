@@ -9,6 +9,8 @@ from uuid import UUID
 import ezdxf
 from fastapi.testclient import TestClient
 
+from src.modules.rooms.service import suggest_room_type
+
 API_DIR = Path(__file__).resolve().parent.parent
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
@@ -276,6 +278,15 @@ class TestCadParser(unittest.TestCase):
 
         with self.assertRaises(NoValidContoursError):
             parse_dxf_rooms(dxf_path)
+
+    def test_fixture_room_names_suggest_room_types(self) -> None:
+        rooms = parse_dxf_rooms(FIXTURES_DIR / "02_cafe_office_plan_mm.dxf")
+        types_by_name = {room.name: room.type for room in rooms}
+
+        self.assertEqual(types_by_name["Main_Corridor (24.0m2)"], "corridor")
+        self.assertEqual(types_by_name["Cafe_Hall (48.0m2)"], "hall")
+        self.assertEqual(suggest_room_type("Kitchen"), "kitchen")
+        self.assertEqual(suggest_room_type("name-not-in-catalog"), "unknown")
 
 
 class TestStorageUtility(unittest.TestCase):
