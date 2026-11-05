@@ -13,7 +13,7 @@ from src.core.exceptions import (
     LayerNotFoundError,
     NoValidContoursError,
 )
-from src.modules.rooms.service import suggest_room_type
+
 
 # Scale factors from INSUNITS to meters (length)
 INSUNITS_SCALE_TO_METERS: dict[int, float] = {
@@ -24,6 +24,22 @@ INSUNITS_SCALE_TO_METERS: dict[int, float] = {
     6: 1.0,  # Meters
 }
 DEFAULT_INSUNITS = 4  # Default to millimeters if missing
+
+def suggest_room_type(room_name: str | None) -> str | None:
+    if not room_name:
+        return None
+
+    normalized_name = room_name.casefold().replace("_", " ").replace("-", " ")
+
+    if "corridor" in normalized_name or "hallway" in normalized_name:
+        return "corridor"
+
+    if "hall" in normalized_name:
+        return "hall"
+
+    return None
+
+
 
 
 def get_area_multiplier(doc: ezdxf.document.Drawing) -> float:
