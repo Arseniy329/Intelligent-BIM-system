@@ -11,7 +11,7 @@ import { ApiHttpError } from "@/lib/api";
 const { state, viewer } = vi.hoisted(() => ({ state: { value: {} as Record<string, unknown> }, viewer: vi.fn() }));
 vi.mock("@/lib/drawing/use-drawing-detail", () => ({ useDrawingDetail: () => state.value }));
 vi.mock("@/components/drawing/drawing-viewer", () => ({ DrawingViewer: (props: DrawingViewerProps) => { viewer(props); return <div>DXF viewer</div>; } }));
-const result = { ...DEMO_RESULT, downloadUrl: "https://storage.example/file", downloadUrlExpiresAt: "2099-01-01T00:00:00Z" };
+const result = { ...DEMO_RESULT, sourceDownloadUrl: "https://storage.example/source", sourceDownloadUrlExpiresAt: "2099-01-01T00:00:00Z", downloadUrl: "https://storage.example/file", downloadUrlExpiresAt: "2099-01-01T00:00:00Z" };
 function render(children: ReactNode) {
   const client = new QueryClient();
   try { return renderToStaticMarkup(<QueryClientProvider client={client}>{children}</QueryClientProvider>); }
@@ -19,7 +19,7 @@ function render(children: ReactNode) {
 }
 beforeEach(() => {
   viewer.mockClear();
-  state.value = { detail: { data: result }, process: {}, currentJob: null, busy: false };
+  state.value = { detail: { data: result }, process: {}, place: {}, currentJob: null, busy: false };
 });
 it("resolves route params and keys the page by drawing ID", async () => {
   const element = await DrawingPage({ params: Promise.resolve({ id: "drawing-42" }) });
@@ -28,7 +28,7 @@ it("resolves route params and keys the page by drawing ID", async () => {
 });
 it("passes exact Room[]/Device[] to the existing viewer and shows counts and m²", () => {
   const html = render(<DrawingDetail id={result.drawing.id} />);
-  expect(viewer.mock.calls[0][0]).toMatchObject({ rooms: result.rooms, devices: result.devices, url: result.downloadUrl });
+  expect(viewer.mock.calls[0][0]).toMatchObject({ rooms: result.rooms, devices: result.devices, url: result.sourceDownloadUrl });
   expect(html).toContain("Приміщень: 3 · Сповіщувачів: 4");
   expect(html).toContain("20 м²");
   expect(html).toContain("Завантажити DXF результату");
@@ -82,11 +82,16 @@ it("shows the real source, failed status, unresolved units and disabled result d
   expect(viewer.mock.calls[0][0].rooms).toBeUndefined();
 });
 
-it("explains accepted without presenting a processing result", () => {
-  state.value.detail = { data: { id: "one", originalFileName: "one.dxf", units: "mm", status: "uploaded" } };
-  state.value.accepted = true;
-  const html = render(<DrawingDetail id="one" />);
-  expect(html).toContain("Обробку не запущено, результат не створено");
-  expect(html).toContain("Статус: Готове до обробки");
-  expect(html).not.toContain("Приміщень: 3");
+it("shows rooms immediately after synchronous processing", () => {
+  state.value.detail = { data: { ...result, drawing: { ...result.drawing, status: "processing" }, devices: [], downloadUrl: null } };
+  const html = render(<DrawingDetail id={result.drawing.id} />);
+  expect(html).toContain("Обробку приміщень завершено");
+  expect(html).toContain("Приміщень: 3 · Сповіщувачів: 0");
+  expect(html).toContain("Розмістити");
+  expect(viewer.mock.calls[0][0].rooms).toEqual(result.rooms);
+});
+it("does not use a generated DXF as the overlay background", () => {
+  state.value.detail = { data: { ...result, sourceDownloadUrl: null } };
+  expect(render(<DrawingDetail id={result.drawing.id} />)).toContain("Файл для перегляду недоступний");
+  expect(viewer).not.toHaveBeenCalled();
 });

@@ -305,7 +305,7 @@ class TestStorageUtility(unittest.TestCase):
         with temporary_dxf_file("drawings/test.dxf", client=mock_client) as tmp_path:
             saved_path = tmp_path
             self.assertTrue(tmp_path.exists())
-            self.assertTrue(str(tmp_path).startswith("/tmp"))
+            self.assertEqual(tmp_path.parent, Path("/tmp"))
             self.assertTrue(str(tmp_path).endswith(".dxf"))
             self.assertEqual(tmp_path.read_bytes(), b"0\nSECTION\nHEADER\n")
 

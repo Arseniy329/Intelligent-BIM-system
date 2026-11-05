@@ -150,21 +150,13 @@ async def list_drawings(
 ):
     supabase = get_supabase_client(settings)
 
-    if current_user.role == "admin":
-        response = (
-            supabase.table("drawings")
-            .select("*")
-            .order("created_at", desc=True)
-            .execute()
-        )
-    else:
-        response = (
-            supabase.table("drawings")
-            .select("*")
-            .eq("owner_id", current_user.id)
-            .order("created_at", desc=True)
-            .execute()
-        )
+    response = (
+        supabase.table("drawings")
+        .select("*")
+        .eq("owner_id", current_user.id)
+        .order("created_at", desc=True)
+        .execute()
+    )
 
     rows = response.data
     if not isinstance(rows, list):
@@ -445,7 +437,40 @@ async def get_drawing_detail(
 
     status_raw = str(drawing_data.get("status") or "uploaded")
 
-    if status_raw == "processed":
+    expires_in = 3600
+    now = datetime.now(UTC)
+    storage_path = str(drawing_data.get("storage_path") or "")
+    source_download_url: str | None = None
+    source_download_url_expires_at: datetime | None = None
+
+    if storage_path:
+        try:
+            url_resp = supabase.storage.from_(
+                settings.SUPABASE_STORAGE_BUCKET
+            ).create_signed_url(storage_path, expires_in)
+
+            raw_url = None
+            if isinstance(url_resp, dict):
+                raw_url = (
+                    url_resp.get("signedUrl")
+                    or url_resp.get("signedURL")
+                    or url_resp.get("url")
+                )
+            elif hasattr(url_resp, "signedUrl") or hasattr(url_resp, "signedURL"):
+                raw_url = getattr(url_resp, "signedUrl", None) or getattr(
+                    url_resp, "signedURL", None
+                )
+
+            if raw_url and isinstance(raw_url, str):
+                if raw_url.startswith("/"):
+                    raw_url = f"{settings.SUPABASE_URL.rstrip('/')}{raw_url}"
+                source_download_url = raw_url
+                source_download_url_expires_at = now + timedelta(seconds=expires_in)
+        except Exception:
+            source_download_url = None
+            source_download_url_expires_at = None
+
+    if status_raw in {"processing", "processed", "error", "failed"}:
         drawing = _map_db_to_drawing(drawing_data)
 
         rooms: list[Room] = []
@@ -493,7 +518,7 @@ async def get_drawing_detail(
         devices_res = (
             supabase.table("devices").select("*").eq("drawing_id", drawing_id).execute()
         )
-        if isinstance(devices_res.data, list):
+        if status_raw == "processed" and isinstance(devices_res.data, list):
             for d in devices_res.data:
                 if not isinstance(d, dict):
                     continue
@@ -533,36 +558,41 @@ async def get_drawing_detail(
                     )
                 )
 
-        expires_in = 3600
-        now = datetime.now(UTC)
-        result_path = f"{drawing.ownerId}/{drawing.id}/result.dxf"
-        try:
-            url_resp = supabase.storage.from_(
-                settings.SUPABASE_STORAGE_BUCKET
-            ).create_signed_url(result_path, expires_in)
+        if status_raw == "processed":
+            expires_in = 3600
+            now = datetime.now(UTC)
+            result_path = f"{drawing.ownerId}/{drawing.id}/result.dxf"
+            try:
+                url_resp = supabase.storage.from_(
+                    settings.SUPABASE_STORAGE_BUCKET
+                ).create_signed_url(result_path, expires_in)
 
-            raw_url = None
-            if isinstance(url_resp, dict):
-                raw_url = (
-                    url_resp.get("signedUrl")
-                    or url_resp.get("signedURL")
-                    or url_resp.get("url")
-                )
-            elif hasattr(url_resp, "signedUrl") or hasattr(url_resp, "signedURL"):
-                raw_url = getattr(url_resp, "signedUrl", None) or getattr(
-                    url_resp, "signedURL", None
-                )
+                raw_url = None
+                if isinstance(url_resp, dict):
+                    raw_url = (
+                        url_resp.get("signedUrl")
+                        or url_resp.get("signedURL")
+                        or url_resp.get("url")
+                    )
+                elif hasattr(url_resp, "signedUrl") or hasattr(url_resp, "signedURL"):
+                    raw_url = getattr(url_resp, "signedUrl", None) or getattr(
+                        url_resp, "signedURL", None
+                    )
 
-            if raw_url and isinstance(raw_url, str):
-                if raw_url.startswith("/"):
-                    raw_url = f"{settings.SUPABASE_URL.rstrip('/')}{raw_url}"
-                download_url = AnyUrl(raw_url)
-                download_url_expires_at = now + timedelta(seconds=expires_in)
-        except Exception:
-            download_url = None
-            download_url_expires_at = None
+                if raw_url and isinstance(raw_url, str):
+                    if raw_url.startswith("/"):
+                        raw_url = f"{settings.SUPABASE_URL.rstrip('/')}{raw_url}"
+                    download_url = AnyUrl(raw_url)
+                    download_url_expires_at = now + timedelta(seconds=expires_in)
+            except Exception:
+                download_url = None
+                download_url_expires_at = None
 
         return DrawingResult(
+            sourceDownloadUrl=AnyUrl(source_download_url)
+            if source_download_url
+            else None,
+            sourceDownloadUrlExpiresAt=source_download_url_expires_at,
             drawing=drawing,
             rooms=rooms,
             devices=devices,
@@ -571,39 +601,6 @@ async def get_drawing_detail(
         )
 
     # Flat DrawingDetailResponse format for unprocessed drawings
-    expires_in = 3600
-    now = datetime.now(UTC)
-    storage_path = str(drawing_data.get("storage_path") or "")
-    source_download_url: str | None = None
-    source_download_url_expires_at: datetime | None = None
-
-    if storage_path:
-        try:
-            url_resp = supabase.storage.from_(
-                settings.SUPABASE_STORAGE_BUCKET
-            ).create_signed_url(storage_path, expires_in)
-
-            raw_url = None
-            if isinstance(url_resp, dict):
-                raw_url = (
-                    url_resp.get("signedUrl")
-                    or url_resp.get("signedURL")
-                    or url_resp.get("url")
-                )
-            elif hasattr(url_resp, "signedUrl") or hasattr(url_resp, "signedURL"):
-                raw_url = getattr(url_resp, "signedUrl", None) or getattr(
-                    url_resp, "signedURL", None
-                )
-
-            if raw_url and isinstance(raw_url, str):
-                if raw_url.startswith("/"):
-                    raw_url = f"{settings.SUPABASE_URL.rstrip('/')}{raw_url}"
-                source_download_url = raw_url
-                source_download_url_expires_at = now + timedelta(seconds=expires_in)
-        except Exception:
-            source_download_url = None
-            source_download_url_expires_at = None
-
     created_at_val = drawing_data["created_at"]
     if isinstance(created_at_val, str):
         dt = datetime.fromisoformat(created_at_val.replace("Z", "+00:00"))

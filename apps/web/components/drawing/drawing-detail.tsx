@@ -6,7 +6,7 @@ import { useMutation } from "@tanstack/react-query";
 import type { DrawingStatus, DrawingDetailStatus } from "@bim/contracts";
 import { DrawingViewer, type DrawingViewerProps } from "./drawing-viewer";
 import { EmptyState } from "@/components/ui/empty-state";
-import { drawingApi, drawingErrorMessage, drawingMetadata, downloadLink, fetchDrawingDownload, isDrawingResult,
+import { drawingApi, drawingErrorMessage, drawingMetadata, downloadLink, fetchDrawingDownload, isDrawingResult, processingErrorMessage,
   type DownloadKind, type DrawingApi, type DrawingResponse } from "@/lib/drawing/drawing-api";
 import { useDrawingDetail } from "@/lib/drawing/use-drawing-detail";
 
@@ -28,7 +28,9 @@ function StableViewer({ candidate, attempt, ...props }: Omit<DrawingViewerProps,
 }
 
 function previewUrl(data: DrawingResponse): string | null {
-  try { return downloadLink(data, isDrawingResult(data) ? "result" : "source"); }
+  // Always render the source: generated DXF already contains device blocks,
+  // which would duplicate the interactive BIM-60 device symbols.
+  try { return downloadLink(data, "source"); }
   catch { return null; }
 }
 
@@ -40,6 +42,7 @@ export function DrawingDetail({ id, api = drawingApi, demo = false }: { id: stri
 function DrawingDetailContent({ id, api, demo }: { id: string; api: DrawingApi; demo: boolean }) {
   const state = useDrawingDetail(id, api, demo);
   const [viewerAttempt, setViewerAttempt] = useState(0);
+  const [confirmReprocess, setConfirmReprocess] = useState(false);
   const refreshFileLock = useRef(false);
   const refreshFile = async () => {
     if (refreshFileLock.current) return;
@@ -91,11 +94,13 @@ function DrawingDetailContent({ id, api, demo }: { id: string; api: DrawingApi; 
 
   const data = state.detail.data;
   const metadata = drawingMetadata(data);
-  const result = isDrawingResult(data) && metadata.status === "processed" ? data : null;
+  const result = isDrawingResult(data) ? data : null;
   const url = previewUrl(data);
-  const resultDownloadAvailable = !!result?.downloadUrl;
-  const error = state.detail.error || state.process.error || state.jobError;
+  const resultDownloadAvailable = metadata.status === "processed" && !!result?.downloadUrl;
+  const error = state.detail.error || state.process.error || state.place.error || state.jobError;
   const processingFailed = state.currentJob?.status === "failed";
+  const units = isDrawingResult(data) ? data.drawing.resolvedUnits : data.units;
+  const reprocessing = !!result?.rooms.length || metadata.status === "processed";
 
   return (
     <div className="min-w-0 space-y-5">
@@ -104,36 +109,44 @@ function DrawingDetailContent({ id, api, demo }: { id: string; api: DrawingApi; 
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 space-y-2">
           <h1 className="break-all text-2xl font-semibold">{metadata.originalFileName}</h1>
-          <p role="status">Статус: {labels[metadata.status]}</p>
-          {!isDrawingResult(data) && <p className="text-sm text-[var(--bim-color-text-secondary)]">Одиниці: {data.units === "from_file" ? "очікується визначення з файла" : data.units === "mm" ? "міліметри" : "метри"}</p>}
+          <p role="status">Статус: {state.process.isPending ? "Пошук приміщень…" : state.place.isPending ? "Розміщення приладів…" : metadata.status === "processing" && result ? "Обробку приміщень завершено" : labels[metadata.status]}</p>
+          <p className="text-sm text-[var(--bim-color-text-secondary)]">Одиниці: {!units || units === "from_file" ? "очікується визначення з файла" : units === "mm" ? "міліметри" : "метри"}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button className={primaryButton} onClick={state.start} disabled={state.busy || state.detail.isError || metadata.status === "pending"}>
-            {state.process.isPending ? "Надсилання запиту…" : state.busy ? "Обробка…" : "Обробити"}
+          <button className={primaryButton} onClick={() => reprocessing ? setConfirmReprocess(true) : state.start()} disabled={state.busy || state.detail.isFetching || metadata.status === "pending"}>
+            {state.process.isPending ? "Пошук приміщень…" : state.busy ? "Обробка…" : reprocessing ? "Обробити повторно" : "Обробити"}
           </button>
-          {!isDrawingResult(data) && <button className={button} disabled={download.isPending}
+          {api.placeDrawing && <button className={primaryButton} onClick={state.startPlacement}
+            disabled={state.busy || state.detail.isFetching || !result?.rooms.length || metadata.status === "pending"}>
+            {state.place.isPending ? "Розміщення приладів…" : "Розмістити"}
+          </button>}
+          {!!data.sourceDownloadUrl && <button className={button} disabled={download.isPending || state.busy}
             onClick={() => startDownload("source")}>
             {download.isPending ? "Завантаження DXF…" : "Завантажити оригінальний DXF"}
           </button>}
-          <button className={button} disabled={download.isPending || !resultDownloadAvailable}
+          <button className={button} disabled={download.isPending || !resultDownloadAvailable || state.busy}
             aria-describedby={!resultDownloadAvailable ? "result-download-help" : undefined}
             onClick={() => startDownload("result")}>
             {download.isPending && isDrawingResult(data) ? "Завантаження DXF…" : "Завантажити DXF результату"}
           </button>
-          <button className={button} disabled={state.detail.isFetching} onClick={() => void state.refresh()}>Оновити стан</button>
+          <button className={button} disabled={state.detail.isFetching || state.busy} onClick={() => void state.refresh()}>Оновити стан</button>
         </div>
       </div>
       {!resultDownloadAvailable && <p id="result-download-help" className="text-sm text-[var(--bim-color-text-secondary)]">DXF результату недоступний: сервер ще не надав посилання на оброблений файл. Оригінальний DXF є окремим файлом.</p>}
-      {state.accepted && <p role="status" className="rounded-lg border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-subtle)] p-3">Запит прийнято сервером, але повна обробка ще недоступна. Обробку не запущено, результат не створено.</p>}
+      {confirmReprocess && <div role="group" aria-label="Повторна обробка" className="space-y-3 rounded-lg border p-3">
+        <p>Повторна обробка перезапише приміщення цього креслення. Продовжити?</p>
+        <button className={button} disabled={state.busy} onClick={() => { setConfirmReprocess(false); state.start(); }}>Підтвердити повторну обробку</button>{" "}
+        <button className={button} onClick={() => setConfirmReprocess(false)}>Скасувати</button>
+      </div>}
       {error && <p role="alert" className={errorMessage}>{drawingErrorMessage(error)}</p>}
-      {(metadata.status === "failed" || metadata.status === "error" || processingFailed) && <p role="alert" className={errorMessage}>Не вдалося обробити креслення. Спробуйте запустити обробку ще раз.</p>}
+      {(metadata.status === "failed" || metadata.status === "error" || processingFailed) && <p role="alert" className={errorMessage}>{processingErrorMessage(result?.drawing.errorMessage ?? state.currentJob?.errorMessage)}</p>}
       {state.timedOut && <p role="status">Автоматичне оновлення зупинено через 2 хвилини. Обробка може тривати на сервері. Натисніть «Оновити стан», щоб перевірити результат.</p>}
       {download.isError && <p role="alert" className={errorMessage}>{drawingErrorMessage(download.error)}</p>}
       {download.isSuccess && <p role="status">DXF передано браузеру для збереження.</p>}
       <section aria-label="План креслення" className="min-w-0 space-y-3">
         <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
           onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
-        <button className={button} disabled={state.detail.isFetching} onClick={refreshFile}>Оновити файл</button>
+        <button className={button} disabled={state.detail.isFetching || state.busy} onClick={refreshFile}>Оновити файл</button>
       </section>
       {result ? <section aria-label="Результат обробки" className="space-y-3 rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-4 sm:p-6">
         <h2 className="text-xl font-semibold">Результат обробки</h2>

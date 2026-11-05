@@ -33,6 +33,18 @@ function validateDefinition(definition: string, value: unknown) {
 }
 
 describe("JSON contract examples", () => {
+  it("supports room results before placement with a separate expiring source link", () => {
+    const result = readExample("drawing-result.json");
+    result.drawing.status = "processing";
+    result.devices = [];
+    result.downloadUrl = null;
+    result.downloadUrlExpiresAt = null;
+    result.sourceDownloadUrl = "https://example.invalid/source.dxf";
+    result.sourceDownloadUrlExpiresAt = "2099-01-01T00:00:00Z";
+    expect(validateDefinition("DrawingResult", result)).toBe(true);
+    delete result.sourceDownloadUrlExpiresAt;
+    expect(validateDefinition("DrawingResult", result)).toBe(false);
+  });
   it.each([
     ["create-drawing-request.json", "CreateDrawingRequest"],
     ["create-drawing-response.json", "CreateDrawingResponse"],
