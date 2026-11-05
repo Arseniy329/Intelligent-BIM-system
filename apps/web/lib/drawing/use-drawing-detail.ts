@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { drawingMetadata, type DrawingApi } from "./drawing-api";
+import { drawingMetadata, isDrawingResult, type DrawingApi, type ProcessingResponse } from "./drawing-api";
 import type { ProcessingJob } from "@bim/contracts";
 
 export const POLL_INTERVAL_MS = 2000;
@@ -13,7 +13,6 @@ export function useDrawingDetail(id: string, api: DrawingApi, demo: boolean) {
   const client = useQueryClient();
   const key = drawingKey(id, demo);
   const [job, setJob] = useState<ProcessingJob | null>(null);
-  const [accepted, setAccepted] = useState(false);
   const [timedOut, setTimedOut] = useState(false);
   const [pollRound, setPollRound] = useState(0);
   const operation = useRef<AbortController | null>(null);
@@ -26,7 +25,7 @@ export function useDrawingDetail(id: string, api: DrawingApi, demo: boolean) {
     retry: false,
     refetchOnWindowFocus: false,
     gcTime: 0,
-    refetchInterval: query => !!api.getJob && !accepted && !timedOut && !query.state.error &&
+    refetchInterval: query => !!api.getJob && !timedOut && !query.state.error &&
       (query.state.data && drawingMetadata(query.state.data).status === "processing" ||
         job?.status !== "failed" && !!job && query.state.data && !["processed", "failed", "error"].includes(drawingMetadata(query.state.data).status))
       ? POLL_INTERVAL_MS : false,
@@ -39,7 +38,7 @@ export function useDrawingDetail(id: string, api: DrawingApi, demo: boolean) {
       if (next.drawingId !== id) throw new Error("Unexpected drawing in job response.");
       return next;
     },
-    enabled: !!api.getJob && !accepted && !!job && !timedOut && (job.status === "queued" || job.status === "processing"),
+    enabled: !!api.getJob && !!job && !timedOut && (job.status === "queued" || job.status === "processing"),
     initialData: job ?? undefined,
     retry: false,
     gcTime: 0,
@@ -49,14 +48,16 @@ export function useDrawingDetail(id: string, api: DrawingApi, demo: boolean) {
   });
   const currentJob = jobQuery.data ?? job;
   const status = detail.data ? drawingMetadata(detail.data).status : undefined;
-  const active = status === "processing" || currentJob?.status === "queued" || currentJob?.status === "processing" ||
-    currentJob?.status === "completed" && status !== "processed" && status !== "failed" && status !== "error";
+  // In the synchronous API, persisted `processing` means rooms are ready for
+  // placement. Only explicit demo jobs represent background work to poll.
+  const active = !!api.getJob && (status === "processing" || currentJob?.status === "queued" || currentJob?.status === "processing" ||
+    currentJob?.status === "completed" && status !== "processed" && status !== "failed" && status !== "error");
 
   useEffect(() => {
-    if (!api.getJob || accepted || !active || timedOut) return;
+    if (!api.getJob || !active || timedOut) return;
     const timer = setTimeout(() => setTimedOut(true), POLL_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [api, accepted, active, timedOut, pollRound]);
+  }, [api, active, timedOut, pollRound]);
 
   useEffect(() => {
     if (timedOut) void client.cancelQueries({ queryKey: drawingKey(id, demo) });
@@ -67,35 +68,63 @@ export function useDrawingDetail(id: string, api: DrawingApi, demo: boolean) {
     void client.invalidateQueries({ queryKey: drawingKey(id, demo), exact: true });
   }, [currentJob?.status, client, id, demo]);
 
+  const receiveResult = async (next: ProcessingResponse) => {
+    if (operation.current?.signal.aborted) return;
+    if ("drawing" in next) client.setQueryData(key, next);
+    setJob("id" in next ? next : null);
+    setTimedOut(false);
+    setPollRound(value => value + 1);
+    await client.invalidateQueries({ queryKey: key, exact: true });
+  };
   const process = useMutation({
+    retry: false,
     mutationFn: async () => {
       operation.current = new AbortController();
-      return api.processDrawing(id, operation.current.signal);
+      const { signal } = operation.current;
+      await client.cancelQueries({ queryKey: key, exact: true });
+      signal.throwIfAborted();
+      return api.processDrawing(id, signal);
     },
-    onSuccess: async next => {
-      if (operation.current?.signal.aborted) return;
-      setAccepted(next.status === "accepted");
-      setJob(next.status === "accepted" ? null : next);
-      setTimedOut(false);
-      setPollRound(value => value + 1);
-      await client.invalidateQueries({ queryKey: key, exact: true });
-    },
+    onSuccess: receiveResult,
+    onError: () => client.invalidateQueries({ queryKey: key, exact: true }),
     onSettled: () => { lock.current = false; },
   });
+  const place = useMutation({
+    retry: false,
+    mutationFn: async () => {
+      if (!api.placeDrawing) throw new Error("Placement is unavailable.");
+      operation.current = new AbortController();
+      const { signal } = operation.current;
+      await client.cancelQueries({ queryKey: key, exact: true });
+      signal.throwIfAborted();
+      return api.placeDrawing(id, signal);
+    },
+    onSuccess: receiveResult,
+    onError: () => client.invalidateQueries({ queryKey: key, exact: true }),
+    onSettled: () => { lock.current = false; },
+  });
+  const busy = active || process.isPending || place.isPending;
 
   return {
-    detail, process, currentJob, timedOut, accepted,
+    detail, process, place, currentJob, timedOut,
     jobError: jobQuery.error,
-    busy: active || process.isPending,
+    busy,
     start: () => {
-      if (lock.current || active || process.isPending) return;
+      if (lock.current || busy) return;
       lock.current = true;
+      place.reset();
       process.mutate();
+    },
+    startPlacement: () => {
+      if (lock.current || busy || !api.placeDrawing || !detail.data || !isDrawingResult(detail.data) || !detail.data.rooms.length) return;
+      lock.current = true;
+      process.reset();
+      place.mutate();
     },
     refresh: async () => {
       setTimedOut(false);
       setPollRound(value => value + 1);
-      await Promise.all([detail.refetch(), ...(api.getJob && job && !accepted ? [jobQuery.refetch()] : [])]);
+      await Promise.all([detail.refetch(), ...(api.getJob && job ? [jobQuery.refetch()] : [])]);
     },
   };
 }
