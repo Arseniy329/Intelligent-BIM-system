@@ -251,30 +251,19 @@ async def process_drawing(
         if room_rows:
             supabase.table("rooms").insert(room_rows).execute()
 
-        supabase.table("drawings").update(
-            {
-                "status": "processing",
-                "error_message": None,
-            }
-        ).eq("id", drawing_id).execute()
+        supabase.table("drawings").update({"status": "processing"}).eq(
+            "id", drawing_id
+        ).execute()
 
         return {
             "drawing_id": drawing_id,
             "status": "processing",
         }
     except Exception as exc:
-        error_msg = str(
-            exc.message
-            if isinstance(exc, BIMException)
-            else (exc.detail if isinstance(exc, HTTPException) else str(exc))
-        )
         try:
-            supabase.table("drawings").update(
-                {
-                    "status": "error",
-                    "error_message": error_msg,
-                }
-            ).eq("id", drawing_id).execute()
+            supabase.table("drawings").update({"status": "error"}).eq(
+                "id", drawing_id
+            ).execute()
         except Exception:
             pass
 
@@ -398,12 +387,9 @@ async def place_drawing_devices(
         if new_device_rows:
             supabase.table("devices").insert(new_device_rows).execute()
 
-        supabase.table("drawings").update(
-            {
-                "status": "processed",
-                "error_message": None,
-            }
-        ).eq("id", drawing_id).execute()
+        supabase.table("drawings").update({"status": "processed"}).eq(
+            "id", drawing_id
+        ).execute()
 
         result_storage_path = generate_and_upload_result_dxf(drawing_id, supabase)
 
@@ -413,18 +399,10 @@ async def place_drawing_devices(
             "result_path": result_storage_path,
         }
     except Exception as exc:
-        error_msg = str(
-            exc.message
-            if isinstance(exc, BIMException)
-            else (exc.detail if isinstance(exc, HTTPException) else str(exc))
-        )
         try:
-            supabase.table("drawings").update(
-                {
-                    "status": "error",
-                    "error_message": error_msg,
-                }
-            ).eq("id", drawing_id).execute()
+            supabase.table("drawings").update({"status": "error"}).eq(
+                "id", drawing_id
+            ).execute()
         except Exception:
             pass
 

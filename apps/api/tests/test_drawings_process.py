@@ -119,9 +119,7 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             self.assertGreater(room["area"], 0)
 
         # Verify drawings table status updated to 'processing'
-        mock_drawings_query.update.assert_called_with(
-            {"status": "processing", "error_message": None}
-        )
+        mock_drawings_query.update.assert_called_with({"status": "processing"})
 
         # Verify /tmp cleanup
         files_after = set(tmp_dir.glob("*.dxf"))
@@ -157,11 +155,10 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         response = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
         self.assertIn(response.status_code, [400, 500])
 
-        # Verify status set to error with error message
+        # Verify status set to error
         mock_drawings_query.update.assert_called()
         update_args = mock_drawings_query.update.call_args[0][0]
         self.assertEqual(update_args["status"], "error")
-        self.assertTrue(len(update_args["error_message"]) > 0)
 
     def test_process_drawing_not_found(self) -> None:
         """Verify 404 when drawing does not exist in database."""
@@ -400,9 +397,7 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             self.assertEqual(dev["layer"], "SYS_FIRE_SENSORS")
 
         # Verify drawing status updated to 'processed'
-        mock_drawings_query.update.assert_called_with(
-            {"status": "processed", "error_message": None}
-        )
+        mock_drawings_query.update.assert_called_with({"status": "processed"})
 
         # Verify DXF uploaded
         self.assertEqual(len(uploaded_payloads), 1)

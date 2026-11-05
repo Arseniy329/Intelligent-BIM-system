@@ -1,5 +1,6 @@
 import type { DrawingDetailResponse, DrawingResult, ProcessingJob, RequestedDrawingUnits } from "@bim/contracts";
 import { apiFetch, ApiAuthenticationError, ApiConfigurationError, ApiHttpError, DRAWINGS_API_PATH } from "@/lib/api";
+import { createClient } from "@/lib/supabase/client";
 import { isDrawingDemoEnabled } from "./demo-mode";
 
 // FastAPI preserves requested units until parsing; shared DrawingDetailResponse
@@ -99,10 +100,34 @@ export function parseJob(value: unknown): ProcessingJob {
 
 export const drawingApi: DrawingApi = {
   async getDrawing(id, signal) {
-    return normalizeDrawingDetail(await request(`${DRAWINGS_API_PATH}/${encodeURIComponent(id)}`, signal), id);
+    const raw = await request(`${DRAWINGS_API_PATH}/${encodeURIComponent(id)}`, signal);
+    if (record(raw) && "drawing" in raw && record(raw.drawing)) {
+      const drawing = raw.drawing;
+      if (drawing.status === "processed") {
+        return parseDrawing(raw, id);
+      }
+      const supabase = createClient();
+      const { data: signData } = await supabase.storage
+        .from("drawings")
+        .createSignedUrl(String(drawing.storagePath), 3600);
+      return {
+        id: String(drawing.id),
+        ownerId: String(drawing.ownerId),
+        originalFileName: String(drawing.originalFileName),
+        storagePath: String(drawing.storagePath),
+        units: (drawing.resolvedUnits as RequestedDrawingUnits) || "mm",
+        status: drawing.status as DrawingDetail["status"],
+        createdAt: String(drawing.createdAt),
+        sourceDownloadUrl: signData?.signedUrl || null,
+        sourceDownloadUrlExpiresAt: new Date(Date.now() + 3600 * 1000).toISOString(),
+      } as DrawingDetail;
+    }
+    return normalizeDrawingDetail(raw, id);
   },
   async processDrawing(id, signal) {
-    return parseProcessingAccepted(await request(`${DRAWINGS_API_PATH}/${encodeURIComponent(id)}/process`, signal, "POST"), id);
+    await request(`${DRAWINGS_API_PATH}/${encodeURIComponent(id)}/process`, signal, "POST");
+    await request(`${DRAWINGS_API_PATH}/${encodeURIComponent(id)}/place`, signal, "POST");
+    return { drawingId: id, status: "accepted", message: "Pipeline completed" };
   },
 };
 
