@@ -150,21 +150,13 @@ async def list_drawings(
 ):
     supabase = get_supabase_client(settings)
 
-    if current_user.role == "admin":
-        response = (
-            supabase.table("drawings")
-            .select("*")
-            .order("created_at", desc=True)
-            .execute()
-        )
-    else:
-        response = (
-            supabase.table("drawings")
-            .select("*")
-            .eq("owner_id", current_user.id)
-            .order("created_at", desc=True)
-            .execute()
-        )
+    response = (
+        supabase.table("drawings")
+        .select("*")
+        .eq("owner_id", current_user.id)
+        .order("created_at", desc=True)
+        .execute()
+    )
 
     rows = response.data
     if not isinstance(rows, list):

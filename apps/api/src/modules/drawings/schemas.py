@@ -45,4 +45,3 @@ class DrawingDetailResponse(BaseModel):
     created_at: datetime
     source_download_url: str | None = None
     source_download_url_expires_at: datetime | None = None
-    result_download_url: str | None = None
