@@ -57,10 +57,7 @@ async def compute_placement(
 
     if payload.rule_id:
         by_uuid = (
-            supabase.table("rules")
-            .select("*")
-            .eq("id", payload.rule_id)
-            .execute()
+            supabase.table("rules").select("*").eq("id", payload.rule_id).execute()
         )
         result = by_uuid.data if isinstance(by_uuid.data, list) else []
         rule_rows = [row for row in result if isinstance(row, dict)]
@@ -120,8 +117,7 @@ async def compute_placement(
 
     return {
         "devices": [
-            {"x": point.x, "y": point.y, "rule_id": point.rule_id}
-            for point in points
+            {"x": point.x, "y": point.y, "rule_id": point.rule_id} for point in points
         ],
         "rule": {
             "id": rule.id,

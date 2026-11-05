@@ -64,7 +64,11 @@ class Drawing(BaseModel):
     storagePath: constr(min_length=1)
     resolvedUnits: DrawingUnits | None = Field(
         ...,
-        description="Фактичні одиниці координат. null, доки API не прочитає DXF. Якщо одиниці визначити неможливо, status стає error, а errorMessage пояснює причину.",
+        description=(
+            "Фактичні одиниці координат. null, доки API не прочитає DXF. "
+            "Якщо одиниці визначити неможливо, status стає error, "
+            "а errorMessage пояснює причину."
+        ),
     )
     status: DrawingStatus
     errorMessage: str | None = None
@@ -87,7 +91,10 @@ class Room(BaseModel):
     )
     polygon: list[Point] = Field(
         ...,
-        description="Вершини контуру в координатах DXF. Полігон логічно замкнений; перша точка наприкінці масиву не повторюється.",
+        description=(
+            "Вершини контуру в координатах DXF. Полігон логічно замкнений; "
+            "перша точка наприкінці масиву не повторюється."
+        ),
         min_length=3,
     )
 
@@ -149,7 +156,10 @@ class DrawingResult(BaseModel):
     devices: list[Device]
     downloadUrl: AnyUrl | None = Field(
         None,
-        description="Тимчасове підписане посилання на результат; null, доки результат не готовий",
+        description=(
+            "Тимчасове підписане посилання на результат; "
+            "null, доки результат не готовий"
+        ),
     )
     downloadUrlExpiresAt: AwareDatetime | None = Field(
         None, description="Час завершення дії downloadUrl"
@@ -188,47 +198,6 @@ class ProcessingJob(BaseModel):
     errorMessage: str | None
 
 
-class DeviceType(Enum):
-    smoke_detector = "smoke_detector"
-    heat_detector = "heat_detector"
-    sounder = "sounder"
-    manual_call_point = "manual_call_point"
-
-
-class ValueKind(Enum):
-    max_grid_spacing_m = "max_grid_spacing_m"
-    max_protected_area_m2 = "max_protected_area_m2"
-    max_wall_distance_m = "max_wall_distance_m"
-    min_wall_clearance_m = "min_wall_clearance_m"
-    min_sound_level_dba = "min_sound_level_dba"
-
-
-class VerificationStatus(Enum):
-    verified = "verified"
-    needs_review = "needs_review"
-
-
-class Rule(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    id: UUID = Field(..., description="Збігається з Finding.ruleId.")
-    ruleId: constr(min_length=1)
-    name: constr(min_length=1)
-    deviceType: DeviceType
-    roomTypes: list[str]
-    minHeightM: PositiveFloat | None
-    maxHeightM: PositiveFloat | None
-    value: PositiveFloat
-    valueKind: ValueKind
-    document: str | None
-    clause: str | None = Field(
-        ..., description="Не вигадувати пункт, якщо його не звірено."
-    )
-    sourceUrl: AnyUrl | None
-    verificationStatus: VerificationStatus
-
-
 class BimContracts(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -241,4 +210,3 @@ class BimContracts(BaseModel):
     createDrawingResponse: CreateDrawingResponse | None = None
     drawingResult: DrawingResult | None = None
     processingJob: ProcessingJob | None = None
-    rule: Rule | None = None

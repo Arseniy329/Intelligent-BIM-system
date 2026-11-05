@@ -62,16 +62,11 @@ def select_rule_for_room(
         if not isinstance(raw_room_types, (list, tuple)):
             continue
 
-        room_types = [
-            str(item).strip()
-            for item in raw_room_types
-            if str(item).strip()
-        ]
+        room_types = [str(item).strip() for item in raw_room_types if str(item).strip()]
 
         if room_types and (
             not normalized_room_type
-            or normalized_room_type
-            not in {item.casefold() for item in room_types}
+            or normalized_room_type not in {item.casefold() for item in room_types}
         ):
             continue
 
@@ -108,19 +103,11 @@ def select_rule_for_room(
             device_type=device_type,
             value_kind=value_kind,
             document=(
-                str(row["document"])
-                if row.get("document") is not None
-                else None
+                str(row["document"]) if row.get("document") is not None else None
             ),
-            clause=(
-                str(row["clause"])
-                if row.get("clause") is not None
-                else None
-            ),
+            clause=(str(row["clause"]) if row.get("clause") is not None else None),
             source_url=(
-                str(row["source_url"])
-                if row.get("source_url") is not None
-                else None
+                str(row["source_url"]) if row.get("source_url") is not None else None
             ),
         )
 
@@ -167,8 +154,7 @@ def place_devices_from_rule(
         estimated_points = (width / step) * (height / step)
         if estimated_points > 5000:
             raise ValueError(
-                f"Grid too dense. Rule value {step} is too small "
-                "for room dimensions."
+                f"Grid too dense. Rule value {step} is too small for room dimensions."
             )
 
     offset = step / 2.0
