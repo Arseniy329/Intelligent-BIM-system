@@ -6,32 +6,70 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "drawing": { "$ref": "#/$defs/Drawing" },
-    "drawingDetailResponse": { "$ref": "#/$defs/DrawingDetailResponse" },
-    "room": { "$ref": "#/$defs/Room" },
-    "device": { "$ref": "#/$defs/Device" },
-    "createDrawingRequest": { "$ref": "#/$defs/CreateDrawingRequest" },
-    "createDrawingResponse": { "$ref": "#/$defs/CreateDrawingResponse" },
-    "drawingResult": { "$ref": "#/$defs/DrawingResult" },
-    "processingJob": { "$ref": "#/$defs/ProcessingJob" }
+    "drawing": {
+      "$ref": "#/$defs/Drawing"
+    },
+    "drawingDetailResponse": {
+      "$ref": "#/$defs/DrawingDetailResponse"
+    },
+    "room": {
+      "$ref": "#/$defs/Room"
+    },
+    "device": {
+      "$ref": "#/$defs/Device"
+    },
+    "createDrawingRequest": {
+      "$ref": "#/$defs/CreateDrawingRequest"
+    },
+    "createDrawingResponse": {
+      "$ref": "#/$defs/CreateDrawingResponse"
+    },
+    "drawingResult": {
+      "$ref": "#/$defs/DrawingResult"
+    },
+    "processingJob": {
+      "$ref": "#/$defs/ProcessingJob"
+    },
+    "rule": {
+      "$ref": "#/$defs/Rule"
+    }
   },
   "$defs": {
     "DrawingStatus": {
       "type": "string",
-      "enum": ["pending", "uploaded", "processing", "processed", "error"]
+      "enum": [
+        "pending",
+        "uploaded",
+        "processing",
+        "processed",
+        "error"
+      ]
     },
     "DrawingDetailStatus": {
       "type": "string",
-      "enum": ["pending", "uploaded", "processing", "processed", "failed"]
+      "enum": [
+        "pending",
+        "uploaded",
+        "processing",
+        "processed",
+        "failed"
+      ]
     },
     "DrawingUnits": {
       "type": "string",
-      "enum": ["mm", "m"],
+      "enum": [
+        "mm",
+        "m"
+      ],
       "description": "Фактичні одиниці координат DXF після визначення API"
     },
     "RequestedDrawingUnits": {
       "type": "string",
-      "enum": ["mm", "m", "from_file"],
+      "enum": [
+        "mm",
+        "m",
+        "from_file"
+      ],
       "description": "Одиниці, задані користувачем, або команда визначити їх із DXF"
     },
     "Point": {
@@ -39,46 +77,114 @@
       "description": "Координата у двовимірній світовій системі DXF (WCS): початок (0, 0), +X праворуч, +Y вгору. Значення передаються без масштабування в одиницях Drawing.resolvedUnits; перетворення для Canvas/SVG виконує лише клієнт.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["x", "y"],
+      "required": [
+        "x",
+        "y"
+      ],
       "properties": {
-        "x": { "type": "number" },
-        "y": { "type": "number" }
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
       }
     },
     "Drawing": {
       "title": "Drawing",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "ownerId", "originalFileName", "storagePath", "resolvedUnits", "status", "createdAt"],
+      "required": [
+        "id",
+        "ownerId",
+        "originalFileName",
+        "storagePath",
+        "resolvedUnits",
+        "status",
+        "createdAt"
+      ],
       "properties": {
-        "id": { "type": "string", "format": "uuid" },
-        "ownerId": { "type": "string", "format": "uuid" },
-        "originalFileName": { "type": "string", "minLength": 1 },
-        "storagePath": { "type": "string", "minLength": 1 },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ownerId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "originalFileName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "storagePath": {
+          "type": "string",
+          "minLength": 1
+        },
         "resolvedUnits": {
           "description": "Фактичні одиниці координат. null, доки API не прочитає DXF. Якщо одиниці визначити неможливо, status стає error, а errorMessage пояснює причину.",
           "oneOf": [
-            { "$ref": "#/$defs/DrawingUnits" },
-            { "type": "null" }
+            {
+              "$ref": "#/$defs/DrawingUnits"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
-        "status": { "$ref": "#/$defs/DrawingStatus" },
-        "errorMessage": { "type": ["string", "null"] },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "status": {
+          "$ref": "#/$defs/DrawingStatus"
+        },
+        "errorMessage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
       }
     },
     "Room": {
       "title": "Room",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "drawingId", "name", "type", "height", "area", "polygon"],
+      "required": [
+        "id",
+        "drawingId",
+        "name",
+        "type",
+        "height",
+        "area",
+        "polygon"
+      ],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "drawingId": { "type": "string", "format": "uuid" },
-        "name": { "type": ["string", "null"] },
-        "type": { "type": ["string", "null"] },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "drawingId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "height": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "exclusiveMinimum": 0,
           "description": "Висота приміщення в метрах або null, якщо її не визначено"
         },
@@ -92,7 +198,9 @@
           "minItems": 3,
           "uniqueItems": true,
           "description": "Вершини контуру в координатах DXF. Полігон логічно замкнений; перша точка наприкінці масиву не повторюється.",
-          "items": { "$ref": "#/$defs/Point" }
+          "items": {
+            "$ref": "#/$defs/Point"
+          }
         }
       }
     },
@@ -100,53 +208,112 @@
       "title": "Device",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "drawingId", "roomId", "type", "position", "layer"],
+      "required": [
+        "id",
+        "drawingId",
+        "roomId",
+        "type",
+        "position",
+        "layer"
+      ],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "drawingId": { "type": "string", "format": "uuid" },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "drawingId": {
+          "type": "string",
+          "format": "uuid"
+        },
         "roomId": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1,
           "description": "Ідентифікатор кімнати або null для коридорів і нерозпізнаних зон"
         },
         "type": {
           "type": "string",
-          "enum": ["smoke_detector", "heat_detector", "sounder", "manual_call_point"]
+          "enum": [
+            "smoke_detector",
+            "heat_detector",
+            "sounder",
+            "manual_call_point"
+          ]
         },
-        "position": { "$ref": "#/$defs/Point" },
-        "layer": { "type": "string", "minLength": 1 }
+        "position": {
+          "$ref": "#/$defs/Point"
+        },
+        "layer": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "CreateDrawingRequest": {
       "title": "CreateDrawingRequest",
       "type": "object",
       "additionalProperties": false,
-      "required": ["fileName", "fileSizeBytes", "units"],
+      "required": [
+        "fileName",
+        "fileSizeBytes",
+        "units"
+      ],
       "properties": {
-        "fileName": { "type": "string", "pattern": "\\.[dD][xX][fF]$" },
-        "fileSizeBytes": { "type": "integer", "minimum": 1, "maximum": 52428800 },
-        "units": { "$ref": "#/$defs/RequestedDrawingUnits" }
+        "fileName": {
+          "type": "string",
+          "pattern": "\\.[dD][xX][fF]$"
+        },
+        "fileSizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 52428800
+        },
+        "units": {
+          "$ref": "#/$defs/RequestedDrawingUnits"
+        }
       }
     },
     "SignedUpload": {
       "title": "SignedUpload",
       "type": "object",
       "additionalProperties": false,
-      "required": ["url", "path", "expiresInSeconds"],
+      "required": [
+        "url",
+        "path",
+        "expiresInSeconds"
+      ],
       "properties": {
-        "url": { "type": "string", "format": "uri" },
-        "path": { "type": "string", "minLength": 1 },
-        "expiresInSeconds": { "type": "integer", "minimum": 1 }
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expiresInSeconds": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "CreateDrawingResponse": {
       "title": "CreateDrawingResponse",
       "type": "object",
       "additionalProperties": false,
-      "required": ["drawing", "upload"],
+      "required": [
+        "drawing",
+        "upload"
+      ],
       "properties": {
-        "drawing": { "$ref": "#/$defs/Drawing" },
-        "upload": { "$ref": "#/$defs/SignedUpload" }
+        "drawing": {
+          "$ref": "#/$defs/Drawing"
+        },
+        "upload": {
+          "$ref": "#/$defs/SignedUpload"
+        }
       }
     },
     "DrawingResult": {
@@ -154,28 +321,48 @@
       "description": "Публічний результат обробки. GET /drawings/{id} повертає нове тимчасове посилання; підписаний URL не зберігається в базі.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["drawing", "rooms", "devices"],
+      "required": [
+        "drawing",
+        "rooms",
+        "devices"
+      ],
       "dependentRequired": {
-        "downloadUrl": ["downloadUrlExpiresAt"],
-        "downloadUrlExpiresAt": ["downloadUrl"]
+        "downloadUrl": [
+          "downloadUrlExpiresAt"
+        ],
+        "downloadUrlExpiresAt": [
+          "downloadUrl"
+        ]
       },
       "properties": {
-        "drawing": { "$ref": "#/$defs/Drawing" },
+        "drawing": {
+          "$ref": "#/$defs/Drawing"
+        },
         "rooms": {
           "type": "array",
-          "items": { "$ref": "#/$defs/Room" }
+          "items": {
+            "$ref": "#/$defs/Room"
+          }
         },
         "devices": {
           "type": "array",
-          "items": { "$ref": "#/$defs/Device" }
+          "items": {
+            "$ref": "#/$defs/Device"
+          }
         },
         "downloadUrl": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "uri",
           "description": "Тимчасове підписане посилання на результат; null, доки результат не готовий"
         },
         "downloadUrlExpiresAt": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "date-time",
           "description": "Час завершення дії downloadUrl"
         }
@@ -185,36 +372,201 @@
       "title": "DrawingDetailResponse",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "ownerId", "originalFileName", "storagePath", "units", "status", "createdAt"],
+      "required": [
+        "id",
+        "ownerId",
+        "originalFileName",
+        "storagePath",
+        "units",
+        "status",
+        "createdAt"
+      ],
       "properties": {
-        "id": { "type": "string", "format": "uuid" },
-        "ownerId": { "type": "string", "format": "uuid" },
-        "originalFileName": { "type": "string", "minLength": 1 },
-        "storagePath": { "type": "string", "minLength": 1 },
-
-        "units": { "$ref": "#/$defs/DrawingUnits" },
-        "status": { "$ref": "#/$defs/DrawingDetailStatus" },
-
-        "createdAt": { "type": "string", "format": "date-time" },
-        "sourceDownloadUrl": { "type": ["string", "null"], "format": "uri" },
-        "sourceDownloadUrlExpiresAt": { "type": ["string", "null"], "format": "date-time" }
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ownerId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "originalFileName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "storagePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "units": {
+          "$ref": "#/$defs/DrawingUnits"
+        },
+        "status": {
+          "$ref": "#/$defs/DrawingDetailStatus"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "sourceDownloadUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        },
+        "sourceDownloadUrlExpiresAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
       }
     },
     "ProcessingJobStatus": {
       "type": "string",
-      "enum": ["queued", "processing", "completed", "failed"]
+      "enum": [
+        "queued",
+        "processing",
+        "completed",
+        "failed"
+      ]
     },
     "ProcessingJob": {
       "title": "ProcessingJob",
       "description": "POST /drawings/{id}/process запускає фонову обробку й повертає цю задачу. Статус перевіряється через GET /processing-jobs/{id}; completed відповідає Drawing.status=processed, після чого клієнт отримує результат через GET /drawings/{drawingId}.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "drawingId", "status", "errorMessage"],
+      "required": [
+        "id",
+        "drawingId",
+        "status",
+        "errorMessage"
+      ],
       "properties": {
-        "id": { "type": "string", "format": "uuid" },
-        "drawingId": { "type": "string", "format": "uuid" },
-        "status": { "$ref": "#/$defs/ProcessingJobStatus" },
-        "errorMessage": { "type": ["string", "null"] }
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "drawingId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/ProcessingJobStatus"
+        },
+        "errorMessage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Rule": {
+      "title": "Rule",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "ruleId",
+        "name",
+        "deviceType",
+        "roomTypes",
+        "minHeightM",
+        "maxHeightM",
+        "value",
+        "valueKind",
+        "document",
+        "clause",
+        "sourceUrl",
+        "verificationStatus"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Збігається з Finding.ruleId."
+        },
+        "ruleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deviceType": {
+          "type": "string",
+          "enum": [
+            "smoke_detector",
+            "heat_detector",
+            "sounder",
+            "manual_call_point"
+          ]
+        },
+        "roomTypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "minHeightM": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "maxHeightM": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "value": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "valueKind": {
+          "type": "string",
+          "enum": [
+            "max_grid_spacing_m",
+            "max_protected_area_m2",
+            "max_wall_distance_m",
+            "min_wall_clearance_m",
+            "min_sound_level_dba"
+          ]
+        },
+        "document": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clause": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Не вигадувати пункт, якщо його не звірено."
+        },
+        "sourceUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        },
+        "verificationStatus": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "needs_review"
+          ]
+        }
       }
     }
   }

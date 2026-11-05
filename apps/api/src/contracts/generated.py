@@ -27,7 +27,20 @@ class DrawingStatus(Enum):
     error = "error"
 
 
+class DrawingDetailStatus(Enum):
+    pending = "pending"
+    uploaded = "uploaded"
+    processing = "processing"
+    processed = "processed"
+    failed = "failed"
+
+
 class DrawingUnits(Enum):
+    mm = "mm"
+    m = "m"
+
+
+class RequestedDrawingUnits(Enum):
     mm = "mm"
     m = "m"
     from_file = "from_file"
@@ -49,8 +62,14 @@ class Drawing(BaseModel):
     ownerId: UUID
     originalFileName: constr(min_length=1)
     storagePath: constr(min_length=1)
-    resultStoragePath: str | None = None
-    units: DrawingUnits
+    resolvedUnits: DrawingUnits | None = Field(
+        ...,
+        description=(
+            "Фактичні одиниці координат. null, доки API не прочитає DXF. "
+            "Якщо одиниці визначити неможливо, status стає error, "
+            "а errorMessage пояснює причину."
+        ),
+    )
     status: DrawingStatus
     errorMessage: str | None = None
     createdAt: AwareDatetime
@@ -64,15 +83,27 @@ class Room(BaseModel):
     drawingId: UUID
     name: str | None
     type: str | None
-    height: PositiveFloat | None
-    area: confloat(ge=0.0)
-    polygon: list[Point] = Field(..., min_length=3)
+    height: PositiveFloat | None = Field(
+        ..., description="Висота приміщення в метрах або null, якщо її не визначено"
+    )
+    area: confloat(ge=0.0) = Field(
+        ..., description="Площа приміщення у квадратних метрах"
+    )
+    polygon: list[Point] = Field(
+        ...,
+        description=(
+            "Вершини контуру в координатах DXF. Полігон логічно замкнений; "
+            "перша точка наприкінці масиву не повторюється."
+        ),
+        min_length=3,
+    )
 
 
 class Type(Enum):
     smoke_detector = "smoke_detector"
     heat_detector = "heat_detector"
     sounder = "sounder"
+    manual_call_point = "manual_call_point"
 
 
 class Device(BaseModel):
@@ -81,7 +112,10 @@ class Device(BaseModel):
     )
     id: constr(min_length=1)
     drawingId: UUID
-    roomId: constr(min_length=1)
+    roomId: constr(min_length=1) | None = Field(
+        ...,
+        description="Ідентифікатор кімнати або null для коридорів і нерозпізнаних зон",
+    )
     type: Type
     position: Point
     layer: constr(min_length=1)
@@ -93,7 +127,7 @@ class CreateDrawingRequest(BaseModel):
     )
     fileName: constr(pattern=r"\.[dD][xX][fF]$")
     fileSizeBytes: conint(ge=1, le=52428800)
-    units: DrawingUnits
+    units: RequestedDrawingUnits
 
 
 class SignedUpload(BaseModel):
@@ -120,6 +154,48 @@ class DrawingResult(BaseModel):
     drawing: Drawing
     rooms: list[Room]
     devices: list[Device]
+    downloadUrl: AnyUrl | None = Field(
+        None,
+        description=(
+            "Тимчасове підписане посилання на результат; "
+            "null, доки результат не готовий"
+        ),
+    )
+    downloadUrlExpiresAt: AwareDatetime | None = Field(
+        None, description="Час завершення дії downloadUrl"
+    )
+
+
+class DrawingDetailResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    id: UUID
+    ownerId: UUID
+    originalFileName: constr(min_length=1)
+    storagePath: constr(min_length=1)
+    units: DrawingUnits
+    status: DrawingDetailStatus
+    createdAt: AwareDatetime
+    sourceDownloadUrl: AnyUrl | None = None
+    sourceDownloadUrlExpiresAt: AwareDatetime | None = None
+
+
+class ProcessingJobStatus(Enum):
+    queued = "queued"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+
+
+class ProcessingJob(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    id: UUID
+    drawingId: UUID
+    status: ProcessingJobStatus
+    errorMessage: str | None
 
 
 class BimContracts(BaseModel):
@@ -127,8 +203,10 @@ class BimContracts(BaseModel):
         extra="forbid",
     )
     drawing: Drawing | None = None
+    drawingDetailResponse: DrawingDetailResponse | None = None
     room: Room | None = None
     device: Device | None = None
     createDrawingRequest: CreateDrawingRequest | None = None
     createDrawingResponse: CreateDrawingResponse | None = None
     drawingResult: DrawingResult | None = None
+    processingJob: ProcessingJob | None = None

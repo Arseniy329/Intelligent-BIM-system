@@ -24,6 +24,7 @@ export interface BimContracts {
   createDrawingResponse?: CreateDrawingResponse;
   drawingResult?: DrawingResult;
   processingJob?: ProcessingJob;
+  rule?: Rule;
 }
 export interface Drawing {
   id: string;
@@ -125,4 +126,30 @@ export interface ProcessingJob {
   drawingId: string;
   status: ProcessingJobStatus;
   errorMessage: string | null;
+}
+export interface Rule {
+  /**
+   * Збігається з Finding.ruleId.
+   */
+  id: string;
+  ruleId: string;
+  name: string;
+  deviceType: "smoke_detector" | "heat_detector" | "sounder" | "manual_call_point";
+  roomTypes: string[];
+  minHeightM: number | null;
+  maxHeightM: number | null;
+  value: number;
+  valueKind:
+    | "max_grid_spacing_m"
+    | "max_protected_area_m2"
+    | "max_wall_distance_m"
+    | "min_wall_clearance_m"
+    | "min_sound_level_dba";
+  document: string | null;
+  /**
+   * Не вигадувати пункт, якщо його не звірено.
+   */
+  clause: string | null;
+  sourceUrl: string | null;
+  verificationStatus: "verified" | "needs_review";
 }

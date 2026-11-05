@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -84,7 +84,7 @@ async def create_user(
 
     user_id = auth_user.user.id
 
-    profile_payload = {
+    profile_payload: dict[str, Any] = {
         "id": user_id,
         "email": payload.email,
         "role": payload.role,
@@ -92,9 +92,7 @@ async def create_user(
     }
 
     profile_response = (
-        supabase.table("profiles")
-        .upsert(profile_payload, on_conflict="id")
-        .execute()
+        supabase.table("profiles").upsert(profile_payload, on_conflict="id").execute()
     )
 
     if not profile_response.data:
@@ -120,7 +118,7 @@ async def update_user(
 ):
     supabase = get_supabase_client_for_settings(settings)
 
-    updates: dict[str, object] = {}
+    updates: dict[str, Any] = {}
 
     if payload.role is not None:
         updates["role"] = payload.role
@@ -134,12 +132,7 @@ async def update_user(
             detail="No changes provided",
         )
 
-    response = (
-        supabase.table("profiles")
-        .update(updates)
-        .eq("id", user_id)
-        .execute()
-    )
+    response = supabase.table("profiles").update(updates).eq("id", user_id).execute()
 
     if not response.data:
         raise HTTPException(
