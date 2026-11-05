@@ -14,7 +14,6 @@ from src.core.exceptions import (
     NoValidContoursError,
 )
 
-
 # Scale factors from INSUNITS to meters (length)
 INSUNITS_SCALE_TO_METERS: dict[int, float] = {
     1: 0.0254,  # Inches
