@@ -19,6 +19,8 @@ export interface BimContracts {
   drawing?: Drawing;
   drawingDetailResponse?: DrawingDetailResponse;
   room?: Room;
+  roomType?: RoomType;
+  roomUpdateRequest?: RoomUpdateRequest;
   device?: Device;
   createDrawingRequest?: CreateDrawingRequest;
   createDrawingResponse?: CreateDrawingResponse;
@@ -76,6 +78,24 @@ export interface Room {
 export interface Point {
   x: number;
   y: number;
+}
+/**
+ * Запис довідника типів приміщень. GET /room-types повертає масив цих записів; Room.type містить code. Код unknown означає «Тип не визначено».
+ */
+export interface RoomType {
+  code: string;
+  name: string;
+  /**
+   * Приклади назв приміщень на кресленні, за якими пропонується тип
+   */
+  examples: string[];
+}
+/**
+ * Тіло PATCH /rooms/{id}. Потрібне хоча б одне поле. type — лише code з GET /room-types; height — у метрах, null очищає висоту.
+ */
+export interface RoomUpdateRequest {
+  type?: string;
+  height?: number | null;
 }
 export interface Device {
   id: string;
