@@ -9,6 +9,7 @@ from src.core.config import get_settings
 from src.core.exceptions import BIMException, bim_exception_handler
 from src.infrastructure.supabase import get_supabase_client
 from src.modules.cad.router import router as cad_router
+from src.modules.devices.router import router as devices_router
 from src.modules.drawings.router import router as drawings_router
 from src.modules.placement.router import router as placement_router
 from src.modules.rooms.router import router as rooms_router
@@ -43,6 +44,7 @@ app.include_router(rules_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(placement_router, prefix="/api/v1")
 app.include_router(rooms_router, prefix="/api/v1")
+app.include_router(devices_router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["system"])
