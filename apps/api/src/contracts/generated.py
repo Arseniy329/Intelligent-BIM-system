@@ -92,6 +92,26 @@ class Room(BaseModel):
     )
 
 
+class RoomType(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    code: constr(min_length=1)
+    name: constr(min_length=1)
+    examples: list[constr(min_length=1)] = Field(
+        ...,
+        description="Приклади назв приміщень на кресленні, за якими пропонується тип",
+    )
+
+
+class RoomUpdateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    type: constr(min_length=1) | None = None
+    height: confloat(le=100.0, gt=0.0) | None = None
+
+
 class Type(Enum):
     smoke_detector = "smoke_detector"
     heat_detector = "heat_detector"
@@ -243,6 +263,8 @@ class BimContracts(BaseModel):
     drawing: Drawing | None = None
     drawingDetailResponse: DrawingDetailResponse | None = None
     room: Room | None = None
+    roomType: RoomType | None = None
+    roomUpdateRequest: RoomUpdateRequest | None = None
     device: Device | None = None
     createDrawingRequest: CreateDrawingRequest | None = None
     createDrawingResponse: CreateDrawingResponse | None = None

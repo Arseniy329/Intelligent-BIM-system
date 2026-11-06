@@ -15,6 +15,12 @@
     "room": {
       "$ref": "#/$defs/Room"
     },
+    "roomType": {
+      "$ref": "#/$defs/RoomType"
+    },
+    "roomUpdateRequest": {
+      "$ref": "#/$defs/RoomUpdateRequest"
+    },
     "device": {
       "$ref": "#/$defs/Device"
     },
@@ -201,6 +207,56 @@
           "items": {
             "$ref": "#/$defs/Point"
           }
+        }
+      }
+    },
+    "RoomType": {
+      "title": "RoomType",
+      "description": "Запис довідника типів приміщень. GET /room-types повертає масив цих записів; Room.type містить code. Код unknown означає «Тип не визначено».",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "name",
+        "examples"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "examples": {
+          "type": "array",
+          "description": "Приклади назв приміщень на кресленні, за якими пропонується тип",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "RoomUpdateRequest": {
+      "title": "RoomUpdateRequest",
+      "description": "Тіло PATCH /rooms/{id}. Потрібне хоча б одне поле. type — лише code з GET /room-types; height — у метрах, null очищає висоту.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "height": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0,
+          "maximum": 100
         }
       }
     },
