@@ -1,4 +1,4 @@
-"""Room-type catalog and room-type suggestion by room name (BIM-71).
+"""Room-type catalog, room-type suggestion (BIM-71) and room outline helpers (BIM-120).
 
 The catalog lives in ``room_types.json`` (source: Confluence «11. Типи приміщень
 для класифікації»). Adding a type or an example name there changes suggestions
@@ -12,10 +12,17 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from src.contracts.generated import Point, Room, RoomType
+from shapely.geometry import Polygon
+
+from src.contracts.generated import Point, Room, RoomType, Source
 
 ROOM_TYPES_PATH = Path(__file__).with_name("room_types.json")
 UNKNOWN_ROOM_TYPE = "unknown"
+
+# DXF area unit -> m², used only when no room of the drawing has a known area.
+# Millimetres are the default, as in the parser (INSUNITS missing -> mm).
+UNITS_AREA_TO_M2: dict[str, float] = {"mm": 1e-6, "m": 1.0}
+DEFAULT_AREA_TO_M2 = UNITS_AREA_TO_M2["mm"]
 
 _BRACKETS_RE = re.compile(r"\([^)]*\)")
 # Splits on anything that is not a letter or digit, including "_" and "|".
@@ -93,8 +100,8 @@ def suggest_room_type(room_name: str | None) -> str:
     return best_code
 
 
-def room_from_row(row: dict[str, Any]) -> Room:
-    """Map a ``public.rooms`` row to the shared Room contract."""
+def row_points(row: dict[str, Any]) -> list[Point]:
+    """Read the ``polygon`` column of a ``public.rooms`` row."""
     points: list[Point] = []
     raw_polygon = row.get("polygon")
     if isinstance(raw_polygon, list):
@@ -103,9 +110,19 @@ def room_from_row(row: dict[str, Any]) -> Room:
                 points.append(Point(x=float(point["x"]), y=float(point["y"])))
             elif isinstance(point, (list, tuple)) and len(point) >= 2:
                 points.append(Point(x=float(point[0]), y=float(point[1])))
+    return points
 
+
+def room_from_row(row: dict[str, Any]) -> Room:
+    """Map a ``public.rooms`` row to the shared Room contract."""
     raw_height = row.get("height")
     height = float(raw_height) if raw_height is not None else None
+
+    raw_source = row.get("source")
+    source = (
+        Source(raw_source) if raw_source in {item.value for item in Source} else None
+    )
+    raw_confirmed = row.get("confirmed")
 
     return Room(
         id=str(row["id"]),
@@ -114,5 +131,45 @@ def room_from_row(row: dict[str, Any]) -> Room:
         type=row.get("type"),
         height=height if height is not None and height > 0 else None,
         area=float(row.get("area") or 0.0),
-        polygon=points,
+        polygon=row_points(row),
+        source=source,
+        confirmed=bool(raw_confirmed) if raw_confirmed is not None else None,
     )
+
+
+def validate_polygon(points: list[Point]) -> Polygon:
+    """Check a room outline from a request and return it as a shapely polygon.
+
+    Raises ValueError with a client-facing message if the outline is unusable.
+    """
+    coords = [(point.x, point.y) for point in points]
+    if len(coords) < 3:
+        raise ValueError("polygon must have at least 3 points")
+    if len(set(coords)) != len(coords):
+        raise ValueError(
+            "polygon points must be unique; do not repeat the first point at the end"
+        )
+    polygon = Polygon(coords)
+    if not polygon.is_valid or polygon.area <= 0:
+        raise ValueError("polygon must be a valid outline without self-intersections")
+    return polygon
+
+
+def area_scale_to_m2(rows: list[dict[str, Any]], drawing_units: str | None) -> float:
+    """Factor that turns a polygon area in DXF units into m² for this drawing.
+
+    Taken from the first room with a known area, so it matches the INSUNITS
+    scaling the parser used. Falls back to ``drawings.units`` (mm by default).
+    """
+    for row in rows:
+        try:
+            area = float(row.get("area") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        coords = [(point.x, point.y) for point in row_points(row)]
+        if area <= 0 or len(coords) < 3:
+            continue
+        polygon_area = Polygon(coords).area
+        if polygon_area > 0:
+            return area / polygon_area
+    return UNITS_AREA_TO_M2.get(drawing_units or "", DEFAULT_AREA_TO_M2)

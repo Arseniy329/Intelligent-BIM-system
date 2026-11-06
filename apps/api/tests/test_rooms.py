@@ -2,7 +2,6 @@ import sys
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -21,6 +20,7 @@ from src.modules.rooms.service import (
     room_type_exists,
     suggest_room_type,
 )
+from tests.fakes import FakeTable, fake_supabase
 
 FIXTURES_DIR = API_DIR / "tests" / "fixtures" / "test_drawing_dxf"
 
@@ -122,35 +122,13 @@ class TestParserSuggestsTypes(unittest.TestCase):
         self.assertTrue(all(room.type == UNKNOWN_ROOM_TYPE for room in rooms))
 
 
-class FakeTable:
-    """Chainable stand-in for a Supabase table query."""
-
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
-        self.rows = rows
-        self.updates: list[dict[str, Any]] = []
-        self._pending_update: dict[str, Any] | None = None
-
-    def select(self, *_args: Any) -> "FakeTable":
-        self._pending_update = None
-        return self
-
-    def eq(self, *_args: Any) -> "FakeTable":
-        return self
-
-    def limit(self, *_args: Any) -> "FakeTable":
-        return self
-
-    def update(self, values: dict[str, Any]) -> "FakeTable":
-        self._pending_update = values
-        self.updates.append(values)
-        return self
-
-    def execute(self) -> MagicMock:
-        if self._pending_update is not None:
-            return MagicMock(
-                data=[{**row, **self._pending_update} for row in self.rows]
-            )
-        return MagicMock(data=list(self.rows))
+def rect(width: float, height: float) -> list[dict[str, float]]:
+    return [
+        {"x": 0, "y": 0},
+        {"x": width, "y": 0},
+        {"x": width, "y": height},
+        {"x": 0, "y": height},
+    ]
 
 
 class TestRoomsApi(unittest.TestCase):
@@ -178,14 +156,16 @@ class TestRoomsApi(unittest.TestCase):
         }
         self.rooms_table = FakeTable([self.room_row])
         self.drawings_table = FakeTable(
-            [{"id": self.drawing_id, "owner_id": self.user_id}]
+            [{"id": self.drawing_id, "owner_id": self.user_id, "units": "mm"}]
         )
-
-        self.supabase = MagicMock()
-        self.supabase.table.side_effect = lambda name: {
-            "rooms": self.rooms_table,
-            "drawings": self.drawings_table,
-        }[name]
+        self.devices_table = FakeTable([])
+        self.supabase = fake_supabase(
+            {
+                "rooms": self.rooms_table,
+                "drawings": self.drawings_table,
+                "devices": self.devices_table,
+            }
+        )
 
         app.dependency_overrides[get_current_user] = lambda: self.current_user
         app.dependency_overrides[get_supabase_client] = lambda: self.supabase
@@ -280,12 +260,13 @@ class TestRoomsApi(unittest.TestCase):
 
     def test_patch_room_deleted_before_update_is_404(self) -> None:
         # SELECT finds the room, but it is gone by the time UPDATE runs.
-        def execute() -> MagicMock:
-            if self.rooms_table._pending_update is not None:
-                return MagicMock(data=[])
-            return MagicMock(data=[self.room_row])
+        update = self.rooms_table.update
 
-        self.rooms_table.execute = execute  # type: ignore[method-assign]
+        def update_after_room_was_deleted(values: dict[str, Any]) -> FakeTable:
+            self.rooms_table.rows.clear()
+            return update(values)
+
+        self.rooms_table.update = update_after_room_was_deleted  # type: ignore[method-assign]
         response = self.client.patch(
             f"/api/v1/rooms/{self.room_id}", json={"height": 3}
         )
@@ -297,6 +278,217 @@ class TestRoomsApi(unittest.TestCase):
         response = self.client.patch(
             f"/api/v1/rooms/{self.room_id}", json={"type": "office"}
         )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.rooms_table.updates, [])
+
+    # BIM-120: PATCH /rooms/{id} with polygon and confirmed
+
+    def test_patch_polygon_recalculates_area_from_drawing_ratio(self) -> None:
+        # The drawing says metres, but the parser's area for the existing room
+        # (20 m² for 4000x5000) shows the coordinates are millimetres.
+        self.drawings_table.rows[0]["units"] = "m"
+        response = self.client.patch(
+            f"/api/v1/rooms/{self.room_id}", json={"polygon": rect(6000, 5000)}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["area"], 30.0)
+        self.assertEqual(body["polygon"], rect(6000, 5000))
+        update = self.rooms_table.updates[-1]
+        self.assertEqual(update["area"], 30.0)
+        self.assertEqual(update["polygon"], rect(6000, 5000))
+        self.assertNotIn("confirmed", update)
+        self.assertNotIn("type", update)
+
+    def test_patch_polygon_falls_back_to_drawing_units(self) -> None:
+        cases = [
+            ("m", rect(6, 5)),
+            ("mm", rect(6000, 5000)),
+            ("from_file", rect(6000, 5000)),
+            (None, rect(6000, 5000)),
+        ]
+        for units, polygon in cases:
+            with self.subTest(units=units):
+                self.room_row["area"] = 0
+                self.drawings_table.rows[0]["units"] = units
+                response = self.client.patch(
+                    f"/api/v1/rooms/{self.room_id}", json={"polygon": polygon}
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["area"], 30.0)
+
+    def test_patch_confirmed(self) -> None:
+        response = self.client.patch(
+            f"/api/v1/rooms/{self.room_id}", json={"confirmed": True}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIs(response.json()["confirmed"], True)
+        self.assertEqual(response.json()["source"], "fire_rooms")
+        self.assertIs(self.rooms_table.updates[-1]["confirmed"], True)
+
+    def test_patch_rejects_invalid_polygons(self) -> None:
+        cases: dict[str, Any] = {
+            "two points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}],
+            "closing point repeated": rect(4000, 5000) + [{"x": 0, "y": 0}],
+            "duplicate point": [
+                {"x": 0, "y": 0},
+                {"x": 10, "y": 0},
+                {"x": 10, "y": 0},
+                {"x": 0, "y": 10},
+            ],
+            "self-intersecting": [
+                {"x": 0, "y": 0},
+                {"x": 10, "y": 10},
+                {"x": 10, "y": 0},
+                {"x": 0, "y": 10},
+            ],
+            "collinear": [{"x": 0, "y": 0}, {"x": 5, "y": 0}, {"x": 10, "y": 0}],
+            "null": None,
+        }
+        for label, polygon in cases.items():
+            with self.subTest(case=label):
+                response = self.client.patch(
+                    f"/api/v1/rooms/{self.room_id}", json={"polygon": polygon}
+                )
+                self.assertEqual(response.status_code, 422, response.text)
+        response = self.client.patch(
+            f"/api/v1/rooms/{self.room_id}", json={"confirmed": None}
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.rooms_table.updates, [])
+
+    # BIM-120: POST /drawings/{id}/rooms
+
+    def test_create_manual_room(self) -> None:
+        response = self.client.post(
+            f"/api/v1/drawings/{self.drawing_id}/rooms",
+            json={"name": "Кухня 2", "polygon": rect(3000, 2000)},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        body = response.json()
+        self.assertEqual(body["drawingId"], self.drawing_id)
+        self.assertEqual(body["name"], "Кухня 2")
+        self.assertEqual(body["type"], "kitchen")
+        self.assertEqual(body["area"], 6.0)
+        self.assertEqual(body["source"], "manual")
+        self.assertIs(body["confirmed"], True)
+        self.assertIsNone(body["height"])
+
+        inserted = self.rooms_table.inserts[-1]
+        self.assertEqual(inserted["id"], body["id"])
+        self.assertEqual(inserted["drawing_id"], self.drawing_id)
+        self.assertEqual(inserted["source"], "manual")
+        self.assertIs(inserted["confirmed"], True)
+        self.assertIs(inserted["type_confirmed"], False)
+
+    def test_create_room_with_explicit_type_and_height(self) -> None:
+        response = self.client.post(
+            f"/api/v1/drawings/{self.drawing_id}/rooms",
+            json={
+                "name": None,
+                "type": "storage",
+                "height": 3.0,
+                "polygon": rect(2000, 2000),
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["type"], "storage")
+        self.assertEqual(response.json()["height"], 3.0)
+        self.assertIs(self.rooms_table.inserts[-1]["type_confirmed"], True)
+
+    def test_create_room_in_empty_drawing_uses_units(self) -> None:
+        self.rooms_table.rows.clear()
+        response = self.client.post(
+            f"/api/v1/drawings/{self.drawing_id}/rooms",
+            json={"polygon": rect(2000, 3000)},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["type"], UNKNOWN_ROOM_TYPE)
+        self.assertEqual(response.json()["area"], 6.0)
+
+    def test_create_room_rejects_invalid_input(self) -> None:
+        cases: list[dict[str, Any]] = [
+            {},
+            {"name": "A"},
+            {"polygon": rect(10, 10), "type": "spaceship"},
+            {"polygon": rect(10, 10), "source": "fire_rooms"},
+            {"polygon": [{"x": 0, "y": 0}, {"x": 1, "y": 1}, {"x": 2, "y": 2}]},
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload):
+                response = self.client.post(
+                    f"/api/v1/drawings/{self.drawing_id}/rooms", json=payload
+                )
+                self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(self.rooms_table.inserts, [])
+
+    def test_create_room_access(self) -> None:
+        missing = self.client.post(
+            f"/api/v1/drawings/{uuid4()}/rooms", json={"polygon": rect(10, 10)}
+        )
+        self.assertEqual(missing.status_code, 404)
+        bad_id = self.client.post(
+            "/api/v1/drawings/not-a-uuid/rooms", json={"polygon": rect(10, 10)}
+        )
+        self.assertEqual(bad_id.status_code, 422)
+        self.drawings_table.rows[0]["owner_id"] = str(uuid4())
+        forbidden = self.client.post(
+            f"/api/v1/drawings/{self.drawing_id}/rooms",
+            json={"polygon": rect(10, 10)},
+        )
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(self.rooms_table.inserts, [])
+
+    # BIM-120: DELETE /rooms/{id}
+
+    def test_delete_room_detaches_its_devices(self) -> None:
+        other_room_id = str(uuid4())
+        self.devices_table.rows.extend(
+            [
+                {"id": "d1", "drawing_id": self.drawing_id, "room_id": self.room_id},
+                {"id": "d2", "drawing_id": self.drawing_id, "room_id": other_room_id},
+            ]
+        )
+        response = self.client.delete(f"/api/v1/rooms/{self.room_id}")
+        self.assertEqual(response.status_code, 204, response.text)
+        self.assertEqual(response.content, b"")
+        self.assertEqual(self.rooms_table.rows, [])
+        rooms_by_device = {d["id"]: d["room_id"] for d in self.devices_table.rows}
+        self.assertEqual(rooms_by_device, {"d1": None, "d2": other_room_id})
+
+    def test_delete_room_access(self) -> None:
+        missing = self.client.delete(f"/api/v1/rooms/{uuid4()}")
+        self.assertEqual(missing.status_code, 404)
+        self.drawings_table.rows[0]["owner_id"] = str(uuid4())
+        forbidden = self.client.delete(f"/api/v1/rooms/{self.room_id}")
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(self.rooms_table.deleted, [])
+        self.assertEqual(self.devices_table.updates, [])
+
+    # BIM-120: POST /drawings/{id}/rooms/confirm
+
+    def test_confirm_all_rooms_of_drawing(self) -> None:
+        self.room_row["confirmed"] = False
+        second_room = {**self.room_row, "id": str(uuid4())}
+        other_drawing_room = {
+            **self.room_row,
+            "id": str(uuid4()),
+            "drawing_id": str(uuid4()),
+        }
+        self.rooms_table.rows.extend([second_room, other_drawing_room])
+
+        response = self.client.post(f"/api/v1/drawings/{self.drawing_id}/rooms/confirm")
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(
+            {room["id"] for room in body}, {self.room_id, second_room["id"]}
+        )
+        self.assertTrue(all(room["confirmed"] is True for room in body))
+        self.assertIs(other_drawing_room["confirmed"], False)
+
+    def test_confirm_all_foreign_drawing_is_403(self) -> None:
+        self.drawings_table.rows[0]["owner_id"] = str(uuid4())
+        response = self.client.post(f"/api/v1/drawings/{self.drawing_id}/rooms/confirm")
         self.assertEqual(response.status_code, 403)
         self.assertEqual(self.rooms_table.updates, [])
 
