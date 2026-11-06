@@ -79,7 +79,7 @@ async def update_room(
             detail="type must be a code from GET /room-types",
         )
 
-    room = _get_room_for_user(supabase, room_id, current_user)
+    _get_room_for_user(supabase, room_id, current_user)
 
     values: dict[str, Any] = {"updated_at": datetime.now(UTC).isoformat()}
     if "type" in changed:
@@ -91,4 +91,10 @@ async def update_room(
     updated = _first_row(
         supabase.table("rooms").update(values).eq("id", str(room_id)).execute()
     )
-    return room_from_row(updated if updated is not None else {**room, **values})
+    if updated is None:
+        # The room was deleted after the access check, e.g. by reprocessing
+        # the drawing (POST /drawings/{id}/process replaces its rooms).
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Room not found"
+        )
+    return room_from_row(updated)

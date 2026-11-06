@@ -278,6 +278,20 @@ class TestRoomsApi(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    def test_patch_room_deleted_before_update_is_404(self) -> None:
+        # SELECT finds the room, but it is gone by the time UPDATE runs.
+        def execute() -> MagicMock:
+            if self.rooms_table._pending_update is not None:
+                return MagicMock(data=[])
+            return MagicMock(data=[self.room_row])
+
+        self.rooms_table.execute = execute  # type: ignore[method-assign]
+        response = self.client.patch(
+            f"/api/v1/rooms/{self.room_id}", json={"height": 3}
+        )
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(len(self.rooms_table.updates), 1)
+
     def test_patch_foreign_drawing_is_403(self) -> None:
         self.drawings_table.rows[0]["owner_id"] = str(uuid4())
         response = self.client.patch(
