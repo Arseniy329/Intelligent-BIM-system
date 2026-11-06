@@ -37,6 +37,15 @@ def get_length_scale(doc: ezdxf.document.Drawing) -> float:
     return INSUNITS_SCALE_TO_METERS.get(units_code, 0.001)
 
 
+def read_length_scale(file_path: str | Path) -> float:
+    """Metres per drawing unit of a DXF file, as parse_dxf_rooms would use."""
+    try:
+        doc = ezdxf.readfile(str(file_path))
+    except Exception as exc:
+        raise CADParsingError(f"Failed to read DXF file '{file_path}': {exc}") from exc
+    return get_length_scale(doc)
+
+
 def get_area_multiplier(doc: ezdxf.document.Drawing) -> float:
     """Calculate area multiplier to convert DXF units to square meters (m²)."""
     return get_length_scale(doc) ** 2

@@ -159,7 +159,14 @@ class TestRoomsApi(unittest.TestCase):
         }
         self.rooms_table = FakeTable([self.room_row])
         self.drawings_table = FakeTable(
-            [{"id": self.drawing_id, "owner_id": self.user_id, "units": "mm"}]
+            [
+                {
+                    "id": self.drawing_id,
+                    "owner_id": self.user_id,
+                    "units": "mm",
+                    "unit_scale_m": 0.001,
+                }
+            ]
         )
         self.devices_table = FakeTable([])
         self.supabase = fake_supabase(
@@ -286,10 +293,11 @@ class TestRoomsApi(unittest.TestCase):
 
     # BIM-120: PATCH /rooms/{id} with polygon and confirmed
 
-    def test_patch_polygon_recalculates_area_from_drawing_ratio(self) -> None:
-        # The drawing says metres, but the parser's area for the existing room
-        # (20 m² for 4000x5000) shows the coordinates are millimetres.
+    def test_patch_polygon_recalculates_area_from_stored_scale(self) -> None:
+        # Only drawings.unit_scale_m (mm here) counts: neither drawings.units
+        # nor the areas of other rooms.
         self.drawings_table.rows[0]["units"] = "m"
+        self.room_row["area"] = 0
         response = self.client.patch(
             f"/api/v1/rooms/{self.room_id}", json={"polygon": rect(6000, 5000)}
         )
@@ -303,22 +311,18 @@ class TestRoomsApi(unittest.TestCase):
         self.assertNotIn("confirmed", update)
         self.assertNotIn("type", update)
 
-    def test_patch_polygon_falls_back_to_drawing_units(self) -> None:
-        cases = [
-            ("m", rect(6, 5)),
-            ("mm", rect(6000, 5000)),
-            ("from_file", rect(6000, 5000)),
-            (None, rect(6000, 5000)),
-        ]
-        for units, polygon in cases:
-            with self.subTest(units=units):
-                self.room_row["area"] = 0
-                self.drawings_table.rows[0]["units"] = units
+    def test_patch_polygon_uses_stored_scale_for_each_unit(self) -> None:
+        cases = [(1.0, rect(6, 5)), (0.01, rect(600, 500)), (0.001, rect(6000, 5000))]
+        for unit_scale_m, polygon in cases:
+            with self.subTest(unit_scale_m=unit_scale_m):
+                self.drawings_table.rows[0]["unit_scale_m"] = unit_scale_m
                 response = self.client.patch(
                     f"/api/v1/rooms/{self.room_id}", json={"polygon": polygon}
                 )
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertEqual(response.json()["area"], 30.0)
+        # A stored scale never needs the source DXF.
+        self.supabase.storage.from_.return_value.download.assert_not_called()
 
     def test_patch_confirmed(self) -> None:
         response = self.client.patch(
@@ -399,7 +403,7 @@ class TestRoomsApi(unittest.TestCase):
         self.assertEqual(response.json()["height"], 3.0)
         self.assertIs(self.rooms_table.inserts[-1]["type_confirmed"], True)
 
-    def test_create_room_in_empty_drawing_uses_units(self) -> None:
+    def test_create_room_in_empty_drawing_uses_stored_scale(self) -> None:
         self.rooms_table.rows.clear()
         response = self.client.post(
             f"/api/v1/drawings/{self.drawing_id}/rooms",
@@ -594,6 +598,82 @@ class TestManualRoomAreaKeepsDrawingScale(unittest.TestCase):
                 )
                 self.assertEqual(edited.status_code, 200, edited.text)
                 self.assertAlmostEqual(edited.json()["area"], area_m2 / 2, places=3)
+
+    def test_drawing_processed_before_migration_007_recovers_scale(self) -> None:
+        """A processed drawing with unit_scale_m = NULL, without calling process.
+
+        The scale is read once from the source DXF and stored; rooms, including
+        manual edits, are never reprocessed.
+        """
+        length_scales = {6: 1.0, 4: 0.001, 5: 0.01, 2: 0.3048, 1: 0.0254}
+        download = self.supabase.storage.from_.return_value.download
+        for insunits, (width, height, area_m2) in UNIT_CASES.items():
+            with self.subTest(insunits=insunits):
+                drawing = self.drawings_table.rows[0]
+                drawing.update({"status": "processed", "unit_scale_m": None})
+                parsed_room = {
+                    "id": str(uuid4()),
+                    "drawing_id": self.drawing_id,
+                    "name": "Office",
+                    "area": area_m2,
+                    "polygon": rect(width, height),
+                    "source": "fire_rooms",
+                    "confirmed": False,
+                }
+                edited_room = {
+                    **parsed_room,
+                    "id": str(uuid4()),
+                    "name": "Office (edited)",
+                    "source": "manual",
+                    "confirmed": True,
+                }
+                self.rooms_table.rows[:] = [parsed_room, edited_room]
+                self.rooms_table.inserts.clear()
+                self.use_source_dxf(insunits, width, height)
+                download.reset_mock()
+
+                for room in list(self.rooms_table.rows):
+                    deleted = self.client.delete(f"/api/v1/rooms/{room['id']}")
+                    self.assertEqual(deleted.status_code, 204, deleted.text)
+
+                created = self.client.post(
+                    f"/api/v1/drawings/{self.drawing_id}/rooms",
+                    json={"name": "Office", "polygon": rect(width, height)},
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                self.assertEqual(created.json()["area"], area_m2)
+
+                edited = self.client.patch(
+                    f"/api/v1/rooms/{created.json()['id']}",
+                    json={"polygon": rect(width, height / 2)},
+                )
+                self.assertEqual(edited.status_code, 200, edited.text)
+                self.assertAlmostEqual(edited.json()["area"], area_m2 / 2, places=3)
+
+                # Scale stored on the drawing, source read only once.
+                self.assertEqual(drawing["unit_scale_m"], length_scales[insunits])
+                self.assertEqual(download.call_count, 1)
+                # Not reprocessed: only the hand-drawn room was inserted.
+                self.assertEqual(drawing["status"], "processed")
+                self.assertEqual(
+                    [row["id"] for row in self.rooms_table.inserts],
+                    [created.json()["id"]],
+                )
+
+    def test_unreadable_source_dxf_is_502_not_a_wrong_area(self) -> None:
+        self.drawings_table.rows[0].update(
+            {"status": "processed", "unit_scale_m": None}
+        )
+        self.supabase.storage.from_.return_value.download.side_effect = RuntimeError(
+            "storage down"
+        )
+        response = self.client.post(
+            f"/api/v1/drawings/{self.drawing_id}/rooms",
+            json={"polygon": rect(5, 4)},
+        )
+        self.assertEqual(response.status_code, 502, response.text)
+        self.assertEqual(self.rooms_table.inserts, [])
+        self.assertIsNone(self.drawings_table.rows[0]["unit_scale_m"])
 
 
 if __name__ == "__main__":

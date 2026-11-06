@@ -17,13 +17,12 @@ from src.contracts.generated import (
 from src.core.auth import CurrentUser, get_current_user
 from src.infrastructure.supabase import get_supabase_client
 from src.modules.drawings.access import all_rows, first_row, get_drawing_for_user
+from src.modules.drawings.service import get_unit_scale_m
 from src.modules.rooms.service import (
-    area_scale_to_m2,
     get_room_types,
     room_from_row,
     room_type_exists,
     row_points,
-    stored_area_scale_to_m2,
     suggest_room_type,
     validate_polygon,
 )
@@ -66,16 +65,8 @@ def _validated_polygon(polygon: RoomPolygon) -> tuple[list[Point], Polygon]:
 
 
 def _area_m2(supabase: Client, drawing: dict[str, Any], polygon: Polygon) -> float:
-    scale = stored_area_scale_to_m2(drawing)
-    if scale is None:
-        rows = all_rows(
-            supabase.table("rooms")
-            .select("area, polygon")
-            .eq("drawing_id", str(drawing["id"]))
-            .execute()
-        )
-        scale = area_scale_to_m2(rows, drawing.get("units"))
-    return round(polygon.area * scale, 4)
+    """Area in m², rounded like the parser does."""
+    return round(polygon.area * get_unit_scale_m(drawing, supabase) ** 2, 4)
 
 
 def _polygon_json(points: list[Point]) -> list[dict[str, float]]:

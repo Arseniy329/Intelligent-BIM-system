@@ -19,10 +19,6 @@ from src.contracts.generated import Point, Room, RoomType, Source
 ROOM_TYPES_PATH = Path(__file__).with_name("room_types.json")
 UNKNOWN_ROOM_TYPE = "unknown"
 
-# DXF area unit -> m², used only when no room of the drawing has a known area.
-# Millimetres are the default, as in the parser (INSUNITS missing -> mm).
-UNITS_AREA_TO_M2: dict[str, float] = {"mm": 1e-6, "m": 1.0}
-DEFAULT_AREA_TO_M2 = UNITS_AREA_TO_M2["mm"]
 
 _BRACKETS_RE = re.compile(r"\([^)]*\)")
 # Splits on anything that is not a letter or digit, including "_" and "|".
@@ -153,36 +149,3 @@ def validate_polygon(points: list[Point]) -> Polygon:
     if not polygon.is_valid or polygon.area <= 0:
         raise ValueError("polygon must be a valid outline without self-intersections")
     return polygon
-
-
-def stored_area_scale_to_m2(drawing: dict[str, Any]) -> float | None:
-    """m² per square drawing unit from ``drawings.unit_scale_m``, if it is set.
-
-    The parser stores the $INSUNITS length scale there when the drawing is
-    processed (migration 007), so it survives deleting every room.
-    """
-    try:
-        length_scale = float(drawing.get("unit_scale_m") or 0.0)
-    except (TypeError, ValueError):
-        return None
-    return length_scale**2 if length_scale > 0 else None
-
-
-def area_scale_to_m2(rows: list[dict[str, Any]], drawing_units: str | None) -> float:
-    """Fallback for drawings without ``unit_scale_m`` (processed before 007).
-
-    Taken from the first room with a known area, so it matches the INSUNITS
-    scaling the parser used. Falls back to ``drawings.units`` (mm by default).
-    """
-    for row in rows:
-        try:
-            area = float(row.get("area") or 0.0)
-        except (TypeError, ValueError):
-            continue
-        coords = [(point.x, point.y) for point in row_points(row)]
-        if area <= 0 or len(coords) < 3:
-            continue
-        polygon_area = Polygon(coords).area
-        if polygon_area > 0:
-            return area / polygon_area
-    return UNITS_AREA_TO_M2.get(drawing_units or "", DEFAULT_AREA_TO_M2)
