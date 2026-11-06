@@ -119,7 +119,9 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             self.assertGreater(room["area"], 0)
 
         # Verify drawings table status updated to 'processing'
-        mock_drawings_query.update.assert_called_with({"status": "processing"})
+        mock_drawings_query.update.assert_called_with(
+            {"status": "processing", "unit_scale_m": 0.001}
+        )
 
         # Verify /tmp cleanup
         files_after = set(tmp_dir.glob("*.dxf"))

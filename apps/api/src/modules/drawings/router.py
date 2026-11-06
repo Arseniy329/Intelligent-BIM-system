@@ -22,7 +22,7 @@ from src.core.config import get_settings
 from src.core.exceptions import BIMException
 from src.infrastructure.storage import cleanup_file, download_dxf_to_tmp
 from src.infrastructure.supabase import get_supabase_client
-from src.modules.cad.parser import parse_dxf_rooms
+from src.modules.cad.parser import parse_dxf_rooms_with_scale
 from src.modules.drawings.schemas import (
     CreateDrawingRequest,
     CreateDrawingResponse,
@@ -224,7 +224,9 @@ async def process_drawing(
         except (ValueError, TypeError):
             pass
 
-        rooms = parse_dxf_rooms(input_tmp_path, drawing_id=resolved_drawing_id)
+        rooms, unit_scale_m = parse_dxf_rooms_with_scale(
+            input_tmp_path, drawing_id=resolved_drawing_id
+        )
 
         supabase.table("rooms").delete().eq("drawing_id", drawing_id).execute()
 
@@ -244,9 +246,11 @@ async def process_drawing(
         if room_rows:
             supabase.table("rooms").insert(room_rows).execute()
 
-        supabase.table("drawings").update({"status": "processing"}).eq(
-            "id", drawing_id
-        ).execute()
+        # unit_scale_m (migration 007) lets manual room edits compute areas
+        # even after every parsed room has been deleted.
+        supabase.table("drawings").update(
+            {"status": "processing", "unit_scale_m": unit_scale_m}
+        ).eq("id", drawing_id).execute()
 
         return {
             "drawing_id": drawing_id,

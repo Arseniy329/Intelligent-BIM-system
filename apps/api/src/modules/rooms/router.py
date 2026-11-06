@@ -23,6 +23,7 @@ from src.modules.rooms.service import (
     room_from_row,
     room_type_exists,
     row_points,
+    stored_area_scale_to_m2,
     suggest_room_type,
     validate_polygon,
 )
@@ -65,13 +66,15 @@ def _validated_polygon(polygon: RoomPolygon) -> tuple[list[Point], Polygon]:
 
 
 def _area_m2(supabase: Client, drawing: dict[str, Any], polygon: Polygon) -> float:
-    rows = all_rows(
-        supabase.table("rooms")
-        .select("area, polygon")
-        .eq("drawing_id", str(drawing["id"]))
-        .execute()
-    )
-    scale = area_scale_to_m2(rows, drawing.get("units"))
+    scale = stored_area_scale_to_m2(drawing)
+    if scale is None:
+        rows = all_rows(
+            supabase.table("rooms")
+            .select("area, polygon")
+            .eq("drawing_id", str(drawing["id"]))
+            .execute()
+        )
+        scale = area_scale_to_m2(rows, drawing.get("units"))
     return round(polygon.area * scale, 4)
 
 
