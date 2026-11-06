@@ -168,8 +168,14 @@ async def update_device(
     updated = first_row(
         supabase.table("devices").update(values).eq("id", str(device_id)).execute()
     )
+    if updated is None:
+        # The device was deleted after the access check, e.g. by re-running
+        # placement (POST /drawings/{id}/place replaces all devices).
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Device not found"
+        )
     _regenerate_result(supabase, drawing_id)
-    return device_from_row(updated if updated is not None else {**device, **values})
+    return device_from_row(updated)
 
 
 @router.delete("/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)

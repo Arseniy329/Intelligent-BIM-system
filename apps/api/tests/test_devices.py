@@ -182,6 +182,22 @@ class TestDevicesApi(unittest.TestCase):
 
     # PATCH /devices/{id}
 
+    def test_patch_device_deleted_before_update_is_404(self) -> None:
+        # SELECT finds the device, but it is gone by the time UPDATE runs.
+        update = self.devices_table.update
+
+        def update_after_device_was_deleted(values: dict[str, Any]) -> FakeTable:
+            self.devices_table.rows.clear()
+            return update(values)
+
+        self.devices_table.update = update_after_device_was_deleted  # type: ignore[method-assign]
+        response = self.client.patch(
+            f"/api/v1/devices/{self.device_id}", json={"position": {"x": 1, "y": 1}}
+        )
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(len(self.devices_table.updates), 1)
+        self.regenerate.assert_not_called()
+
     def test_move_device(self) -> None:
         response = self.client.patch(
             f"/api/v1/devices/{self.device_id}",
