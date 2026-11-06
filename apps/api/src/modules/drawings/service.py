@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -6,7 +7,55 @@ from supabase import Client
 
 from src.core.config import get_settings
 from src.infrastructure.storage import cleanup_file, download_dxf_to_tmp
+from src.modules.cad.parser import read_length_scale
 from src.modules.cad.writer import DEFAULT_DEVICE_TYPE, add_devices_to_dxf
+
+
+def stored_unit_scale_m(drawing: dict[str, Any]) -> float | None:
+    """``drawings.unit_scale_m`` (metres per drawing unit), if it is set."""
+    try:
+        scale = float(drawing.get("unit_scale_m") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return scale if scale > 0 else None
+
+
+def get_unit_scale_m(drawing: dict[str, Any], supabase: Client) -> float:
+    """Metres per drawing unit for a drawing row.
+
+    Processing stores the parser's $INSUNITS scale in ``unit_scale_m``
+    (migration 007). Drawings processed earlier have NULL there: read
+    $INSUNITS once from the source DXF and store it. This never reprocesses
+    the drawing, so rooms and manual edits stay as they are.
+
+    Raises:
+        HTTPException: 502 if the source DXF cannot be downloaded or read;
+            a guessed scale would silently give wrong areas.
+    """
+    stored = stored_unit_scale_m(drawing)
+    if stored is not None:
+        return stored
+
+    tmp_path: Path | None = None
+    try:
+        storage_path = drawing.get("storage_path")
+        if not storage_path:
+            raise ValueError("drawing has no storage_path")
+        tmp_path = download_dxf_to_tmp(str(storage_path), client=supabase)
+        scale = read_length_scale(tmp_path)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not read drawing units from the source DXF",
+        ) from exc
+    finally:
+        cleanup_file(tmp_path)
+
+    supabase.table("drawings").update({"unit_scale_m": scale}).eq(
+        "id", str(drawing["id"])
+    ).execute()
+    drawing["unit_scale_m"] = scale
+    return scale
 
 
 def generate_and_upload_result_dxf(drawing_id: str, supabase: Client) -> str:
