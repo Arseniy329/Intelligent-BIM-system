@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PositiveFloat,
+    RootModel,
     confloat,
     conint,
     constr,
@@ -71,6 +72,12 @@ class Drawing(BaseModel):
     createdAt: AwareDatetime
 
 
+class Source(Enum):
+    auto = "auto"
+    fire_rooms = "fire_rooms"
+    manual = "manual"
+
+
 class Room(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -90,6 +97,27 @@ class Room(BaseModel):
         description="Вершини контуру в координатах DXF. Полігон логічно замкнений; перша точка наприкінці масиву не повторюється.",
         min_length=3,
     )
+    source: Source | None = None
+    confirmed: bool | None = None
+
+
+class RoomPolygon(RootModel[list[Point]]):
+    root: list[Point] = Field(
+        ...,
+        description="Новий контур у координатах DXF. Перша точка наприкінці масиву не повторюється; полігон має бути коректним (без самоперетинів). Площу перераховує API.",
+        min_length=3,
+        title="RoomPolygon",
+    )
+
+
+class RoomCreateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    name: str | None = None
+    type: constr(min_length=1) | None = None
+    height: confloat(le=100.0, gt=0.0) | None = None
+    polygon: RoomPolygon
 
 
 class RoomType(BaseModel):
@@ -110,6 +138,8 @@ class RoomUpdateRequest(BaseModel):
     )
     type: constr(min_length=1) | None = None
     height: confloat(le=100.0, gt=0.0) | None = None
+    polygon: RoomPolygon | None = None
+    confirmed: bool | None = None
 
 
 class Type(Enum):
@@ -132,6 +162,24 @@ class Device(BaseModel):
     type: Type
     position: Point
     layer: constr(min_length=1)
+
+
+class DeviceCreateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    type: Type
+    position: Point
+    roomId: UUID | None = None
+
+
+class DeviceUpdateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    type: Type | None = None
+    position: Point | None = None
+    roomId: UUID | None = None
 
 
 class CreateDrawingRequest(BaseModel):
@@ -265,7 +313,10 @@ class BimContracts(BaseModel):
     room: Room | None = None
     roomType: RoomType | None = None
     roomUpdateRequest: RoomUpdateRequest | None = None
+    roomCreateRequest: RoomCreateRequest | None = None
     device: Device | None = None
+    deviceCreateRequest: DeviceCreateRequest | None = None
+    deviceUpdateRequest: DeviceUpdateRequest | None = None
     createDrawingRequest: CreateDrawingRequest | None = None
     createDrawingResponse: CreateDrawingResponse | None = None
     drawingResult: DrawingResult | None = None

@@ -549,6 +549,8 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
                     {"x": 5000.0, "y": 0.0},
                     {"x": 5000.0, "y": 5000.0},
                 ],
+                "source": "manual",
+                "confirmed": True,
             }
         ]
 
@@ -606,6 +608,8 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertEqual(result.drawing.status.value, "processed")
         self.assertEqual(len(result.rooms), 1)
         self.assertEqual(result.rooms[0].name, "Room A")
+        self.assertEqual(response.json()["rooms"][0]["source"], "manual")
+        self.assertIs(response.json()["rooms"][0]["confirmed"], True)
         self.assertEqual(len(result.devices), 1)
         self.assertEqual(result.devices[0].position.x, 2500.0)
         self.assertIsNotNone(result.downloadUrl)
