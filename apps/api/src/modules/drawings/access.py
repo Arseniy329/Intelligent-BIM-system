@@ -33,7 +33,7 @@ def get_drawing_for_user(
     """
     drawing = first_row(
         supabase.table("drawings")
-        .select("id, owner_id, status, units")
+        .select("*")
         .eq("id", str(drawing_id))
         .limit(1)
         .execute()

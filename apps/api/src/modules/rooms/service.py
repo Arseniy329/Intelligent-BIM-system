@@ -155,8 +155,21 @@ def validate_polygon(points: list[Point]) -> Polygon:
     return polygon
 
 
+def stored_area_scale_to_m2(drawing: dict[str, Any]) -> float | None:
+    """m² per square drawing unit from ``drawings.unit_scale_m``, if it is set.
+
+    The parser stores the $INSUNITS length scale there when the drawing is
+    processed (migration 007), so it survives deleting every room.
+    """
+    try:
+        length_scale = float(drawing.get("unit_scale_m") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return length_scale**2 if length_scale > 0 else None
+
+
 def area_scale_to_m2(rows: list[dict[str, Any]], drawing_units: str | None) -> float:
-    """Factor that turns a polygon area in DXF units into m² for this drawing.
+    """Fallback for drawings without ``unit_scale_m`` (processed before 007).
 
     Taken from the first room with a known area, so it matches the INSUNITS
     scaling the parser used. Falls back to ``drawings.units`` (mm by default).

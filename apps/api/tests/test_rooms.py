@@ -1,9 +1,12 @@
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import ezdxf
 from fastapi.testclient import TestClient
 
 API_DIR = Path(__file__).resolve().parent.parent
@@ -491,6 +494,106 @@ class TestRoomsApi(unittest.TestCase):
         response = self.client.post(f"/api/v1/drawings/{self.drawing_id}/rooms/confirm")
         self.assertEqual(response.status_code, 403)
         self.assertEqual(self.rooms_table.updates, [])
+
+
+# $INSUNITS code -> (room width, room height) in drawing units, expected m².
+UNIT_CASES: dict[int, tuple[float, float, float]] = {
+    6: (5.0, 4.0, 20.0),  # metres
+    4: (5000.0, 4000.0, 20.0),  # millimetres
+    5: (500.0, 400.0, 20.0),  # centimetres
+    2: (10.0, 10.0, 9.2903),  # feet: 100 ft² = 9.290304 m²
+    1: (100.0, 100.0, 6.4516),  # inches: 10,000 in² = 6.4516 m²
+}
+
+
+class TestManualRoomAreaKeepsDrawingScale(unittest.TestCase):
+    """parse -> delete all rooms -> create the same outline keeps the area.
+
+    The scale must come from the drawing (DXF $INSUNITS at processing), not
+    from rooms the engineer can delete, and not from drawings.units, which
+    is 'from_file' here.
+    """
+
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.temp_dir, ignore_errors=True)
+        self.user_id = str(uuid4())
+        self.drawing_id = str(uuid4())
+        self.drawings_table = FakeTable(
+            [
+                {
+                    "id": self.drawing_id,
+                    "owner_id": self.user_id,
+                    "status": "uploaded",
+                    "units": "from_file",
+                    "storage_path": f"{self.user_id}/{self.drawing_id}/source.dxf",
+                }
+            ]
+        )
+        self.rooms_table = FakeTable([])
+        self.supabase = fake_supabase(
+            {
+                "drawings": self.drawings_table,
+                "rooms": self.rooms_table,
+                "devices": FakeTable([]),
+            }
+        )
+        current_user = CurrentUser(id=self.user_id, role="engineer")
+        app.dependency_overrides[get_current_user] = lambda: current_user
+        app.dependency_overrides[get_supabase_client] = lambda: self.supabase
+        self.addCleanup(app.dependency_overrides.clear)
+        self.client = TestClient(app)
+
+    def use_source_dxf(self, insunits: int, width: float, height: float) -> None:
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = insunits
+        doc.layers.add("FIRE_ROOMS")
+        msp = doc.modelspace()
+        msp.add_lwpolyline(
+            [(0, 0), (width, 0), (width, height), (0, height)],
+            close=True,
+            dxfattribs={"layer": "FIRE_ROOMS"},
+        )
+        msp.add_text(
+            "Office", dxfattribs={"layer": "FIRE_ROOMS", "height": height / 20}
+        ).set_placement((width / 2, height / 2))
+        path = self.temp_dir / f"source_{insunits}.dxf"
+        doc.saveas(str(path))
+        self.supabase.storage.from_.return_value.download.return_value = (
+            path.read_bytes()
+        )
+
+    def test_parse_delete_all_create_keeps_area(self) -> None:
+        for insunits, (width, height, area_m2) in UNIT_CASES.items():
+            with self.subTest(insunits=insunits):
+                self.drawings_table.rows[0]["status"] = "uploaded"
+                self.use_source_dxf(insunits, width, height)
+
+                processed = self.client.post(
+                    f"/api/v1/drawings/{self.drawing_id}/process"
+                )
+                self.assertEqual(processed.status_code, 200, processed.text)
+                self.assertEqual(len(self.rooms_table.rows), 1)
+                self.assertEqual(self.rooms_table.rows[0]["area"], area_m2)
+
+                for room in list(self.rooms_table.rows):
+                    deleted = self.client.delete(f"/api/v1/rooms/{room['id']}")
+                    self.assertEqual(deleted.status_code, 204, deleted.text)
+                self.assertEqual(self.rooms_table.rows, [])
+
+                created = self.client.post(
+                    f"/api/v1/drawings/{self.drawing_id}/rooms",
+                    json={"name": "Office", "polygon": rect(width, height)},
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                self.assertEqual(created.json()["area"], area_m2)
+
+                edited = self.client.patch(
+                    f"/api/v1/rooms/{created.json()['id']}",
+                    json={"polygon": rect(width, height / 2)},
+                )
+                self.assertEqual(edited.status_code, 200, edited.text)
+                self.assertAlmostEqual(edited.json()["area"], area_m2 / 2, places=3)
 
 
 if __name__ == "__main__":

@@ -26,16 +26,20 @@ INSUNITS_SCALE_TO_METERS: dict[int, float] = {
 DEFAULT_INSUNITS = 4  # Default to millimeters if missing
 
 
-def get_area_multiplier(doc: ezdxf.document.Drawing) -> float:
-    """Calculate area multiplier to convert DXF units to square meters (m²)."""
+def get_length_scale(doc: ezdxf.document.Drawing) -> float:
+    """Metres per drawing unit, from $INSUNITS (millimetres if missing/unknown)."""
     raw_units = doc.header.get("$INSUNITS", DEFAULT_INSUNITS)
     try:
         units_code = int(raw_units)
     except (ValueError, TypeError):
         units_code = DEFAULT_INSUNITS
 
-    length_scale = INSUNITS_SCALE_TO_METERS.get(units_code, 0.001)
-    return length_scale**2
+    return INSUNITS_SCALE_TO_METERS.get(units_code, 0.001)
+
+
+def get_area_multiplier(doc: ezdxf.document.Drawing) -> float:
+    """Calculate area multiplier to convert DXF units to square meters (m²)."""
+    return get_length_scale(doc) ** 2
 
 
 def parse_dxf_rooms(
@@ -44,12 +48,25 @@ def parse_dxf_rooms(
 ) -> list[Room]:
     """Parse DXF file and extract Room entities from FIRE_ROOMS layer.
 
+    See parse_dxf_rooms_with_scale; this variant drops the scale.
+    """
+    rooms, _ = parse_dxf_rooms_with_scale(file_path, drawing_id)
+    return rooms
+
+
+def parse_dxf_rooms_with_scale(
+    file_path: str | Path,
+    drawing_id: UUID | None = None,
+) -> tuple[list[Room], float]:
+    """Parse DXF file and extract Room entities from FIRE_ROOMS layer.
+
     Args:
         file_path: Path to the DXF file.
         drawing_id: Optional UUID of the drawing; generates a new one if not provided.
 
     Returns:
-        List of parsed Room entities.
+        Parsed Room entities and the length scale used for their areas
+        (metres per drawing unit), to be stored on the drawing.
 
     Raises:
         CADParsingError: If file loading or DXF reading fails.
@@ -65,8 +82,9 @@ def parse_dxf_rooms(
     except Exception as exc:
         raise CADParsingError(f"Failed to read DXF file '{file_path}': {exc}") from exc
 
-    # Determine area multiplier to square meters
-    area_multiplier = get_area_multiplier(doc)
+    # Determine length scale (m per unit) and area multiplier to square meters
+    length_scale = get_length_scale(doc)
+    area_multiplier = length_scale**2
 
     # Validate that FIRE_ROOMS layer exists (case-insensitive check)
     target_layer = "FIRE_ROOMS"
@@ -166,7 +184,7 @@ def parse_dxf_rooms(
         )
         rooms.append(room)
 
-    return rooms
+    return rooms, length_scale
 
 
 parse_dxf = parse_dxf_rooms
