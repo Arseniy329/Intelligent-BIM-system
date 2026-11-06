@@ -6,14 +6,15 @@ from supabase import Client
 
 from src.core.config import get_settings
 from src.infrastructure.storage import cleanup_file, download_dxf_to_tmp
-from src.modules.cad.writer import add_sensors_to_dxf
+from src.modules.cad.writer import DEFAULT_DEVICE_TYPE, add_devices_to_dxf
 
 
 def generate_and_upload_result_dxf(drawing_id: str, supabase: Client) -> str:
-    """Generate result DXF with placed sensor blocks and upload to Supabase storage.
+    """Generate result DXF with placed device blocks and upload to Supabase storage.
 
-    Fetches device placements from the database for the given drawing, adds
-    sensor block references to a copy of the source DXF, and uploads the
+    Fetches devices from the database for the given drawing, adds a block
+    reference per device (block chosen by device type) to a copy of the
+    source DXF, and uploads the
     modified drawing to '<owner_id>/<drawing_id>/result.dxf'.
 
     Args:
@@ -53,12 +54,13 @@ def generate_and_upload_result_dxf(drawing_id: str, supabase: Client) -> str:
         devices_response.data if isinstance(devices_response.data, list) else []
     )
 
-    sensor_coords: list[tuple[float, float]] = []
+    devices: list[tuple[float, float, str]] = []
     for dev in devices_data:
         if not isinstance(dev, dict):
             continue
+        device_type = str(dev.get("type") or DEFAULT_DEVICE_TYPE)
         if "x" in dev and "y" in dev and dev["x"] is not None and dev["y"] is not None:
-            sensor_coords.append((float(dev["x"]), float(dev["y"])))
+            devices.append((float(dev["x"]), float(dev["y"]), device_type))
         elif "position" in dev and isinstance(dev["position"], dict):
             pos = dev["position"]
             if (
@@ -67,7 +69,7 @@ def generate_and_upload_result_dxf(drawing_id: str, supabase: Client) -> str:
                 and pos["x"] is not None
                 and pos["y"] is not None
             ):
-                sensor_coords.append((float(pos["x"]), float(pos["y"])))
+                devices.append((float(pos["x"]), float(pos["y"]), device_type))
 
     input_tmp_path: Path | None = None
     output_tmp_path: Path | None = None
@@ -75,7 +77,7 @@ def generate_and_upload_result_dxf(drawing_id: str, supabase: Client) -> str:
         input_tmp_path = download_dxf_to_tmp(source_storage_path, client=supabase)
         output_tmp_path = Path("/tmp") / f"{uuid4()}_result.dxf"
 
-        add_sensors_to_dxf(input_tmp_path, output_tmp_path, sensor_coords)
+        add_devices_to_dxf(input_tmp_path, output_tmp_path, devices)
 
         output_storage_path = f"{owner_id}/{drawing_id}/result.dxf"
         supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(

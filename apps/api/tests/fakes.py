@@ -22,6 +22,7 @@ class FakeTable:
         self._operation = "select"
         self._values: Any = None
         self._filters: list[tuple[str, Any]] = []
+        self._single = False
 
     def select(self, *_args: Any) -> "FakeTable":
         self._reset()
@@ -53,8 +54,13 @@ class FakeTable:
     def limit(self, *_args: Any) -> "FakeTable":
         return self
 
+    def single(self) -> "FakeTable":
+        self._single = True
+        return self
+
     def execute(self) -> MagicMock:
         operation, values, filters = self._operation, self._values, self._filters
+        single = self._single
         self._reset()
         matched = [
             row
@@ -76,6 +82,8 @@ class FakeTable:
             self.rows[:] = [
                 row for row in self.rows if not any(row is m for m in matched)
             ]
+        if single:
+            return MagicMock(data=dict(matched[0]) if matched else None)
         return MagicMock(data=[dict(row) for row in matched])
 
 

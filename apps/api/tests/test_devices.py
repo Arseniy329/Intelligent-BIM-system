@@ -1,10 +1,13 @@
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 from uuid import uuid4
 
+import ezdxf
 from fastapi.testclient import TestClient
 
 API_DIR = Path(__file__).resolve().parent.parent
@@ -260,6 +263,131 @@ class TestDevicesApi(unittest.TestCase):
         forbidden = self.client.delete(f"/api/v1/devices/{self.device_id}")
         self.assertEqual(forbidden.status_code, 403)
         self.assert_nothing_written()
+
+
+class TestDeviceEditsResultDxf(unittest.TestCase):
+    """Device edits through the API produce a real result DXF with typed blocks.
+
+    Only storage is faked: the source download returns a local DXF and the
+    upload keeps the bytes, so the DXF written by ezdxf is read back as-is.
+    """
+
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.temp_dir, ignore_errors=True)
+        source = ezdxf.new("R2010")
+        source.modelspace().add_lwpolyline(
+            [(0, 0), (5000, 0), (5000, 5000), (0, 5000)], close=True
+        )
+        self.source_dxf = self.temp_dir / "source.dxf"
+        source.saveas(str(self.source_dxf))
+
+        self.user_id = str(uuid4())
+        self.drawing_id = str(uuid4())
+        self.device_id = str(uuid4())
+        self.devices_table = FakeTable(
+            [
+                {
+                    "id": self.device_id,
+                    "drawing_id": self.drawing_id,
+                    "room_id": None,
+                    "rule_id": str(uuid4()),
+                    "type": "smoke_detector",
+                    "layer": "SYS_FIRE_SENSORS",
+                    "x": 1000.0,
+                    "y": 1000.0,
+                }
+            ]
+        )
+        drawings_table = FakeTable(
+            [
+                {
+                    "id": self.drawing_id,
+                    "owner_id": self.user_id,
+                    "status": "processed",
+                    "units": "mm",
+                    "storage_path": f"{self.user_id}/{self.drawing_id}/source.dxf",
+                }
+            ]
+        )
+        self.supabase = fake_supabase(
+            {
+                "drawings": drawings_table,
+                "rooms": FakeTable([]),
+                "devices": self.devices_table,
+            }
+        )
+        self.uploads: list[bytes] = []
+        self.supabase.storage.from_.return_value.upload.side_effect = (
+            lambda path, file, file_options: self.uploads.append(
+                Path(file).read_bytes()
+            )
+        )
+
+        download = patch(
+            "src.modules.drawings.service.download_dxf_to_tmp",
+            side_effect=self._download_copy,
+        )
+        download.start()
+        self.addCleanup(download.stop)
+
+        current_user = CurrentUser(id=self.user_id, role="engineer")
+        app.dependency_overrides[get_current_user] = lambda: current_user
+        app.dependency_overrides[get_supabase_client] = lambda: self.supabase
+        self.addCleanup(app.dependency_overrides.clear)
+        self.client = TestClient(app)
+
+    def _download_copy(self, *_args: Any, **_kwargs: Any) -> Path:
+        # The generator deletes the downloaded file, so hand out a fresh copy.
+        copy = self.temp_dir / f"{uuid4()}.dxf"
+        shutil.copy(self.source_dxf, copy)
+        return copy
+
+    def last_result_blocks(self) -> dict[tuple[float, float], str]:
+        result = self.temp_dir / f"result-{len(self.uploads)}.dxf"
+        result.write_bytes(self.uploads[-1])
+        msp = ezdxf.readfile(str(result)).modelspace()
+        return {
+            (e.dxf.insert.x, e.dxf.insert.y): e.dxf.name
+            for e in msp
+            if e.dxftype() == "INSERT" and e.dxf.layer == "SYS_FIRE_SENSORS"
+        }
+
+    def test_each_device_type_is_exported_with_its_own_block(self) -> None:
+        created = {
+            "heat_detector": (2000.0, 1000.0),
+            "manual_call_point": (3000.0, 1000.0),
+            "sounder": (4000.0, 1000.0),
+        }
+        for device_type, (x, y) in created.items():
+            response = self.client.post(
+                f"/api/v1/drawings/{self.drawing_id}/devices",
+                json={"type": device_type, "position": {"x": x, "y": y}},
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+
+        self.assertEqual(len(self.uploads), 3)
+        self.assertEqual(
+            self.last_result_blocks(),
+            {
+                (1000.0, 1000.0): "FIRE_DET_SMOKE",
+                (2000.0, 1000.0): "FIRE_DET_HEAT",
+                (3000.0, 1000.0): "FIRE_MCP",
+                (4000.0, 1000.0): "FIRE_SOUNDER",
+            },
+        )
+
+    def test_changing_type_and_position_updates_the_exported_block(self) -> None:
+        response = self.client.patch(
+            f"/api/v1/devices/{self.device_id}",
+            json={"type": "manual_call_point", "position": {"x": 1500, "y": 2500}},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.last_result_blocks(), {(1500.0, 2500.0): "FIRE_MCP"})
+
+        response = self.client.delete(f"/api/v1/devices/{self.device_id}")
+        self.assertEqual(response.status_code, 204, response.text)
+        self.assertEqual(self.last_result_blocks(), {})
 
 
 if __name__ == "__main__":
