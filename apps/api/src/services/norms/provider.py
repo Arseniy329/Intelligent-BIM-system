@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -58,7 +57,11 @@ UKRAINIAN_NORMS_SYSTEM_PROMPT: str = (
     "офіційного тексту чинного українського нормативу, обов'язково встанови "
     'status = "needs_verification", clause = null, sourceUrl = null.\n'
     "3. НІКОЛИ не вигадуй номер пункту, таблиці або вимогу.\n"
-    "4. Відповідь надай СТРОГО у валідному форматі JSON без зайвого тексту:\n"
+    "4. Для статусу 'found_in_official_source' ОБОВ'ЯЗКОВО надай точну цитату "
+    "з тексту офіційного нормативу в полі 'rawSnippet' (не менше 10 символів). "
+    "Без перевіреної цитати самосертифікація заборонена — встанови "
+    "'needs_verification'.\n"
+    "5. Відповідь надай СТРОГО у валідному форматі JSON без зайвого тексту:\n"
     "{\n"
     '  "document": "назва чинного українського нормативу або null",\n'
     '  "clause": "номер пункту чи таблиці або null",\n'
@@ -159,13 +162,8 @@ class LLMDomainRestrictedSearchProvider(BaseNormsSearchProvider):
         llm_caller: Callable[[str, str], Awaitable[str]] | None = None,
         dry_run: bool = False,
     ) -> None:
-        self.api_key: str | None = (
-            api_key
-            or os.getenv("NORMS_SEARCH_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-            or os.getenv("GEMINI_API_KEY")
-        )
-        self.base_url: str | None = base_url or os.getenv("NORMS_SEARCH_PROVIDER_URL")
+        self.api_key: str | None = api_key
+        self.base_url: str | None = base_url
         self.model: str = model
         self.http_client: httpx.AsyncClient | None = http_client
         self.llm_caller: Callable[[str, str], Awaitable[str]] | None = llm_caller

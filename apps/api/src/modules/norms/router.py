@@ -18,6 +18,7 @@ from src.contracts.norms import (
     NormLookupResult,
     NormVerificationStatus,
 )
+from src.core.auth import CurrentUser, get_current_user
 from src.services.norms.service import NormsService, get_norms_service
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ router = APIRouter(prefix="/norms", tags=["norms"])
 )
 async def lookup_norms(
     request: NormLookupRequest,
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
     service: Annotated[NormsService, Depends(get_norms_service)],
 ) -> NormLookupResult:
     """Performs domain-restricted search for Ukrainian fire safety standards.

@@ -1,13 +1,17 @@
-"""Automated normative benchmark verification suite (BIM-163 / BIM-168).
+"""Offline Fixture & Contract Verification Suite (Mock Provider) (BIM-163 / BIM-168).
 
-Executes the 5 target engineering benchmark queries across service & API layers:
+Validates contract serialization, guard rules, and edge-case handling across
+5 engineering benchmark test cases using deterministic offline mock fixtures:
 - Benchmark 1: Димовий сповіщувач — площа (ДБН В.2.5-56:2014, Таблиця А.1 -> 85 м²)
 - Benchmark 2: Димовий сповіщувач — відстань (ДБН В.2.5-56:2014, Таблиця А.1 -> 9,0 м)
 - Benchmark 3: Відстань до стіни (ДБН В.2.5-56:2014 -> від 0,5 м до 4,5 м)
 - Benchmark 4 (Negative): Obsolete norm (СНиП / НПБ -> needs_verification, clause=None)
 - Benchmark 5 (Negative): Non-existent requirement -> needs_verification, clause=None
 
-STRICT RESTRICTION: No external network calls in automated tests.
+IMPORTANT NOTE:
+These tests verify deterministic contracts, anti-hallucination guard logic,
+and HTTP status semantics. They do NOT evaluate live LLM generative accuracy
+or third-party model performance without search retrieval.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ from src.contracts.norms import (  # noqa: E402
     NormVerificationStatus,
     is_official_domain,
 )
+from src.core.auth import CurrentUser, get_current_user  # noqa: E402
 from src.infrastructure.supabase import get_supabase_client  # noqa: E402
 from src.main import app  # noqa: E402
 from src.services.norms.provider import (  # noqa: E402
@@ -132,7 +137,11 @@ def benchmark_fixture_dispatcher(request: NormLookupRequest) -> NormLookupResult
 
 
 class TestNormsBenchmarks(unittest.IsolatedAsyncioTestCase):
-    """Benchmark test suite verifying 5 engineering queries (BIM-168)."""
+    """Offline Fixture & Contract Verification Suite (Mock Provider) (BIM-168).
+
+    Validates that the contract and guard correctly handle active standards,
+    obsolete Soviet norms, non-existent norms, and official whitelists.
+    """
 
     def setUp(self) -> None:
         self.provider: BaseNormsSearchProvider = MockNormsSearchProvider(
@@ -143,6 +152,9 @@ class TestNormsBenchmarks(unittest.IsolatedAsyncioTestCase):
         self.mock_supabase = MagicMock()
         app.dependency_overrides[get_supabase_client] = lambda: self.mock_supabase
         app.dependency_overrides[get_norms_service] = lambda: self.service
+        app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+            id="test-user-id", email="engineer@example.com"
+        )
         self.client = TestClient(app)
 
     def tearDown(self) -> None:

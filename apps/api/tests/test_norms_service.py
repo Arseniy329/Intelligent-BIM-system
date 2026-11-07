@@ -205,6 +205,7 @@ class TestNormsServiceAndGuard(unittest.IsolatedAsyncioTestCase):
             checkedAt=datetime.now(UTC),
             status=NormVerificationStatus.found_in_official_source,
             summary="Перевірено з кешуванням",
+            rawSnippet="Таблиця А.1 — площа: 85 м².",
         )
         mock_provider = MockNormsSearchProvider(default_result=valid_result)
         service = NormsService(provider=mock_provider, cache_ttl_seconds=300.0)
@@ -248,6 +249,7 @@ class TestNormsServiceAndGuard(unittest.IsolatedAsyncioTestCase):
             checkedAt=datetime.now(UTC),
             status=NormVerificationStatus.found_in_official_source,
             summary="Тест TTL",
+            rawSnippet="Таблиця А.1 — площа: 85 м².",
         )
         mock_provider = MockNormsSearchProvider(default_result=valid_result)
         # TTL of 0.01 seconds

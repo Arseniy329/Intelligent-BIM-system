@@ -4,7 +4,9 @@ Enforces:
 1. Citations MUST originate from whitelisted official Ukrainian domains.
 2. Complete rejection of obsolete Soviet/Russian standards (СНиП, ГОСТ, НПБ).
 3. If unverified or missing official source, clause is strictly None.
-4. CheckedAt is updated with an active UTC timestamp.
+4. Evidence-based verification: found_in_official_source requires active standard
+   and substantiated raw snippet quote from official text.
+5. CheckedAt is updated with an active UTC timestamp.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from datetime import UTC, datetime
 from src.contracts.norms import (
     NormLookupResult,
     NormVerificationStatus,
+    is_active_standard,
     is_disallowed_document,
     is_official_domain,
 )
@@ -46,31 +49,35 @@ def sanitize_and_verify_result(raw_result: NormLookupResult) -> NormLookupResult
             f"{summary}"
         ).strip()
 
-    # 2. Official Ukrainian domain verification
-    if not source_url or not is_official_domain(source_url):
-        if status == NormVerificationStatus.found_in_official_source:
+    # 2. Evidence-Based Verification for official status
+    # A whitelist check on URL alone is NOT proof.
+    # We require: active standard + official domain + substantiated rawSnippet.
+    has_active_std = bool(document and is_active_standard(document))
+    has_official_url = bool(source_url and is_official_domain(source_url))
+    has_proof_snippet = bool(raw_snippet and len(raw_snippet.strip()) >= 10)
+    has_valid_clause = bool(clause and clause.strip())
+
+    if status == NormVerificationStatus.found_in_official_source:
+        if not (
+            has_active_std
+            and has_official_url
+            and has_proof_snippet
+            and has_valid_clause
+        ):
             status = NormVerificationStatus.needs_verification
+            clause = None
+            if not has_official_url or not has_active_std or not has_proof_snippet:
+                source_url = None
+
+    # 3. Clean unverified URLs if not official
+    if source_url and not is_official_domain(source_url):
         source_url = None
-        clause = None
 
-    # 3. Document presence for verified status
-    if not document or not document.strip():
-        if status == NormVerificationStatus.found_in_official_source:
-            status = NormVerificationStatus.needs_verification
-        document = None
-        clause = None
-
-    # 4. Clause presence and safety
-    if not clause or not clause.strip():
-        clause = None
-        if status == NormVerificationStatus.found_in_official_source:
-            status = NormVerificationStatus.needs_verification
-
-    # 5. Strict prohibition: If unverified, clause MUST be None (no hallucinations)
+    # 4. Strict prohibition: If unverified, clause MUST be None (no hallucinations)
     if status == NormVerificationStatus.needs_verification:
         clause = None
 
-    # 6. Fallback non-empty summary
+    # 5. Fallback non-empty summary
     clean_summary = (summary or "").strip()
     if not clean_summary:
         clean_summary = (

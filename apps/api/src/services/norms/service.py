@@ -10,13 +10,15 @@ import hashlib
 import json
 import logging
 import time
-from functools import lru_cache
+from typing import Annotated
+
+from fastapi import Depends
 
 from src.contracts.norms import (
     NormLookupRequest,
     NormLookupResult,
 )
-from src.core.config import get_settings
+from src.core.config import Settings, get_settings
 from src.services.norms.guard import sanitize_and_verify_result
 from src.services.norms.provider import (
     BaseNormsSearchProvider,
@@ -139,9 +141,16 @@ class NormsService:
         return await self.lookup(request)
 
 
-@lru_cache
-def get_norms_service() -> NormsService:
-    """Dependency provider for NormsService."""
-    settings = get_settings()
-    ttl = getattr(settings, "NORMS_CACHE_TTL_SECONDS", 3600)
-    return NormsService(cache_ttl_seconds=float(ttl))
+def get_norms_service(
+    settings: Annotated[Settings | None, Depends(get_settings)] = None,
+) -> NormsService:
+    """Dependency provider for NormsService configured strictly from Settings."""
+    effective_settings = settings if settings is not None else get_settings()
+    provider = LLMDomainRestrictedSearchProvider(
+        api_key=effective_settings.NORMS_SEARCH_API_KEY,
+        base_url=effective_settings.NORMS_SEARCH_PROVIDER_URL,
+    )
+    return NormsService(
+        provider=provider,
+        cache_ttl_seconds=float(effective_settings.NORMS_CACHE_TTL_SECONDS),
+    )

@@ -107,6 +107,39 @@ def is_disallowed_document(document_name: str | None) -> bool:
     return False
 
 
+ACTIVE_STANDARDS_WHITELIST: tuple[str, ...] = (
+    "ДБН В.2.5-56:2014",
+    "ДСТУ EN 54",
+    "ДБН В.1.1-7:2016",
+)
+
+
+def is_active_standard(document_name: str | None) -> bool:
+    """Checks whether a document corresponds to verified active Ukrainian standards."""
+    if not document_name or not isinstance(document_name, str):
+        return False
+
+    if is_disallowed_document(document_name):
+        return False
+
+    normalized = (
+        document_name.strip()
+        .upper()
+        .replace("DBN", "ДБН")
+        .replace("DSTU", "ДСТУ")
+        .replace("V.", "В.")
+    )
+
+    if "ДБН В.2.5-56" in normalized:
+        return True
+    if "ДСТУ EN 54" in normalized or "ДСТУ-Н CEN/TS 54" in normalized:
+        return True
+    if "ДБН В.1.1-7" in normalized:
+        return True
+
+    return False
+
+
 class NormLookupContext(BaseModel):
     """Context parameters for norms search query. Zero Any allowed."""
 
@@ -124,7 +157,12 @@ class NormLookupRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    query: str = Field(..., min_length=1, description="Пошуковий запит користувача")
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Пошуковий запит користувача",
+    )
     context: NormLookupContext | None = None
 
     @field_validator("query")
@@ -133,6 +171,8 @@ class NormLookupRequest(BaseModel):
         trimmed = v.strip()
         if not trimmed:
             raise ValueError("Пошуковий запит не може бути порожнім")
+        if len(trimmed) > 500:
+            raise ValueError("Пошуковий запит не може перевищувати 500 символів")
         return trimmed
 
 

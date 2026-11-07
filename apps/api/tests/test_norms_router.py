@@ -36,6 +36,7 @@ from src.contracts.norms import (  # noqa: E402
     NormLookupResult,
     NormVerificationStatus,
 )
+from src.core.auth import CurrentUser, get_current_user  # noqa: E402
 from src.infrastructure.supabase import get_supabase_client  # noqa: E402
 from src.main import app  # noqa: E402
 from src.services.norms.provider import MockNormsSearchProvider  # noqa: E402
@@ -48,6 +49,9 @@ class TestNormsRouter(unittest.TestCase):
     def setUp(self) -> None:
         self.mock_supabase = MagicMock()
         app.dependency_overrides[get_supabase_client] = lambda: self.mock_supabase
+        app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+            id="test-user-id", email="engineer@example.com"
+        )
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
