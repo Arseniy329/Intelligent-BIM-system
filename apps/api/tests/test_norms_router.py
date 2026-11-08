@@ -40,13 +40,20 @@ from src.core.auth import CurrentUser, get_current_user  # noqa: E402
 from src.infrastructure.supabase import get_supabase_client  # noqa: E402
 from src.main import app  # noqa: E402
 from src.services.norms.provider import MockNormsSearchProvider  # noqa: E402
-from src.services.norms.service import NormsService, get_norms_service  # noqa: E402
+from src.services.norms.service import (  # noqa: E402
+    NormsService,
+    get_norms_service,
+    reset_norms_rate_limiter,
+    reset_norms_service,
+)
 
 
 class TestNormsRouter(unittest.TestCase):
     """Integration test suite for /norms/lookup endpoint."""
 
     def setUp(self) -> None:
+        reset_norms_service()
+        reset_norms_rate_limiter()
         self.mock_supabase = MagicMock()
         app.dependency_overrides[get_supabase_client] = lambda: self.mock_supabase
         app.dependency_overrides[get_current_user] = lambda: CurrentUser(
@@ -55,6 +62,8 @@ class TestNormsRouter(unittest.TestCase):
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
+        reset_norms_service()
+        reset_norms_rate_limiter()
         app.dependency_overrides.clear()
 
     # --------------------------------------------------------------------------
@@ -73,7 +82,10 @@ class TestNormsRouter(unittest.TestCase):
             rawSnippet="Таблиця А.1: 85 м².",
         )
         mock_service = NormsService(
-            provider=MockNormsSearchProvider(default_result=mock_result)
+            provider=MockNormsSearchProvider(
+                default_result=mock_result, verified_retrieval=True
+            ),
+            verified_retrieval=True,
         )
         app.dependency_overrides[get_norms_service] = lambda: mock_service
 
@@ -203,7 +215,11 @@ class TestNormsRouter(unittest.TestCase):
             rawSnippet="Пункт 6.2.22 — висота (1,4 ± 0,1) м від рівня підлоги.",
         )
         service = NormsService(
-            provider=MockNormsSearchProvider(default_result=mock_result)
+            provider=MockNormsSearchProvider(
+                default_result=mock_result,
+                verified_retrieval=True,
+            ),
+            verified_retrieval=True,
         )
         app.dependency_overrides[get_norms_service] = lambda: service
 

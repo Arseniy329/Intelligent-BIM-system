@@ -12,7 +12,7 @@ import logging
 import time
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException, status
 
 from src.contracts.norms import (
     NormLookupRequest,
@@ -42,12 +42,14 @@ class NormsService:
         provider: BaseNormsSearchProvider | None = None,
         cache_ttl_seconds: float = 3600.0,
         max_cache_size: int = 1000,
+        verified_retrieval: bool = False,
     ) -> None:
         self.provider: BaseNormsSearchProvider = (
             provider if provider is not None else LLMDomainRestrictedSearchProvider()
         )
         self.cache_ttl_seconds: float = max(0.0, cache_ttl_seconds)
         self.max_cache_size: int = max(1, max_cache_size)
+        self.verified_retrieval: bool = verified_retrieval
         # Internal cache map: cache_key -> (timestamp_monotonic, NormLookupResult)
         self._cache: dict[str, tuple[float, NormLookupResult]] = {}
 
@@ -129,7 +131,13 @@ class NormsService:
         raw_result = await self.provider.lookup(request)
 
         # 3. Post-processing anti-hallucination guard
-        verified_result = sanitize_and_verify_result(raw_result)
+        is_verified = self.verified_retrieval or getattr(
+            self.provider, "verified_retrieval", False
+        )
+        verified_result = sanitize_and_verify_result(
+            raw_result,
+            verified_retrieval=is_verified,
+        )
 
         # 4. Save verified result to cache
         self._put_to_cache(cache_key, verified_result)
@@ -141,16 +149,102 @@ class NormsService:
         return await self.lookup(request)
 
 
+class NormsRateLimiter:
+    """Sliding-window in-memory rate limiter per user (BIM-163).
+
+    Limits request frequency (e.g. 10 req / 60s) to prevent quota exhaustion.
+    """
+
+    def __init__(
+        self,
+        max_requests: int = 10,
+        window_seconds: float = 60.0,
+    ) -> None:
+        self.max_requests = max(1, max_requests)
+        self.window_seconds = max(1.0, window_seconds)
+        self._requests: dict[str, list[float]] = {}
+
+    def check_rate_limit(self, user_id: str) -> None:
+        """Records a request and raises HTTP 429 if the user has exceeded quota."""
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+
+        timestamps = self._requests.setdefault(user_id, [])
+        # Prune expired timestamps
+        self._requests[user_id] = [t for t in timestamps if t > cutoff]
+
+        if len(self._requests[user_id]) >= self.max_requests:
+            logger.warning(
+                "Rate limit exceeded for user %s: %d requests in last %.1f s",
+                user_id,
+                len(self._requests[user_id]),
+                self.window_seconds,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Перевищено ліміт запитів на пошук норм. Спробуйте пізніше.",
+            )
+
+        self._requests[user_id].append(now)
+
+    def reset(self) -> None:
+        """Clears all in-memory rate limit records (for test isolation)."""
+        self._requests.clear()
+
+
+_rate_limiter = NormsRateLimiter()
+
+
+def get_norms_rate_limiter() -> NormsRateLimiter:
+    """Dependency provider for NormsRateLimiter."""
+    return _rate_limiter
+
+
+def reset_norms_rate_limiter() -> None:
+    """Resets the rate limiter for test isolation."""
+    _rate_limiter.reset()
+
+
+_norms_service_instance: NormsService | None = None
+
+
 def get_norms_service(
     settings: Annotated[Settings | None, Depends(get_settings)] = None,
 ) -> NormsService:
-    """Dependency provider for NormsService configured strictly from Settings."""
+    """Dependency provider for NormsService configured strictly from Settings.
+
+    Maintains a singleton instance to preserve the in-memory cache across HTTP requests.
+    """
+    global _norms_service_instance
     effective_settings = settings if settings is not None else get_settings()
-    provider = LLMDomainRestrictedSearchProvider(
-        api_key=effective_settings.NORMS_SEARCH_API_KEY,
-        base_url=effective_settings.NORMS_SEARCH_PROVIDER_URL,
-    )
-    return NormsService(
-        provider=provider,
-        cache_ttl_seconds=float(effective_settings.NORMS_CACHE_TTL_SECONDS),
-    )
+
+    if _norms_service_instance is None:
+        provider = LLMDomainRestrictedSearchProvider(
+            api_key=effective_settings.NORMS_SEARCH_API_KEY,
+            base_url=effective_settings.NORMS_SEARCH_PROVIDER_URL,
+        )
+        _norms_service_instance = NormsService(
+            provider=provider,
+            cache_ttl_seconds=float(effective_settings.NORMS_CACHE_TTL_SECONDS),
+        )
+    elif (
+        settings is not None
+        and getattr(_norms_service_instance.provider, "api_key", None)
+        != effective_settings.NORMS_SEARCH_API_KEY
+    ):
+        provider = LLMDomainRestrictedSearchProvider(
+            api_key=effective_settings.NORMS_SEARCH_API_KEY,
+            base_url=effective_settings.NORMS_SEARCH_PROVIDER_URL,
+        )
+        _norms_service_instance = NormsService(
+            provider=provider,
+            cache_ttl_seconds=float(effective_settings.NORMS_CACHE_TTL_SECONDS),
+        )
+
+    return _norms_service_instance
+
+
+def reset_norms_service(service: NormsService | None = None) -> None:
+    """Resets or seeds the singleton NormsService instance for testing isolation."""
+    global _norms_service_instance
+    _norms_service_instance = service

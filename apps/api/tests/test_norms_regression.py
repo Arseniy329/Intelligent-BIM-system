@@ -38,18 +38,27 @@ from src.services.norms.provider import (  # noqa: E402
     LLMDomainRestrictedSearchProvider,
     MockNormsSearchProvider,
 )
-from src.services.norms.service import NormsService, get_norms_service  # noqa: E402
+from src.services.norms.service import (  # noqa: E402
+    NormsService,
+    get_norms_service,
+    reset_norms_rate_limiter,
+    reset_norms_service,
+)
 
 
 class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
     """Regression test suite for PR code review findings."""
 
     def setUp(self) -> None:
+        reset_norms_service()
+        reset_norms_rate_limiter()
         self.mock_supabase = MagicMock()
         app.dependency_overrides[get_supabase_client] = lambda: self.mock_supabase
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
+        reset_norms_service()
+        reset_norms_rate_limiter()
         app.dependency_overrides.clear()
 
     # --------------------------------------------------------------------------
@@ -134,6 +143,104 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
             json={"query": long_query},
         )
         self.assertEqual(response.status_code, 422)
+
+    # --------------------------------------------------------------------------
+    # Regression Test 4: Sophisticated Fake URL/Quote Test (Review P1)
+    # --------------------------------------------------------------------------
+    async def test_sophisticated_fake_url_quote_downgrades_to_needs_verification(
+        self,
+    ) -> None:
+        """A valid active standard with fake URL on whitelisted domain and long quote
+
+        must be downgraded to needs_verification with clause=None and sourceUrl=None
+        because without independent retrieval verification, LLM self-attestations
+        cannot be trusted.
+        """
+        fake_raw = NormLookupResult.model_construct(
+            document="ДБН В.2.5-56:2014",
+            clause="Таблиця А.1",
+            value="до 85 м²",
+            sourceUrl="https://zakon.rada.gov.ua/does-not-exist-review-fixture",
+            checkedAt=datetime.now(UTC),
+            status=NormVerificationStatus.found_in_official_source,
+            summary="Вигадана цитата з чинного нормативу.",
+            rawSnippet="Це повністю вигадана цитата для регресійного тесту.",
+        )
+        mock_provider = MockNormsSearchProvider(default_result=fake_raw)
+        service = NormsService(provider=mock_provider)
+
+        req = NormLookupRequest(query="яка площа димового сповіщувача")
+        result = await service.lookup(req)
+
+        self.assertEqual(result.status, NormVerificationStatus.needs_verification)
+        self.assertIsNone(result.clause)
+        self.assertIsNone(result.sourceUrl)
+
+    # --------------------------------------------------------------------------
+    # Regression Test 5: Multi-HTTP Request Cache Test (Review P2)
+    # --------------------------------------------------------------------------
+    def test_multi_http_request_caching_across_requests(self) -> None:
+        """Two identical HTTP requests hit cache; call provider.lookup once.
+
+        Proves that NormsService maintains its cache singleton across HTTP requests
+        without get_norms_service being replaced in app.dependency_overrides.
+        """
+        from src.core.auth import CurrentUser, get_current_user
+
+        reset_norms_service()
+
+        app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+            id="cache-user-id", email="engineer@example.com"
+        )
+
+        service = get_norms_service()
+        call_count = 0
+        original_lookup = service.provider.lookup
+
+        async def spy_lookup(request: NormLookupRequest) -> NormLookupResult:
+            nonlocal call_count
+            call_count += 1
+            return await original_lookup(request)
+
+        service.provider.lookup = spy_lookup  # type: ignore[method-assign]
+
+        payload = {"query": "площа димового сповіщувача при висоті 3.5 м"}
+        res1 = self.client.post("/api/v1/norms/lookup", json=payload)
+        self.assertEqual(res1.status_code, 200)
+
+        res2 = self.client.post("/api/v1/norms/lookup", json=payload)
+        self.assertEqual(res2.status_code, 200)
+
+        self.assertEqual(call_count, 1)
+
+    # --------------------------------------------------------------------------
+    # Regression Test 6: Per-User Rate Limit Test (Review P2)
+    # --------------------------------------------------------------------------
+    def test_per_user_rate_limit_exceeded_returns_429(self) -> None:
+        """11 consecutive requests from the same user must return 429 on req 11."""
+        from src.core.auth import CurrentUser, get_current_user
+
+        app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+            id="spammy-user-id", email="spam@example.com"
+        )
+
+        for i in range(1, 11):
+            res = self.client.post(
+                "/api/v1/norms/lookup",
+                json={"query": f"норми запит номер {i}"},
+            )
+            self.assertEqual(
+                res.status_code,
+                200,
+                f"Request {i} failed unexpectedly with status {res.status_code}",
+            )
+
+        res_limit = self.client.post(
+            "/api/v1/norms/lookup",
+            json={"query": "норми запит номер 11"},
+        )
+        self.assertEqual(res_limit.status_code, 429)
+        self.assertIn("Перевищено ліміт", res_limit.json().get("detail", ""))
 
 
 if __name__ == "__main__":

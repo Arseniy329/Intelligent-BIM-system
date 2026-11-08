@@ -48,7 +48,12 @@ from src.services.norms.provider import (  # noqa: E402
     BaseNormsSearchProvider,
     MockNormsSearchProvider,
 )
-from src.services.norms.service import NormsService, get_norms_service  # noqa: E402
+from src.services.norms.service import (  # noqa: E402
+    NormsService,
+    get_norms_service,
+    reset_norms_rate_limiter,
+    reset_norms_service,
+)
 
 
 def benchmark_fixture_dispatcher(request: NormLookupRequest) -> NormLookupResult:
@@ -144,10 +149,16 @@ class TestNormsBenchmarks(unittest.IsolatedAsyncioTestCase):
     """
 
     def setUp(self) -> None:
+        reset_norms_service()
+        reset_norms_rate_limiter()
         self.provider: BaseNormsSearchProvider = MockNormsSearchProvider(
-            handler=benchmark_fixture_dispatcher
+            handler=benchmark_fixture_dispatcher,
+            verified_retrieval=True,
         )
-        self.service = NormsService(provider=self.provider)
+        self.service = NormsService(
+            provider=self.provider,
+            verified_retrieval=True,
+        )
 
         self.mock_supabase = MagicMock()
         app.dependency_overrides[get_supabase_client] = lambda: self.mock_supabase
@@ -158,6 +169,8 @@ class TestNormsBenchmarks(unittest.IsolatedAsyncioTestCase):
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
+        reset_norms_service()
+        reset_norms_rate_limiter()
         app.dependency_overrides.clear()
 
     # --------------------------------------------------------------------------

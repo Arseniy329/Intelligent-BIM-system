@@ -31,11 +31,23 @@ from src.services.norms.provider import (
     MockNormsSearchProvider,
     build_domain_restricted_query,
 )
-from src.services.norms.service import NormsService
+from src.services.norms.service import (
+    NormsService,
+    reset_norms_rate_limiter,
+    reset_norms_service,
+)
 
 
 class TestNormsServiceAndGuard(unittest.IsolatedAsyncioTestCase):
     """Test suite for Phase 2 Norms Search Service architecture."""
+
+    def setUp(self) -> None:
+        reset_norms_service()
+        reset_norms_rate_limiter()
+
+    def tearDown(self) -> None:
+        reset_norms_service()
+        reset_norms_rate_limiter()
 
     # --------------------------------------------------------------------------
     # Test 1: Successful lookup with official domain
@@ -52,8 +64,11 @@ class TestNormsServiceAndGuard(unittest.IsolatedAsyncioTestCase):
             summary="При висоті до 3.5 м димовий сповіщувач контролює площу до 85 м².",
             rawSnippet="Таблиця А.1 — площа: 85 м².",
         )
-        mock_provider = MockNormsSearchProvider(default_result=valid_result)
-        service = NormsService(provider=mock_provider)
+        mock_provider = MockNormsSearchProvider(
+            default_result=valid_result,
+            verified_retrieval=True,
+        )
+        service = NormsService(provider=mock_provider, verified_retrieval=True)
 
         request = NormLookupRequest(
             query="площа димового сповіщувача при висоті 3.5 м",
@@ -207,8 +222,15 @@ class TestNormsServiceAndGuard(unittest.IsolatedAsyncioTestCase):
             summary="Перевірено з кешуванням",
             rawSnippet="Таблиця А.1 — площа: 85 м².",
         )
-        mock_provider = MockNormsSearchProvider(default_result=valid_result)
-        service = NormsService(provider=mock_provider, cache_ttl_seconds=300.0)
+        mock_provider = MockNormsSearchProvider(
+            default_result=valid_result,
+            verified_retrieval=True,
+        )
+        service = NormsService(
+            provider=mock_provider,
+            cache_ttl_seconds=300.0,
+            verified_retrieval=True,
+        )
 
         request = NormLookupRequest(
             query="  димовий сповіщувач площа  ",
@@ -342,7 +364,7 @@ class TestNormsServiceAndGuard(unittest.IsolatedAsyncioTestCase):
             llm_caller=fake_caller,
             dry_run=False,
         )
-        service = NormsService(provider=provider)
+        service = NormsService(provider=provider, verified_retrieval=True)
         request = NormLookupRequest(query="висота встановлення ручного сповіщувача")
 
         result = await service.lookup(request)

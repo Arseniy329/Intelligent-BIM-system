@@ -136,6 +136,8 @@ def parse_llm_json_response(raw_text: str) -> dict[str, object]:
 class BaseNormsSearchProvider(ABC):
     """Abstract base provider for Ukrainian fire safety norms lookup."""
 
+    verified_retrieval: bool = False
+
     @abstractmethod
     async def lookup(self, request: NormLookupRequest) -> NormLookupResult:
         """Looks up norms and returns candidate NormLookupResult."""
@@ -324,9 +326,11 @@ class MockNormsSearchProvider(BaseNormsSearchProvider):
         self,
         handler: MockHandlerType | None = None,
         default_result: NormLookupResult | None = None,
+        verified_retrieval: bool = False,
     ) -> None:
         self.handler: MockHandlerType | None = handler
         self.default_result: NormLookupResult | None = default_result
+        self.verified_retrieval: bool = verified_retrieval
         self.call_count: int = 0
         self.last_request: NormLookupRequest | None = None
 

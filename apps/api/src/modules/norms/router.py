@@ -11,7 +11,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from src.contracts.norms import (
     NormLookupRequest,
@@ -19,7 +19,12 @@ from src.contracts.norms import (
     NormVerificationStatus,
 )
 from src.core.auth import CurrentUser, get_current_user
-from src.services.norms.service import NormsService, get_norms_service
+from src.services.norms.service import (
+    NormsRateLimiter,
+    NormsService,
+    get_norms_rate_limiter,
+    get_norms_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +46,7 @@ async def lookup_norms(
     request: NormLookupRequest,
     current_user: Annotated[CurrentUser, Depends(get_current_user)],
     service: Annotated[NormsService, Depends(get_norms_service)],
+    rate_limiter: Annotated[NormsRateLimiter, Depends(get_norms_rate_limiter)],
 ) -> NormLookupResult:
     """Performs domain-restricted search for Ukrainian fire safety standards.
 
@@ -48,8 +54,14 @@ async def lookup_norms(
     returns a 200 OK result with status 'needs_verification' and clause=None,
     preventing 500 crashes and unverified hallucinations.
     """
+    # 1. Enforce per-user rate limit (raises HTTP 429 if exceeded)
+    rate_limiter.check_rate_limit(current_user.id)
+
+    # 2. Execute lookup
     try:
         return await service.lookup(request)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Unexpected error in norms lookup: %s", exc, exc_info=True)
         return NormLookupResult(
