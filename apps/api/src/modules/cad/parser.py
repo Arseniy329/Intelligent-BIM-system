@@ -13,6 +13,7 @@ from src.core.exceptions import (
     LayerNotFoundError,
     NoValidContoursError,
 )
+from src.modules.rooms.service import suggest_room_type
 
 # Scale factors from INSUNITS to meters (length)
 INSUNITS_SCALE_TO_METERS: dict[int, float] = {
@@ -158,7 +159,7 @@ def parse_dxf_rooms(
             id=str(uuid.uuid4()),
             drawingId=resolved_drawing_id,
             name=room_name,
-            type=None,
+            type=suggest_room_type(room_name),
             height=None,
             area=area_m2,
             polygon=contract_polygon,
