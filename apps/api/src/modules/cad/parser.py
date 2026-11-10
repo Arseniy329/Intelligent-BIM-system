@@ -29,8 +29,19 @@ INSUNITS_SCALE_TO_METERS: dict[int, float] = {
 DEFAULT_INSUNITS = 4  # Default to millimeters if missing
 DEFAULT_UNNAMED_ROOM_NAME = "Без назви"
 
+CODE_STRICT = r"(?:№\s*|#\s*|No\.?\s*)?(?:\d+[a-zA-Z]?|[A-Za-z]\d+|\d+[\.\-]\d+)"
+CODE_ANY = (
+    r"(?:№\s*|#\s*|No\.?\s*)?"
+    r"(?:[A-Za-zА-Яа-яІіЇїЄє0-9]+(?:[\.\-][A-Za-zА-Яа-яІіЇїЄє0-9]+)*)"
+)
+
 EXPLICATION_PATTERN = re.compile(
-    r"^\s*(?:№\s*|#\s*|No\.?\s*)?([A-Za-zА-Яа-яІіЇїЄє0-9]+(?:[\.\-][A-Za-zА-Яа-яІіЇїЄє0-9]+)*)\s*(?:[:\|\-\—\–\.\t]\s*|\s{2,}|\s+)\s*([A-Za-zА-Яа-яІіЇїЄє][^\n\r\|]*?)(?:\s*[\|\(].*|\s*[\d\.,]+\s*(?:m2|м2|sqm|sq\s*m).*|\s*)$",
+    r"^\s*(?:"
+    rf"({CODE_STRICT})\s*(?:[:\|\-\—\–\t]\s*|\s{{2,}}|\s+)"
+    r"|"
+    rf"({CODE_ANY})\s*(?:[:\|\-\—\–\t]\s*|\s{{2,}})"
+    r")\s*([A-Za-zА-Яа-яІіЇїЄє][^\n\r\|]*?)"
+    r"(?:\s*[\|\(].*|\s*[\d\.,]+\s*(?:m2|м2|м²|sqm|sq\s*m).*|\s*)$",
     re.IGNORECASE,
 )
 AREA_PATTERN = re.compile(
@@ -187,8 +198,8 @@ def _parse_explication(msp: Any) -> dict[str, str]:
                 continue
             m = EXPLICATION_PATTERN.match(line)
             if m:
-                raw_num = m.group(1).strip()
-                name = m.group(2).strip()
+                raw_num = (m.group(1) or m.group(2)).strip()
+                name = m.group(3).strip()
                 norm_num = _normalize_room_number(raw_num)
                 if norm_num and name:
                     explication_map[norm_num] = name
@@ -198,37 +209,59 @@ def _parse_explication(msp: Any) -> dict[str, str]:
 
 
 def _bridge_gaps(segments: list[LineString], max_gap: float) -> list[LineString]:
-    """Bridge gaps between dangling endpoints and nearby segments."""
+    """Bridge gaps between dangling endpoints, vertices, and nearby segments."""
     if not segments or max_gap <= 0:
         return segments
-
-    result = list(segments)
 
     def pt_key(pt: tuple[float, float]) -> tuple[float, float]:
         return (round(pt[0], 3), round(pt[1], 3))
 
+    existing_edges: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+    for s in segments:
+        k1 = pt_key((s.coords[0][0], s.coords[0][1]))
+        k2 = pt_key((s.coords[-1][0], s.coords[-1][1]))
+        existing_edges.add((min(k1, k2), max(k1, k2)))
+
     endpoint_counts: dict[tuple[float, float], int] = {}
+    all_vertices: set[tuple[float, float]] = set()
     for s in segments:
         p1 = (s.coords[0][0], s.coords[0][1])
         p2 = (s.coords[-1][0], s.coords[-1][1])
+        all_vertices.add(p1)
+        all_vertices.add(p2)
         endpoint_counts[pt_key(p1)] = endpoint_counts.get(pt_key(p1), 0) + 1
         endpoint_counts[pt_key(p2)] = endpoint_counts.get(pt_key(p2), 0) + 1
 
     dangling: list[tuple[float, float]] = []
+    seen_dangling: set[tuple[float, float]] = set()
     for s in segments:
-        p1 = (s.coords[0][0], s.coords[0][1])
-        p2 = (s.coords[-1][0], s.coords[-1][1])
-        if endpoint_counts.get(pt_key(p1), 0) == 1:
-            dangling.append(p1)
-        if endpoint_counts.get(pt_key(p2), 0) == 1:
-            dangling.append(p2)
+        for pt in (
+            (s.coords[0][0], s.coords[0][1]),
+            (s.coords[-1][0], s.coords[-1][1]),
+        ):
+            k = pt_key(pt)
+            if endpoint_counts.get(k, 0) == 1 and k not in seen_dangling:
+                pt_geom = Point(pt)
+                touches_interior = any(
+                    seg.distance(pt_geom) < 1e-4
+                    and 1e-4 < seg.project(pt_geom) < (seg.length - 1e-4)
+                    for seg in segments
+                )
+                if not touches_interior:
+                    seen_dangling.add(k)
+                    dangling.append(pt)
 
-    # Greedily bridge closest pairs of dangling endpoints
+    result = list(segments)
+
+    # Pass 1: candidate pairs between dangling endpoints
     candidate_pairs: list[tuple[float, int, int]] = []
     for i in range(len(dangling)):
         for j in range(i + 1, len(dangling)):
             p = dangling[i]
             q = dangling[j]
+            edge = (min(pt_key(p), pt_key(q)), max(pt_key(p), pt_key(q)))
+            if edge in existing_edges:
+                continue
             dist = math.hypot(p[0] - q[0], p[1] - q[1])
             if 1e-4 < dist <= max_gap:
                 candidate_pairs.append((dist, i, j))
@@ -243,7 +276,27 @@ def _bridge_gaps(segments: list[LineString], max_gap: float) -> list[LineString]
         bridged_indices.add(j)
         result.append(LineString([dangling[i], dangling[j]]))
 
-    # For any remaining dangling endpoints, check for T-junction gaps to nearby segments
+    # Pass 2: remaining dangling endpoints to any existing vertex
+    for i, p in enumerate(dangling):
+        if i in bridged_indices:
+            continue
+        best_v: tuple[float, float] | None = None
+        best_dist = max_gap
+        for v in all_vertices:
+            if pt_key(p) == pt_key(v):
+                continue
+            edge = (min(pt_key(p), pt_key(v)), max(pt_key(p), pt_key(v)))
+            if edge in existing_edges:
+                continue
+            dist = math.hypot(p[0] - v[0], p[1] - v[1])
+            if 1e-4 < dist <= best_dist:
+                best_dist = dist
+                best_v = v
+        if best_v is not None:
+            result.append(LineString([p, best_v]))
+            bridged_indices.add(i)
+
+    # Pass 3: remaining dangling endpoints to T-junction projection on segments
     for i, p in enumerate(dangling):
         if i in bridged_indices:
             continue
@@ -278,6 +331,7 @@ def _extract_walls_and_bridge_gaps(
     has_wall_layer = any(_is_wall_layer(name) for name in all_layers)
 
     segments: list[LineString] = []
+    open_loops: list[tuple[tuple[float, float], tuple[float, float], float]] = []
 
     for entity in msp.query("LINE LWPOLYLINE POLYLINE ARC"):
         layer = getattr(entity.dxf, "layer", "")
@@ -319,13 +373,12 @@ def _extract_walls_and_bridge_gaps(
             if len(pts) >= 3:
                 p0 = (float(pts[0][0]), float(pts[0][1]))
                 p_end = (float(pts[-1][0]), float(pts[-1][1]))
-                if (
-                    is_closed
-                    or abs(p0[0] - p_end[0]) < 1e-3
-                    or abs(p0[1] - p_end[1]) < 1e-3
-                ):
-                    if math.hypot(p_end[0] - p0[0], p_end[1] - p0[1]) > 1e-4:
+                dist = math.hypot(p_end[0] - p0[0], p_end[1] - p0[1])
+                if is_closed:
+                    if dist > 1e-4:
                         segments.append(LineString([p_end, p0]))
+                else:
+                    open_loops.append((p_end, p0, dist))
 
         elif dxftype == "POLYLINE":
             v_pts = [
@@ -341,13 +394,12 @@ def _extract_walls_and_bridge_gaps(
             if len(v_pts) >= 3:
                 p0 = v_pts[0]
                 p_end = v_pts[-1]
-                if (
-                    is_closed
-                    or abs(p0[0] - p_end[0]) < 1e-3
-                    or abs(p0[1] - p_end[1]) < 1e-3
-                ):
-                    if math.hypot(p_end[0] - p0[0], p_end[1] - p0[1]) > 1e-4:
+                dist = math.hypot(p_end[0] - p0[0], p_end[1] - p0[1])
+                if is_closed:
+                    if dist > 1e-4:
                         segments.append(LineString([p_end, p0]))
+                else:
+                    open_loops.append((p_end, p0, dist))
 
         elif dxftype == "ARC":
             if _is_opening_layer(layer):
@@ -378,7 +430,14 @@ def _extract_walls_and_bridge_gaps(
         )
         if max_coord < 500 and length_scale < 0.1:
             length_scale = 1.0
-        max_gap = 1.2 / length_scale
+        max_gap = 3.1 / length_scale
+
+    for p_end, p0, dist in open_loops:
+        is_collinear = abs(p0[0] - p_end[0]) < 1e-3 or abs(p0[1] - p_end[1]) < 1e-3
+        if (is_collinear and 1e-4 < dist <= max_gap) or (
+            1e-4 < dist <= 0.1 / length_scale
+        ):
+            segments.append(LineString([p_end, p0]))
 
     return _bridge_gaps(segments, max_gap)
 
@@ -413,7 +472,7 @@ def _polygonize_and_filter(
         largest = max(valid_polys, key=lambda p: p.area)
         others = [p for p in valid_polys if p is not largest]
         is_bounding = False
-        if len(others) >= 2:
+        if len(others) >= 1:
             envelope_shell = Polygon(largest.exterior)
             encloses_all = all(envelope_shell.contains(p.centroid) for p in others)
             if encloses_all or (
@@ -421,11 +480,6 @@ def _polygonize_and_filter(
                 and all(largest.contains(p.centroid) for p in others)
             ):
                 is_bounding = True
-            elif largest.area >= sum(p.area for p in others):
-                tb = unary_union(valid_polys).bounds
-                bbox_area = (tb[2] - tb[0]) * (tb[3] - tb[1])
-                if bbox_area > 0 and largest.area >= 0.85 * bbox_area:
-                    is_bounding = True
 
         if is_bounding:
             valid_polys = others
@@ -576,7 +630,7 @@ def _build_auto_rooms(
         for t in texts_in_poly:
             m = EXPLICATION_PATTERN.match(t)
             if m:
-                matched_name = m.group(2).strip()
+                matched_name = m.group(3).strip()
                 break
 
         # 2. Check if any text is an explicit room name (NOT only a number, NOT an area)

@@ -429,6 +429,152 @@ class TestCadParser(unittest.TestCase):
         self.assertIsNone(rooms[0].type)
         self.assertEqual(getattr(rooms[0], "source", None), "auto")
 
+    def test_defect_1_false_envelope_removal_preserves_large_hall(self) -> None:
+        """P1: Disjoint planar faces (e.g. 192 m2 hall and two 4 m2 corner rooms)
+
+        must not be deleted as envelopes purely by area percentage.
+        """
+        dxf_path = self.temp_dir / "hall_with_corner_rooms.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6  # meters
+        doc.layers.add("WALLS")
+        msp = doc.modelspace()
+
+        # 20x10 m outer boundary
+        msp.add_lwpolyline(
+            [(0, 0), (20, 0), (20, 10), (0, 10)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        # Corner room 1 at top-left: (0,8)-(2,8)-(2,10)
+        msp.add_lwpolyline(
+            [(0, 8), (2, 8), (2, 10)],
+            close=False,
+            dxfattribs={"layer": "WALLS"},
+        )
+        # Corner room 2 at top-right: (18,10)-(18,8)-(20,8)
+        msp.add_lwpolyline(
+            [(18, 10), (18, 8), (20, 8)],
+            close=False,
+            dxfattribs={"layer": "WALLS"},
+        )
+
+        doc.saveas(str(dxf_path))
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 3)
+        areas = sorted([r.area for r in rooms])
+        self.assertAlmostEqual(areas[0], 4.0, places=1)
+        self.assertAlmostEqual(areas[1], 4.0, places=1)
+        self.assertAlmostEqual(areas[2], 192.0, places=1)
+
+    def test_defect_2_open_polyline_gap_closure(self) -> None:
+        """P2: Open polyline with gap > max_gap (10m) must not form a room.
+
+        Contrast with gap <= max_gap (e.g. 0.5m) which should form a room.
+        """
+        # Case A: 10m gap on U-shaped polyline must NOT form a room
+        dxf_path_large = self.temp_dir / "open_10m_gap.dxf"
+        doc_large = ezdxf.new("R2010")
+        doc_large.header["$INSUNITS"] = 6  # meters
+        doc_large.layers.add("WALLS")
+        doc_large.modelspace().add_lwpolyline(
+            [(0, 0), (10, 0), (10, 10), (0, 10)],
+            close=False,
+            dxfattribs={"layer": "WALLS"},
+        )
+        doc_large.saveas(str(dxf_path_large))
+        with self.assertRaises(CADParsingError):
+            parse_dxf_rooms(dxf_path_large)
+
+        # Case B: gap <= max_gap (0.5m gap between (0, 0.5) and (0, 0)) should close
+        dxf_path_small = self.temp_dir / "open_small_gap.dxf"
+        doc_small = ezdxf.new("R2010")
+        doc_small.header["$INSUNITS"] = 6  # meters
+        doc_small.layers.add("WALLS")
+        doc_small.modelspace().add_lwpolyline(
+            [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0.5)],
+            close=False,
+            dxfattribs={"layer": "WALLS"},
+        )
+        doc_small.saveas(str(dxf_path_small))
+        rooms = parse_dxf_rooms(dxf_path_small)
+        self.assertEqual(len(rooms), 1)
+        self.assertAlmostEqual(rooms[0].area, 100.0, places=0)
+
+    def test_defect_3_multi_word_room_names_retained(self) -> None:
+        """P2: Multi-word labels without delimiters must be preserved as room name.
+
+        Retains positive test for delimited explication like '101 | Server Room'.
+        """
+        dxf_path = self.temp_dir / "multi_word_names.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6  # meters
+        doc.layers.add("WALLS")
+        doc.layers.add("TEXT")
+        msp = doc.modelspace()
+
+        # Room 1: Server Room (0,0)-(5,5)
+        msp.add_lwpolyline(
+            [(0, 0), (5, 0), (5, 5), (0, 5)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text(
+            "Server Room",
+            dxfattribs={"insert": (2.5, 2.5, 0), "layer": "TEXT"},
+        )
+
+        # Room 2: Storage Room (5,0)-(10,5)
+        msp.add_lwpolyline(
+            [(5, 0), (10, 0), (10, 5), (5, 5)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text(
+            "Storage Room",
+            dxfattribs={"insert": (7.5, 2.5, 0), "layer": "TEXT"},
+        )
+
+        # Room 3: Кабінет директора (0,5)-(5,10)
+        msp.add_lwpolyline(
+            [(0, 5), (5, 5), (5, 10), (0, 10)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text(
+            "Кабінет директора",
+            dxfattribs={"insert": (2.5, 7.5, 0), "layer": "TEXT"},
+        )
+
+        # Room 4: 101 | Server Room (5,5)-(10,10)
+        msp.add_lwpolyline(
+            [(5, 5), (10, 5), (10, 10), (5, 10)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text(
+            "101 | Server Room",
+            dxfattribs={"insert": (7.5, 7.5, 0), "layer": "TEXT"},
+        )
+
+        doc.saveas(str(dxf_path))
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 4)
+        names = {r.name: r.type for r in rooms}
+
+        self.assertIn("Server Room", names)
+        self.assertEqual(names["Server Room"], "technical")
+
+        self.assertIn("Storage Room", names)
+        self.assertEqual(names["Storage Room"], "storage")
+
+        self.assertIn("Кабінет директора", names)
+        self.assertEqual(names["Кабінет директора"], "office")
+
+        # The delimited one also extracts "Server Room" with type "technical"
+        server_rooms = [r for r in rooms if r.name == "Server Room"]
+        self.assertEqual(len(server_rooms), 2)
+
     def test_auto_polygonization_discards_envelope_and_artifacts(self) -> None:
         """Acceptance (BIM-162): Outer envelope and tiny artifacts are discarded."""
         dxf_path = self.temp_dir / "envelope_and_artifacts.dxf"
