@@ -21,8 +21,17 @@
     "roomUpdateRequest": {
       "$ref": "#/$defs/RoomUpdateRequest"
     },
+    "roomCreateRequest": {
+      "$ref": "#/$defs/RoomCreateRequest"
+    },
     "device": {
       "$ref": "#/$defs/Device"
+    },
+    "deviceCreateRequest": {
+      "$ref": "#/$defs/DeviceCreateRequest"
+    },
+    "deviceUpdateRequest": {
+      "$ref": "#/$defs/DeviceUpdateRequest"
     },
     "createDrawingRequest": {
       "$ref": "#/$defs/CreateDrawingRequest"
@@ -154,6 +163,7 @@
     },
     "Room": {
       "title": "Room",
+      "description": "Приміщення креслення. source — походження контуру (fire_rooms — з шару FIRE_ROOMS, manual — накреслено вручну); confirmed — інженер підтвердив контур.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -207,6 +217,59 @@
           "items": {
             "$ref": "#/$defs/Point"
           }
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "fire_rooms",
+            "manual"
+          ]
+        },
+        "confirmed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "RoomPolygon": {
+      "title": "RoomPolygon",
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "description": "Новий контур у координатах DXF. Перша точка наприкінці масиву не повторюється; полігон має бути коректним (без самоперетинів). Площу перераховує API.",
+      "items": {
+        "$ref": "#/$defs/Point"
+      }
+    },
+    "RoomCreateRequest": {
+      "title": "RoomCreateRequest",
+      "description": "Тіло POST /drawings/{id}/rooms — приміщення, накреслене вручну (source=manual, confirmed=true). Якщо type не задано, API пропонує його за name.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "polygon"
+      ],
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "height": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0,
+          "maximum": 100
+        },
+        "polygon": {
+          "$ref": "#/$defs/RoomPolygon"
         }
       }
     },
@@ -241,7 +304,7 @@
     },
     "RoomUpdateRequest": {
       "title": "RoomUpdateRequest",
-      "description": "Тіло PATCH /rooms/{id}. Потрібне хоча б одне поле. type — лише code з GET /room-types; height — у метрах, null очищає висоту.",
+      "description": "Тіло PATCH /rooms/{id}. Потрібне хоча б одне поле. type — лише code з GET /room-types; height — у метрах, null очищає висоту; polygon — новий контур, площу перераховує API; confirmed — підтвердження контуру.",
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
@@ -257,6 +320,12 @@
           ],
           "exclusiveMinimum": 0,
           "maximum": 100
+        },
+        "polygon": {
+          "$ref": "#/$defs/RoomPolygon"
+        },
+        "confirmed": {
+          "type": "boolean"
         }
       }
     },
@@ -304,6 +373,65 @@
         "layer": {
           "type": "string",
           "minLength": 1
+        }
+      }
+    },
+    "DeviceCreateRequest": {
+      "title": "DeviceCreateRequest",
+      "description": "Тіло POST /drawings/{id}/devices — пристрій, доданий вручну. Шар завжди SYS_FIRE_SENSORS. roomId — приміщення того самого креслення або null.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "position"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "smoke_detector",
+            "heat_detector",
+            "sounder",
+            "manual_call_point"
+          ]
+        },
+        "position": {
+          "$ref": "#/$defs/Point"
+        },
+        "roomId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      }
+    },
+    "DeviceUpdateRequest": {
+      "title": "DeviceUpdateRequest",
+      "description": "Тіло PATCH /devices/{id}. Потрібне хоча б одне поле. roomId: null відв'язує пристрій від приміщення.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "smoke_detector",
+            "heat_detector",
+            "sounder",
+            "manual_call_point"
+          ]
+        },
+        "position": {
+          "$ref": "#/$defs/Point"
+        },
+        "roomId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
         }
       }
     },
