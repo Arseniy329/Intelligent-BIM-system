@@ -16,8 +16,7 @@ if str(API_DIR) not in sys.path:
 from src.contracts.generated import Room
 from src.core.config import get_settings
 from src.core.exceptions import (
-    LayerNotFoundError,
-    NoValidContoursError,
+    CADParsingError,
     StorageError,
 )
 from src.infrastructure.storage import (
@@ -122,12 +121,47 @@ class TestCadParser(unittest.TestCase):
         self.assertIn("Cafe_Hall (48.0m2)", room_names)
         self.assertAlmostEqual(room_names["Cafe_Hall (48.0m2)"], 48.0, places=2)
 
-    def test_fixture_03_missing_layer_raises_layer_not_found(self) -> None:
-        """Acceptance: DXF without FIRE_ROOMS layer throws LayerNotFoundError."""
+    def test_fixture_03_auto_search_fallback(self) -> None:
+        """Acceptance (BIM-162): DXF without FIRE_ROOMS falls back to auto."""
         fixture_path = FIXTURES_DIR / "03_bad_unclosed_meters.dxf"
-        with self.assertRaises(LayerNotFoundError) as ctx:
-            parse_dxf_rooms(fixture_path)
-        self.assertIn("FIRE_ROOMS", str(ctx.exception))
+        rooms = parse_dxf_rooms(fixture_path)
+        self.assertEqual(len(rooms), 1)
+        self.assertEqual(rooms[0].name, "Bad_Room_B")
+        self.assertAlmostEqual(rooms[0].area, 25.0, places=1)
+
+    def test_fixture_01_unclosed_cafe_office_plan_mm(self) -> None:
+        """Acceptance: Unclosed DXF without FIRE_ROOMS extracts 10 rooms via auto."""
+        fixture_path = FIXTURES_DIR / "01_unclosed_cafe_office_plan_mm.dxf"
+        if not fixture_path.exists():
+            fixture_path = (
+                FIXTURES_DIR.parent
+                / "test_drawing_dxf2"
+                / "test_drawing_dxf2"
+                / "01_unclosed_cafe_office_plan_mm.dxf"
+            )
+        rooms = parse_dxf_rooms(fixture_path)
+        self.assertEqual(len(rooms), 10)
+        self.assertEqual(getattr(rooms, "source", None), "auto")
+
+        expected_rooms = {
+            "Main_Corridor": (24.0, "corridor"),
+            "Cafe_Hall": (48.0, "hall"),
+            "Kitchen": (16.0, "kitchen"),
+            "Storage_Room": (8.0, "storage"),
+            "Restroom_1": (4.0, "restroom"),
+            "Restroom_2": (4.0, "restroom"),
+            "Office_1": (16.0, "office"),
+            "Office_2": (16.0, "office"),
+            "Staff_Room": (12.0, "service_room"),
+            "Manager_Office": (12.0, "office"),
+        }
+        found_rooms = {r.name: (r.area, r.type) for r in rooms}
+        for name, (exp_area, exp_type) in expected_rooms.items():
+            self.assertIn(name, found_rooms)
+            actual_area, actual_type = found_rooms[name]
+            self.assertAlmostEqual(actual_area, exp_area, places=1)
+            self.assertEqual(actual_type, exp_type)
+        self.assertEqual(getattr(rooms[0], "source", None), "auto")
 
     def test_text_inside_polygon_becomes_room_name(self) -> None:
         """Acceptance: Text inside the polygon correctly becomes room name."""
@@ -266,7 +300,7 @@ class TestCadParser(unittest.TestCase):
         self.assertAlmostEqual(rooms[0].area, 6.0, places=2)
 
     def test_no_valid_contours_error(self) -> None:
-        """Acceptance: Raise NoValidContoursError when 0 valid contours exist."""
+        """Acceptance: Raise CADParsingError when 0 valid contours exist."""
         dxf_path = self.temp_dir / "empty_layer.dxf"
         create_mock_dxf(
             dxf_path,
@@ -274,8 +308,183 @@ class TestCadParser(unittest.TestCase):
             rooms_data=[],
         )
 
-        with self.assertRaises(NoValidContoursError):
+        with self.assertRaises(CADParsingError) as ctx:
             parse_dxf_rooms(dxf_path)
+        self.assertIn("Приміщення не знайдено", str(ctx.exception))
+
+    def test_auto_polygonization_with_broken_lines_and_gaps(self) -> None:
+        """Acceptance (BIM-162): Wall gap bridging with >= 80% room extraction rate."""
+        dxf_path = self.temp_dir / "broken_walls.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 4  # mm
+        doc.layers.add("WALLS")
+        msp = doc.modelspace()
+
+        # 4 rooms in a 2x2 grid:
+        # Bottom wall with 800mm door gap at corner: (800, 0) -> (4000, 0)
+        msp.add_line((800, 0), (4000, 0), dxfattribs={"layer": "WALLS"})
+        msp.add_line((4000, 0), (7900, 0), dxfattribs={"layer": "WALLS"})
+        # Right wall with 100mm gap: (8000, 100) -> (8000, 10000)
+        msp.add_line((8000, 100), (8000, 10000), dxfattribs={"layer": "WALLS"})
+        # Top wall: (8000, 10000) -> (0, 10000)
+        msp.add_line((8000, 10000), (0, 10000), dxfattribs={"layer": "WALLS"})
+        # Left wall: (0, 10000) -> (0, 0)
+        msp.add_line((0, 10000), (0, 0), dxfattribs={"layer": "WALLS"})
+
+        # Internal dividers
+        # Horizontal divider y=5000: (0, 5000) -> (8000, 5000)
+        msp.add_line((0, 5000), (8000, 5000), dxfattribs={"layer": "WALLS"})
+        # Vertical divider lower x=4000: (4000, 0) -> (4000, 5000)
+        msp.add_line((4000, 0), (4000, 5000), dxfattribs={"layer": "WALLS"})
+        # Vertical divider upper x=4000 with 100mm gap: (4000, 5000) -> (4000, 9900)
+        msp.add_line((4000, 5000), (4000, 9900), dxfattribs={"layer": "WALLS"})
+
+        # Room texts
+        msp.add_text("Room 1", dxfattribs={"insert": (2000, 2500, 0), "layer": "WALLS"})
+        msp.add_text("Room 2", dxfattribs={"insert": (6000, 2500, 0), "layer": "WALLS"})
+        msp.add_text("Room 3", dxfattribs={"insert": (2000, 7500, 0), "layer": "WALLS"})
+        msp.add_text("Room 4", dxfattribs={"insert": (6000, 7500, 0), "layer": "WALLS"})
+
+        doc.saveas(str(dxf_path))
+
+        rooms = parse_dxf_rooms(dxf_path)
+        # Verify >= 80% room extraction rate (at least 3 of 4 rooms)
+        self.assertGreaterEqual(len(rooms), 3)
+        self.assertEqual(len(rooms), 4)
+        names = {r.name for r in rooms}
+        self.assertEqual(names, {"Room 1", "Room 2", "Room 3", "Room 4"})
+        for r in rooms:
+            self.assertEqual(getattr(r, "source", None), "auto")
+
+    def test_auto_polygonization_explication_mapping(self) -> None:
+        """Acceptance (BIM-162): Numbers inside polygons mapped to explication table."""
+        dxf_path = self.temp_dir / "explication_plan.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 4  # mm
+        doc.layers.add("A-WALL")
+        doc.layers.add("TEXT")
+        msp = doc.modelspace()
+
+        # 3 rooms side-by-side
+        msp.add_lwpolyline(
+            [(0, 0), (12000, 0), (12000, 5000), (0, 5000)],
+            close=True,
+            dxfattribs={"layer": "A-WALL"},
+        )
+        msp.add_line((4000, 0), (4000, 5000), dxfattribs={"layer": "A-WALL"})
+        msp.add_line((8000, 0), (8000, 5000), dxfattribs={"layer": "A-WALL"})
+
+        # Inside room numbers
+        msp.add_text("101", dxfattribs={"insert": (2000, 2500, 0), "layer": "TEXT"})
+        msp.add_text("102", dxfattribs={"insert": (6000, 2500, 0), "layer": "TEXT"})
+        msp.add_text("№ 201", dxfattribs={"insert": (10000, 2500, 0), "layer": "TEXT"})
+
+        # Explication table text entities outside rooms
+        msp.add_text(
+            "101 | Office", dxfattribs={"insert": (0, 12000, 0), "layer": "TEXT"}
+        )
+        msp.add_text(
+            "102 - Storage", dxfattribs={"insert": (0, 11000, 0), "layer": "TEXT"}
+        )
+        msp.add_mtext(
+            "201: Server Room\n", dxfattribs={"insert": (0, 10000, 0), "layer": "TEXT"}
+        )
+
+        doc.saveas(str(dxf_path))
+
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 3)
+
+        room_dict = {r.name: r for r in rooms}
+        self.assertIn("Office", room_dict)
+        self.assertEqual(room_dict["Office"].type, "office")
+
+        self.assertIn("Storage", room_dict)
+        self.assertEqual(room_dict["Storage"].type, "storage")
+
+        self.assertIn("Server Room", room_dict)
+        self.assertEqual(room_dict["Server Room"].type, "technical")
+
+        for r in rooms:
+            self.assertEqual(getattr(r, "source", None), "auto")
+
+    def test_auto_polygonization_unnamed_room_and_null_type(self) -> None:
+        """Acceptance (BIM-162): Room without name gets 'Без назви' and null type."""
+        dxf_path = self.temp_dir / "unnamed_room.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 4
+        doc.layers.add("WALL")
+        msp = doc.modelspace()
+
+        msp.add_lwpolyline(
+            [(0, 0), (5000, 0), (5000, 4000), (0, 4000)],
+            close=True,
+            dxfattribs={"layer": "WALL"},
+        )
+        doc.saveas(str(dxf_path))
+
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 1)
+        self.assertIn(rooms[0].name, ["Без назви", ""])
+        self.assertIsNone(rooms[0].type)
+        self.assertEqual(getattr(rooms[0], "source", None), "auto")
+
+    def test_auto_polygonization_discards_envelope_and_artifacts(self) -> None:
+        """Acceptance (BIM-162): Outer envelope and tiny artifacts are discarded."""
+        dxf_path = self.temp_dir / "envelope_and_artifacts.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6  # meters
+        doc.layers.add("WALLS")
+        msp = doc.modelspace()
+
+        # Outer building envelope (20m x 10m = 200m2)
+        msp.add_lwpolyline(
+            [(0, 0), (20, 0), (20, 10), (0, 10)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+
+        # Room 1: (2, 2) to (8, 8) = 36 m2
+        msp.add_lwpolyline(
+            [(2, 2), (8, 2), (8, 8), (2, 8)], close=True, dxfattribs={"layer": "WALLS"}
+        )
+        msp.add_text("Office 1", dxfattribs={"insert": (5, 5, 0), "layer": "WALLS"})
+
+        # Room 2: (10, 2) to (18, 8) = 48 m2
+        msp.add_lwpolyline(
+            [(10, 2), (18, 2), (18, 8), (10, 8)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text("Office 2", dxfattribs={"insert": (14, 5, 0), "layer": "WALLS"})
+
+        # Tiny artifact: 0.4m x 0.4m = 0.16 m2 (< 0.5 m2)
+        msp.add_lwpolyline(
+            [(1, 1), (1.4, 1), (1.4, 1.4), (1, 1.4)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+
+        doc.saveas(str(dxf_path))
+
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 2)
+        names = {r.name for r in rooms}
+        self.assertEqual(names, {"Office 1", "Office 2"})
+
+    def test_no_rooms_found_raises_cad_parsing_error(self) -> None:
+        """Acceptance (BIM-162): DXF with no rooms raises CADParsingError."""
+        dxf_path = self.temp_dir / "no_rooms.dxf"
+        doc = ezdxf.new("R2010")
+        doc.layers.add("WALLS")
+        msp = doc.modelspace()
+        # Single disjoint line that cannot form a room
+        msp.add_line((0, 0), (10, 10), dxfattribs={"layer": "WALLS"})
+        doc.saveas(str(dxf_path))
+
+        with self.assertRaises(CADParsingError) as ctx:
+            parse_dxf_rooms(dxf_path)
+        self.assertIn("Приміщення не знайдено", str(ctx.exception))
 
 
 class TestStorageUtility(unittest.TestCase):
@@ -387,8 +596,8 @@ class TestCadEndpoint(unittest.TestCase):
         self.assertEqual(data[0]["name"], "Room_101 (20.0m2)")
         self.assertEqual(data[0]["area"], 20.0)
 
-    def test_extract_rooms_missing_layer_returns_400(self) -> None:
-        """Verify endpoint returns 400 when FIRE_ROOMS layer is missing."""
+    def test_extract_rooms_fallback_auto_success(self) -> None:
+        """Verify endpoint falls back to auto extraction when FIRE_ROOMS is missing."""
         fixture_path = FIXTURES_DIR / "03_bad_unclosed_meters.dxf"
         self.mock_supabase.storage.from_().download.return_value = (
             fixture_path.read_bytes()
@@ -396,12 +605,61 @@ class TestCadEndpoint(unittest.TestCase):
 
         response = self.client.post(
             "/api/v1/cad/extract-rooms",
-            json={"file_path": "drawings/bad.dxf"},
+            json={"file_path": "drawings/unclosed.dxf"},
         )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["error"], "LayerNotFoundError")
-        self.assertIn("FIRE_ROOMS", data["message"])
+        self.assertIsInstance(data, list)
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["name"], "Bad_Room_B")
+
+    def test_extract_rooms_01_unclosed_cafe_office_plan_mm_success(self) -> None:
+        """Verify endpoint extracts 10 rooms from 01_unclosed_cafe_office_plan_mm."""
+        fixture_path = FIXTURES_DIR / "01_unclosed_cafe_office_plan_mm.dxf"
+        if not fixture_path.exists():
+            fixture_path = (
+                FIXTURES_DIR.parent
+                / "test_drawing_dxf2"
+                / "test_drawing_dxf2"
+                / "01_unclosed_cafe_office_plan_mm.dxf"
+            )
+        self.mock_supabase.storage.from_().download.return_value = (
+            fixture_path.read_bytes()
+        )
+
+        response = self.client.post(
+            "/api/v1/cad/extract-rooms",
+            json={"file_path": "drawings/01_unclosed_cafe_office_plan_mm.dxf"},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIsInstance(data, list)
+        self.assertEqual(len(data), 10)
+        names = {r["name"] for r in data}
+        self.assertIn("Main_Corridor", names)
+        self.assertIn("Cafe_Hall", names)
+        self.assertIn("Kitchen", names)
+        self.assertIn("Storage_Room", names)
+
+    def test_extract_rooms_no_rooms_found_returns_400(self) -> None:
+        """Verify endpoint returns 400 CADParsingError when no rooms are found."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            empty_dxf = Path(tmp_dir) / "empty.dxf"
+            doc = ezdxf.new("R2010")
+            doc.modelspace().add_line((0, 0), (10, 10))
+            doc.saveas(str(empty_dxf))
+            self.mock_supabase.storage.from_().download.return_value = (
+                empty_dxf.read_bytes()
+            )
+
+            response = self.client.post(
+                "/api/v1/cad/extract-rooms",
+                json={"file_path": "drawings/bad.dxf"},
+            )
+            self.assertEqual(response.status_code, 400)
+            data = response.json()
+            self.assertEqual(data["error"], "CADParsingError")
+            self.assertIn("Приміщення не знайдено", data["message"])
 
     def test_extract_rooms_storage_failure_returns_400(self) -> None:
         """Verify endpoint returns 400 when storage download fails."""

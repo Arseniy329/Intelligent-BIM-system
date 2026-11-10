@@ -24,4 +24,3 @@ __all__ = [
     "get_norms_service",
     "sanitize_and_verify_result",
 ]
-
