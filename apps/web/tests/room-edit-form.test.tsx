@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import React from "react";
-import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { RoomEditForm } from "@/components/rooms/room-edit-form";
@@ -431,23 +431,50 @@ describe("RoomEditForm (layout 03-data)", () => {
       />
     );
 
-    const heightInput = screen.getByLabelText("Висота, м");
+    const heightInput = screen.getByLabelText("Висота, м") as HTMLInputElement;
+    const initialHeight = heightInput.value;
     fireEvent.change(heightInput, { target: { value: "3,8" } });
-    expect(onDirtyChange).toHaveBeenCalledWith(true);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
 
     // Revert back to original height
-    fireEvent.change(heightInput, { target: { value: "3,0" } });
-    expect(onDirtyChange).toHaveBeenCalledWith(false);
+    fireEvent.change(heightInput, { target: { value: initialHeight } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
 
     // Change type
     const typeSelect = screen.getByLabelText("Тип приміщення");
     fireEvent.change(typeSelect, { target: { value: "kitchen" } });
-    expect(onDirtyChange).toHaveBeenCalledWith(true);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
 
     // Cancel resets dirty
     const cancelBtn = screen.getByRole("button", { name: "Скасувати" });
     fireEvent.click(cancelBtn);
-    expect(onDirtyChange).toHaveBeenCalledWith(false);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("calls onDirtyChange(false) when form is successfully saved (Issue 1 Regression)", async () => {
+    const onDirtyChange = vi.fn();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithClient(
+      <RoomEditForm
+        room={confirmedCompleteRoom}
+        roomTypes={DEFAULT_ROOM_TYPES}
+        onDirtyChange={onDirtyChange}
+        onSave={onSave}
+      />
+    );
+
+    const heightInput = screen.getByLabelText("Висота, м");
+    fireEvent.change(heightInput, { target: { value: "3,8" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+
+    const submitBtn = screen.getByRole("button", { name: "Зберегти дані" });
+    fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(onSave).toHaveBeenCalledTimes(1);
+    });
+
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
   });
 
   it("submits roomType as 'unknown' when 'Тип не визначено' is selected (Issue 2 Regression)", async () => {
@@ -726,16 +753,16 @@ describe("Placement Gating & Edit Flow Integration (DrawingDetail)", () => {
   });
 
   it("preserves user input in form and keeps placement blocked when save fails with error (Issue 1 Regression)", async () => {
+    let resolvePatch: (val: Response) => void = () => {};
+    const patchPromise = new Promise<Response>((resolve) => {
+      resolvePatch = resolve;
+    });
+
     // Mock fetch to reject with 500 error
     const fetchSpy = vi.fn().mockImplementation((url: string | URL) => {
       const urlStr = String(url);
       if (urlStr.includes("/api/v1/rooms/")) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ detail: "Database error" }), {
-            status: 500,
-            headers: { "Content-Type": "application/json" },
-          })
-        );
+        return patchPromise;
       }
       return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
     });
@@ -766,11 +793,22 @@ describe("Placement Gating & Edit Flow Integration (DrawingDetail)", () => {
     const saveBtn = screen.getByRole("button", { name: "Зберегти дані" });
     fireEvent.click(saveBtn);
 
-    // Wait for mutation failure
-    await waitFor(() => {
-      // User input must still be in the form (NOT wiped or reset)
-      expect(heightInput).toHaveValue("4,2");
-    });
+    // Loading state is displayed during mutation
+    expect(await screen.findByRole("button", { name: "Збереження…" })).toBeInTheDocument();
+
+    // Reject/fail the PATCH request
+    resolvePatch(
+      new Response(JSON.stringify({ detail: "Database error" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    // Explicitly wait until save operation settles (loading state removed)
+    await waitForElementToBeRemoved(() => screen.queryByText(/збереження/i));
+
+    // Only after loading is gone, assert input retention (NOT wiped or reset)
+    expect(heightInput).toHaveValue("4,2");
 
     // Form must remain open
     expect(screen.getByRole("heading", { name: /Офіс 101 — заповнення даних/ })).toBeInTheDocument();
