@@ -12,6 +12,7 @@ export interface RoomEditFormProps {
   roomTypes?: RoomType[];
   onSave?: (updatedRoom: Room) => void | Promise<void>;
   onCancel?: () => void;
+  onDirtyChange?: (isDirty: boolean) => void;
   isSaving?: boolean;
   className?: string;
 }
@@ -21,6 +22,7 @@ export function RoomEditForm({
   roomTypes: propRoomTypes,
   onSave,
   onCancel,
+  onDirtyChange,
   isSaving = false,
   className,
 }: RoomEditFormProps) {
@@ -37,6 +39,18 @@ export function RoomEditForm({
   const [heightInput, setHeightInput] = React.useState<string>(initialHeightStr);
   const [heightError, setHeightError] = React.useState<string | null>(null);
   const heightInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Dirty state tracking
+  const normInitialType =
+    initialType === "unknown" || !initialType ? "" : initialType;
+  const normSelectedType =
+    selectedType === "unknown" || !selectedType ? "" : selectedType;
+  const isDirty =
+    normInitialType !== normSelectedType || heightInput !== initialHeightStr;
+
+  React.useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
 
   // Dynamic validation state
   const isTypeAssigned =
@@ -60,6 +74,11 @@ export function RoomEditForm({
     subtitle = `${confirmationPrefix} Вкажіть висоту приміщення.`;
   }
 
+  const handleCancel = () => {
+    onDirtyChange?.(false);
+    onCancel?.();
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -75,11 +94,16 @@ export function RoomEditForm({
     if (onSave) {
       const updated: Room = {
         ...room,
-        roomType: isTypeAssigned ? selectedType : null,
-        type: isTypeAssigned ? selectedType : null,
+        roomType: isTypeAssigned ? selectedType : "unknown",
+        type: isTypeAssigned ? selectedType : "unknown",
         height: validation.value,
       };
-      await onSave(updated);
+      try {
+        await onSave(updated);
+        onDirtyChange?.(false);
+      } catch {
+        // Keep form open, leave dirty, and preserve user input on save error
+      }
     }
   };
 
@@ -185,7 +209,7 @@ export function RoomEditForm({
                 </button>
                 <button
                   type="button"
-                  onClick={onCancel}
+                  onClick={handleCancel}
                   disabled={isSaving}
                   className="inline-flex min-h-10 items-center justify-center rounded-lg border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-4 py-2 text-sm font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                 >

@@ -71,6 +71,7 @@ function DrawingDetailContent({
   const [activeTab, setActiveTab] = useState<DrawingTab>(initialTab);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [editingRoom, setEditingRoom] = useState<Room | null>(null);
+  const [isEditingRoomDirty, setIsEditingRoomDirty] = useState(false);
   const [viewerAttempt, setViewerAttempt] = useState(0);
   const [confirmReprocess, setConfirmReprocess] = useState(false);
   const refreshFileLock = useRef(false);
@@ -133,7 +134,16 @@ function DrawingDetailContent({
   const reprocessing = !!result?.rooms.length || metadata.status === "processed";
   const mappedRooms =
     result?.rooms?.map((r, i) => mapContractRoomToRoom(r, i)) ?? [];
-  const blockingReasons = getRoomBlockingReasons(mappedRooms);
+  const roomBlockingReasons = getRoomBlockingReasons(mappedRooms);
+  const editBlockingReasons: string[] = [];
+  if (updateRoomMutation.isPending) {
+    editBlockingReasons.push("Триває збереження даних...");
+  } else if (isEditingRoomDirty) {
+    editBlockingReasons.push(
+      "Збережіть або скасуйте зміни приміщення перед розміщенням"
+    );
+  }
+  const blockingReasons = [...editBlockingReasons, ...roomBlockingReasons];
   const hasPlacementBlocking = blockingReasons.length > 0;
 
   return (
@@ -319,7 +329,10 @@ function DrawingDetailContent({
             <div className="space-y-4">
               <button
                 type="button"
-                onClick={() => setEditingRoom(null)}
+                onClick={() => {
+                  setIsEditingRoomDirty(false);
+                  setEditingRoom(null);
+                }}
                 className="inline-flex items-center gap-1.5 text-sm text-[var(--bim-color-text-secondary)] hover:text-[var(--bim-color-text-primary)] cursor-pointer"
               >
                 <span>←</span>
@@ -330,6 +343,7 @@ function DrawingDetailContent({
                   mappedRooms.find((r) => r.id === editingRoom.id) ?? editingRoom
                 }
                 isSaving={updateRoomMutation.isPending}
+                onDirtyChange={setIsEditingRoomDirty}
                 onSave={async (updatedRoom) => {
                   if (!updatedRoom.id) return;
                   await updateRoomMutation.mutateAsync({
@@ -339,9 +353,13 @@ function DrawingDetailContent({
                       height: updatedRoom.height,
                     },
                   });
+                  setIsEditingRoomDirty(false);
                   setEditingRoom(null);
                 }}
-                onCancel={() => setEditingRoom(null)}
+                onCancel={() => {
+                  setIsEditingRoomDirty(false);
+                  setEditingRoom(null);
+                }}
               />
             </div>
           ) : (

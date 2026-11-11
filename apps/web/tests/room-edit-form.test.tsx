@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { describe, expect, it, vi, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import React from "react";
 import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -12,14 +12,28 @@ import type { Room } from "@/types/rooms";
 import { DEFAULT_ROOM_TYPES } from "@/lib/rooms/room-types-api";
 import type { DrawingResult } from "@bim/contracts";
 
+const { getSession } = vi.hoisted(() => ({ getSession: vi.fn() }));
+vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({ auth: { getSession } }) }));
+
+beforeEach(() => {
+  vi.stubEnv("NEXT_PUBLIC_API_URL", "http://localhost:8000");
+  getSession.mockResolvedValue({
+    data: { session: { access_token: "test-token" } },
+    error: null,
+  });
+});
+
 afterEach(() => {
   cleanup();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 function renderWithClient(ui: React.ReactElement) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
+      mutations: { retry: false },
     },
   });
   return render(
@@ -144,6 +158,17 @@ describe("RoomEditForm (layout 03-data)", () => {
     roomType: null,
     height: null,
     area: 25.0,
+    source: "auto",
+    isConfirmed: true,
+  };
+
+  const confirmedCompleteRoom: Room = {
+    id: "r-complete",
+    number: "101",
+    name: "Кабінет директора",
+    roomType: "office",
+    height: 3.0,
+    area: 24.5,
     source: "auto",
     isConfirmed: true,
   };
@@ -393,6 +418,62 @@ describe("RoomEditForm (layout 03-data)", () => {
     expect(submitBtn).toBeDisabled();
     expect(cancelBtn).toBeDisabled();
   });
+
+  it("calls onDirtyChange(true) when user modifies height or type, and false when restored or cancelled (Issue 1 Regression)", () => {
+    const onDirtyChange = vi.fn();
+    const onCancel = vi.fn();
+    renderWithClient(
+      <RoomEditForm
+        room={confirmedCompleteRoom}
+        roomTypes={DEFAULT_ROOM_TYPES}
+        onDirtyChange={onDirtyChange}
+        onCancel={onCancel}
+      />
+    );
+
+    const heightInput = screen.getByLabelText("Висота, м");
+    fireEvent.change(heightInput, { target: { value: "3,8" } });
+    expect(onDirtyChange).toHaveBeenCalledWith(true);
+
+    // Revert back to original height
+    fireEvent.change(heightInput, { target: { value: "3,0" } });
+    expect(onDirtyChange).toHaveBeenCalledWith(false);
+
+    // Change type
+    const typeSelect = screen.getByLabelText("Тип приміщення");
+    fireEvent.change(typeSelect, { target: { value: "kitchen" } });
+    expect(onDirtyChange).toHaveBeenCalledWith(true);
+
+    // Cancel resets dirty
+    const cancelBtn = screen.getByRole("button", { name: "Скасувати" });
+    fireEvent.click(cancelBtn);
+    expect(onDirtyChange).toHaveBeenCalledWith(false);
+  });
+
+  it("submits roomType as 'unknown' when 'Тип не визначено' is selected (Issue 2 Regression)", async () => {
+    const onSave = vi.fn();
+    renderWithClient(
+      <RoomEditForm
+        room={confirmedCompleteRoom}
+        roomTypes={DEFAULT_ROOM_TYPES}
+        onSave={onSave}
+      />
+    );
+
+    const typeSelect = screen.getByLabelText("Тип приміщення");
+    // Select "Тип не визначено" (value "")
+    fireEvent.change(typeSelect, { target: { value: "" } });
+
+    const submitBtn = screen.getByRole("button", { name: "Зберегти дані" });
+    fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(onSave).toHaveBeenCalledTimes(1);
+    });
+
+    const savedRoom = onSave.mock.calls[0][0] as Room;
+    expect(savedRoom.roomType).toBe("unknown");
+  });
 });
 
 describe("Placement Gating & Edit Flow Integration (DrawingDetail)", () => {
@@ -490,5 +571,333 @@ describe("Placement Gating & Edit Flow Integration (DrawingDetail)", () => {
     expect(
       await screen.findByRole("button", { name: "Заповнити" })
     ).toBeInTheDocument();
+  });
+
+  const drawingWithCompleteRooms: DrawingResult = {
+    drawing: {
+      id: "dwg-complete",
+      ownerId: "user-1",
+      originalFileName: "complete-plan.dxf",
+      storagePath: "drawings/complete-plan.dxf",
+      resolvedUnits: "m",
+      status: "processed",
+      errorMessage: null,
+      createdAt: "2026-11-10T10:00:00Z",
+    },
+    rooms: [
+      {
+        id: "room-1",
+        drawingId: "dwg-complete",
+        name: "Офіс 101",
+        type: "office",
+        height: 3.0,
+        area: 20,
+        polygon: [{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 5 }, { x: 0, y: 5 }],
+        source: "auto",
+        confirmed: true,
+      },
+    ],
+    devices: [],
+    sourceDownloadUrl: "https://example.com/source.dxf",
+    sourceDownloadUrlExpiresAt: "2099-01-01T00:00:00Z",
+    downloadUrl: "https://example.com/result.dxf",
+    downloadUrlExpiresAt: "2099-01-01T00:00:00Z",
+  };
+
+  it("blocks placement action when room edit form has unsaved dirty changes, and restores when cancelled (Issue 1 Regression)", async () => {
+    const mockApi = {
+      getDrawing: vi.fn().mockResolvedValue(drawingWithCompleteRooms),
+      processDrawing: vi.fn(),
+      placeDrawing: vi.fn().mockResolvedValue({ drawing_id: "dwg-complete", status: "processed", result_path: "p" }),
+    };
+
+    renderWithClient(
+      <DrawingDetail id="dwg-complete" api={mockApi} initialTab="rooms" />
+    );
+
+    // Initial state: room is complete and confirmed
+    const placeBtn = await screen.findByRole("button", { name: "Розмістити" });
+    expect(placeBtn).not.toBeDisabled();
+
+    // Open room edit form
+    const editBtn = await screen.findByRole("button", { name: "Редагувати" });
+    fireEvent.click(editBtn);
+
+    // Modify height without saving -> form is dirty
+    const heightInput = await screen.findByLabelText("Висота, м");
+    fireEvent.change(heightInput, { target: { value: "4,0" } });
+
+    // Placement button must now be blocked
+    expect(placeBtn).toBeDisabled();
+    expect(placeBtn).toHaveAttribute(
+      "title",
+      expect.stringContaining("Збережіть або скасуйте зміни приміщення")
+    );
+
+    // Click "Скасувати" in form -> dirty state reset, form closed
+    const cancelBtn = screen.getByRole("button", { name: "Скасувати" });
+    fireEvent.click(cancelBtn);
+
+    // Placement button restored
+    expect(placeBtn).not.toBeDisabled();
+  });
+
+  it("blocks placement action while room update mutation is in flight (Issue 1 Regression)", async () => {
+    let resolvePatch: (val: unknown) => void = () => {};
+    const patchPromise = new Promise<unknown>((resolve) => {
+      resolvePatch = resolve;
+    });
+
+    // Mock global fetch for updateRoom PATCH call
+    const fetchSpy = vi.fn().mockImplementation((url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/api/v1/rooms/")) {
+        return patchPromise.then(
+          () =>
+            new Response(
+              JSON.stringify({
+                id: "room-1",
+                drawingId: "dwg-complete",
+                name: "Офіс 101",
+                type: "office",
+                height: 3.5,
+                area: 20,
+                polygon: [
+                  { x: 0, y: 0 },
+                  { x: 4, y: 0 },
+                  { x: 4, y: 5 },
+                  { x: 0, y: 5 },
+                ],
+                source: "auto",
+                confirmed: true,
+              }),
+              {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+              }
+            )
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const mockApi = {
+      getDrawing: vi.fn().mockResolvedValue(drawingWithCompleteRooms),
+      processDrawing: vi.fn(),
+      placeDrawing: vi.fn().mockResolvedValue({ drawing_id: "dwg-complete", status: "processed", result_path: "p" }),
+    };
+
+    renderWithClient(
+      <DrawingDetail id="dwg-complete" api={mockApi} initialTab="rooms" />
+    );
+
+    const placeBtn = await screen.findByRole("button", { name: "Розмістити" });
+    expect(placeBtn).not.toBeDisabled();
+
+    // Open edit form
+    const editBtn = await screen.findByRole("button", { name: "Редагувати" });
+    fireEvent.click(editBtn);
+
+    // Change height
+    const heightInput = await screen.findByLabelText("Висота, м");
+    fireEvent.change(heightInput, { target: { value: "3,5" } });
+
+    // Submit form -> mutation in flight
+    const saveBtn = screen.getByRole("button", { name: "Зберегти дані" });
+    fireEvent.click(saveBtn);
+
+    // Placement button must be blocked while pending
+    await waitFor(() => {
+      expect(placeBtn).toBeDisabled();
+      expect(placeBtn).toHaveAttribute(
+        "title",
+        expect.stringContaining("Триває збереження даних")
+      );
+    });
+
+    // Resolve the mutation
+    resolvePatch({});
+    await waitFor(() => {
+      expect(placeBtn).not.toBeDisabled();
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("preserves user input in form and keeps placement blocked when save fails with error (Issue 1 Regression)", async () => {
+    // Mock fetch to reject with 500 error
+    const fetchSpy = vi.fn().mockImplementation((url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/api/v1/rooms/")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: "Database error" }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          })
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const mockApi = {
+      getDrawing: vi.fn().mockResolvedValue(drawingWithCompleteRooms),
+      processDrawing: vi.fn(),
+      placeDrawing: vi.fn().mockResolvedValue({ drawing_id: "dwg-complete", status: "processed", result_path: "p" }),
+    };
+
+    renderWithClient(
+      <DrawingDetail id="dwg-complete" api={mockApi} initialTab="rooms" />
+    );
+
+    const placeBtn = await screen.findByRole("button", { name: "Розмістити" });
+    expect(placeBtn).not.toBeDisabled();
+
+    // Open edit form
+    const editBtn = await screen.findByRole("button", { name: "Редагувати" });
+    fireEvent.click(editBtn);
+
+    // Enter modified height
+    const heightInput = await screen.findByLabelText("Висота, м");
+    fireEvent.change(heightInput, { target: { value: "4,2" } });
+
+    // Submit save which will fail
+    const saveBtn = screen.getByRole("button", { name: "Зберегти дані" });
+    fireEvent.click(saveBtn);
+
+    // Wait for mutation failure
+    await waitFor(() => {
+      // User input must still be in the form (NOT wiped or reset)
+      expect(heightInput).toHaveValue("4,2");
+    });
+
+    // Form must remain open
+    expect(screen.getByRole("heading", { name: /Офіс 101 — заповнення даних/ })).toBeInTheDocument();
+
+    // Placement must remain blocked with unsaved changes
+    expect(placeBtn).toBeDisabled();
+    expect(placeBtn).toHaveAttribute(
+      "title",
+      expect.stringContaining("Збережіть або скасуйте зміни приміщення")
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it("executes full cycle: changing type from office to unknown sends 'unknown', refetches room with insufficient data, and blocks placement (Issue 2 Regression)", async () => {
+    let currentRoomType: string | null = "office";
+    const dynamicDrawing: DrawingResult = {
+      ...drawingWithCompleteRooms,
+      rooms: [
+        {
+          id: "room-1",
+          drawingId: "dwg-complete",
+          name: "Офіс 101",
+          type: "office",
+          height: 3.0,
+          area: 20,
+          polygon: [{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 5 }, { x: 0, y: 5 }],
+          source: "auto",
+          confirmed: true,
+        },
+      ],
+    };
+
+    const fetchSpy = vi.fn().mockImplementation((url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/api/v1/rooms/")) {
+        currentRoomType = "unknown";
+        dynamicDrawing.rooms[0].type = "unknown";
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "room-1",
+              drawingId: "dwg-complete",
+              name: "Офіс 101",
+              type: "unknown",
+              height: 3.0,
+              area: 20,
+              polygon: [
+                { x: 0, y: 0 },
+                { x: 4, y: 0 },
+                { x: 4, y: 5 },
+                { x: 0, y: 5 },
+              ],
+              source: "auto",
+              confirmed: true,
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }
+          )
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const mockApi = {
+      getDrawing: vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          ...dynamicDrawing,
+          rooms: [
+            {
+              ...dynamicDrawing.rooms[0],
+              type: currentRoomType,
+            },
+          ],
+        })
+      ),
+      processDrawing: vi.fn(),
+      placeDrawing: vi.fn().mockResolvedValue({ drawing_id: "dwg-complete", status: "processed", result_path: "p" }),
+    };
+
+    renderWithClient(
+      <DrawingDetail id="dwg-complete" api={mockApi} initialTab="rooms" />
+    );
+
+    const placeBtn = await screen.findByRole("button", { name: "Розмістити" });
+    expect(placeBtn).not.toBeDisabled();
+
+    // Click "Редагувати"
+    const editBtn = await screen.findByRole("button", { name: "Редагувати" });
+    fireEvent.click(editBtn);
+
+    // Select "Тип не визначено"
+    const typeSelect = await screen.findByLabelText("Тип приміщення");
+    fireEvent.change(typeSelect, { target: { value: "" } });
+
+    // Submit save
+    const saveBtn = screen.getByRole("button", { name: "Зберегти дані" });
+    fireEvent.click(saveBtn);
+
+    // Form should save and return to table
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: /заповнення даних/ })).not.toBeInTheDocument();
+    });
+
+    // Verify PATCH body sent 'unknown'
+    const patchCall = fetchSpy.mock.calls.find((call) =>
+      String(call[0]).includes("/api/v1/rooms/")
+    );
+    expect(patchCall).toBeDefined();
+    const patchBody = JSON.parse(patchCall![1].body);
+    expect(patchBody).toHaveProperty("type", "unknown");
+
+    // Completeness badge in table should now show "Недостатньо даних"
+    expect(
+      screen.getByText("Недостатньо даних")
+    ).toBeInTheDocument();
+
+    // Placement button should now be blocked
+    expect(placeBtn).toBeDisabled();
+    expect(placeBtn).toHaveAttribute(
+      "title",
+      expect.stringContaining("Розміщення заблоковано")
+    );
+
+    vi.unstubAllGlobals();
   });
 });

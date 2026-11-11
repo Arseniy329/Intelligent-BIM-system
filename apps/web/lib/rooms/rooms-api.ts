@@ -27,7 +27,9 @@ export async function updateRoom(
   } = {};
   const effectiveType = patch.room_type !== undefined ? patch.room_type : patch.type;
   if (effectiveType !== undefined) {
-    if (effectiveType && effectiveType !== "unknown") {
+    if (effectiveType === null || effectiveType === "unknown" || effectiveType === "") {
+      body.type = "unknown";
+    } else {
       body.type = effectiveType;
     }
   }
