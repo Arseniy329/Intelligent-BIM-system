@@ -224,9 +224,7 @@ class LLMDomainRestrictedSearchProvider(BaseNormsSearchProvider):
                 resp.raise_for_status()
                 data = resp.json()
                 raw_response_text = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
+                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
                 )
             else:
                 url = self.base_url or "https://api.openai.com/v1/chat/completions"

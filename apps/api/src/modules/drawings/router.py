@@ -227,6 +227,7 @@ async def process_drawing(
 
         supabase.table("rooms").delete().eq("drawing_id", drawing_id).execute()
 
+        default_source = getattr(rooms, "source", "auto")
         room_rows = [
             {
                 "id": str(r.id),
@@ -236,7 +237,8 @@ async def process_drawing(
                 "height": r.height,
                 "area": float(r.area),
                 "polygon": [{"x": p.x, "y": p.y} for p in r.polygon],
-                "source": "fire_rooms",
+                "source": getattr(r, "source", default_source),
+                "confirmed": False,
             }
             for r in rooms
         ]

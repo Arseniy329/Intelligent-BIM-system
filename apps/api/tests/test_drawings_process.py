@@ -117,6 +117,8 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             self.assertIn("polygon", room)
             self.assertGreaterEqual(len(room["polygon"]), 3)
             self.assertGreater(room["area"], 0)
+            self.assertEqual(room["source"], "fire_rooms")
+            self.assertEqual(room["confirmed"], False)
 
         # Verify drawings table status updated to 'processing'
         mock_drawings_query.update.assert_called_with({"status": "processing"})
@@ -124,6 +126,162 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         # Verify /tmp cleanup
         files_after = set(tmp_dir.glob("*.dxf"))
         self.assertEqual(len(files_after - files_before), 0)
+
+    def test_process_drawing_fallback_auto_sets_source_and_confirmed(self) -> None:
+        """Verify POST /process fallback sets source='auto' and confirmed=False."""
+        drawing_id = str(uuid4())
+        fixture_path = FIXTURES_DIR / "03_bad_unclosed_meters.dxf"
+        self.assertTrue(fixture_path.exists())
+
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "03_bad_unclosed_meters.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "m",
+            "status": "uploaded",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+
+        mock_drawings_query = MagicMock()
+        mock_drawings_query.select.return_value = mock_drawings_query
+        mock_drawings_query.eq.return_value = mock_drawings_query
+        mock_drawings_query.single.return_value = mock_drawings_query
+        mock_drawings_query.execute.return_value = MagicMock(data=drawing_record)
+        mock_drawings_query.update.return_value = mock_drawings_query
+
+        mock_rooms_table = MagicMock()
+        mock_rooms_delete_query = MagicMock()
+        mock_rooms_delete_query.eq.return_value = mock_rooms_delete_query
+        mock_rooms_delete_query.execute.return_value = MagicMock(data=[])
+        mock_rooms_table.delete.return_value = mock_rooms_delete_query
+
+        inserted_rooms_payload: list[dict] = []
+
+        def mock_rooms_insert(rows: list[dict]) -> MagicMock:
+            inserted_rooms_payload.extend(rows)
+            res = MagicMock()
+            res.execute.return_value = MagicMock(data=rows)
+            return res
+
+        mock_rooms_table.insert.side_effect = mock_rooms_insert
+
+        def table_side_effect(table_name: str) -> MagicMock:
+            if table_name == "drawings":
+                return mock_drawings_query
+            if table_name == "rooms":
+                return mock_rooms_table
+            return MagicMock()
+
+        self.mock_supabase.table.side_effect = table_side_effect
+
+        mock_storage_bucket = MagicMock()
+        mock_storage_bucket.download.return_value = fixture_path.read_bytes()
+        self.mock_supabase.storage.from_.return_value = mock_storage_bucket
+
+        response = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["drawing_id"], drawing_id)
+        self.assertEqual(data["status"], "processing")
+
+        self.assertGreater(len(inserted_rooms_payload), 0)
+        for room in inserted_rooms_payload:
+            self.assertEqual(room["drawing_id"], drawing_id)
+            self.assertEqual(room["source"], "auto")
+            self.assertEqual(room["confirmed"], False)
+
+    def test_process_drawing_01_unclosed_cafe_office_plan_mm_extracts_all_10_rooms(
+        self,
+    ) -> None:
+        """Verify POST /process on unclosed DXF extracts all 10 rooms."""
+        drawing_id = str(uuid4())
+        fixture_path = FIXTURES_DIR / "01_unclosed_cafe_office_plan_mm.dxf"
+        if not fixture_path.exists():
+            fixture_path = (
+                FIXTURES_DIR.parent
+                / "test_drawing_dxf2"
+                / "test_drawing_dxf2"
+                / "01_unclosed_cafe_office_plan_mm.dxf"
+            )
+        self.assertTrue(fixture_path.exists())
+
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "01_unclosed_cafe_office_plan_mm.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "status": "uploaded",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+
+        mock_drawings_query = MagicMock()
+        mock_drawings_query.select.return_value = mock_drawings_query
+        mock_drawings_query.eq.return_value = mock_drawings_query
+        mock_drawings_query.single.return_value = mock_drawings_query
+        mock_drawings_query.execute.return_value = MagicMock(data=drawing_record)
+        mock_drawings_query.update.return_value = mock_drawings_query
+
+        mock_rooms_table = MagicMock()
+        mock_rooms_delete_query = MagicMock()
+        mock_rooms_delete_query.eq.return_value = mock_rooms_delete_query
+        mock_rooms_delete_query.execute.return_value = MagicMock(data=[])
+        mock_rooms_table.delete.return_value = mock_rooms_delete_query
+
+        inserted_rooms_payload: list[dict] = []
+
+        def mock_rooms_insert(rows: list[dict]) -> MagicMock:
+            inserted_rooms_payload.extend(rows)
+            res = MagicMock()
+            res.execute.return_value = MagicMock(data=rows)
+            return res
+
+        mock_rooms_table.insert.side_effect = mock_rooms_insert
+
+        def table_side_effect(table_name: str) -> MagicMock:
+            if table_name == "drawings":
+                return mock_drawings_query
+            if table_name == "rooms":
+                return mock_rooms_table
+            return MagicMock()
+
+        self.mock_supabase.table.side_effect = table_side_effect
+
+        mock_storage_bucket = MagicMock()
+        mock_storage_bucket.download.return_value = fixture_path.read_bytes()
+        self.mock_supabase.storage.from_.return_value = mock_storage_bucket
+
+        response = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["drawing_id"], drawing_id)
+        self.assertEqual(data["status"], "processing")
+
+        self.assertEqual(len(inserted_rooms_payload), 10)
+        expected_rooms = {
+            "Main_Corridor": (24.0, "corridor"),
+            "Cafe_Hall": (48.0, "hall"),
+            "Kitchen": (16.0, "kitchen"),
+            "Storage_Room": (8.0, "storage"),
+            "Restroom_1": (4.0, "restroom"),
+            "Restroom_2": (4.0, "restroom"),
+            "Office_1": (16.0, "office"),
+            "Office_2": (16.0, "office"),
+            "Staff_Room": (12.0, "service_room"),
+            "Manager_Office": (12.0, "office"),
+        }
+        inserted_by_name = {r["name"]: r for r in inserted_rooms_payload}
+        for name, (exp_area, exp_type) in expected_rooms.items():
+            self.assertIn(name, inserted_by_name)
+            room = inserted_by_name[name]
+            self.assertEqual(room["drawing_id"], drawing_id)
+            self.assertEqual(room["source"], "auto")
+            self.assertEqual(room["confirmed"], False)
+            self.assertAlmostEqual(room["area"], exp_area, places=1)
+            self.assertEqual(room["type"], exp_type)
 
     def test_process_drawing_error_updates_drawing_status(self) -> None:
         """Verify parsing error sets status to 'error' and saves error_message."""
