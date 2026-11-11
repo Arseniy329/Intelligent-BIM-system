@@ -294,6 +294,7 @@ function DrawingDetailContent({
           )}
           <section aria-label="План креслення" className="min-w-0 space-y-3">
             <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
+              selectedRoomId={selectedRoomId}
               onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
             <button className={button} disabled={state.detail.isFetching || state.busy} onClick={refreshFile}>Оновити файл</button>
           </section>
@@ -353,6 +354,27 @@ function DrawingDetailContent({
                 setActiveTab("plan");
               }}
               onEditRoom={(room) => setEditingRoom(room)}
+              onConfirmRoom={async (room) => {
+                if (!room.id) return;
+                await updateRoomMutation.mutateAsync({
+                  roomId: room.id,
+                  patch: { confirmed: true },
+                });
+              }}
+              onConfirmAllRooms={async () => {
+                const unconfirmed = mappedRooms.filter(
+                  (r): r is typeof r & { id: string } =>
+                    Boolean((!r.isConfirmed || r.status === "unconfirmed") && r.id)
+                );
+                await Promise.all(
+                  unconfirmed.map((r) =>
+                    updateRoomMutation.mutateAsync({
+                      roomId: r.id,
+                      patch: { confirmed: true },
+                    })
+                  )
+                );
+              }}
             />
           )}
         </div>

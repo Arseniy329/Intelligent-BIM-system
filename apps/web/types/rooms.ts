@@ -225,7 +225,10 @@ export function formatBlockingActions(
   return parts.join(" ");
 }
 
-export type ContractRoomInput = ContractRoom & {
+export type ContractRoomInput = Omit<Partial<ContractRoom>, "polygon"> & {
+  id: string;
+  drawingId: string;
+  polygon?: { x: number; y: number }[];
   source?: "auto" | "manual" | "fire_rooms";
   confirmed?: boolean;
   isConfirmed?: boolean;
@@ -258,10 +261,9 @@ export function mapContractRoomToRoom(
   const source: RoomSource =
     contractRoom.source === "manual" ? "manual" : "auto";
 
-  const isConfirmed =
-    source === "manual"
-      ? Boolean(contractRoom.confirmed ?? contractRoom.isConfirmed ?? false)
-      : Boolean(contractRoom.confirmed ?? contractRoom.isConfirmed ?? true);
+  const isConfirmed = Boolean(
+    contractRoom.confirmed ?? contractRoom.isConfirmed ?? false
+  );
 
   return {
     id: contractRoom.id,
@@ -270,11 +272,11 @@ export function mapContractRoomToRoom(
     name,
     roomType: contractRoom.type ?? null,
     type: contractRoom.type ?? null,
-    height: contractRoom.height,
-    area: contractRoom.area,
+    height: contractRoom.height ?? null,
+    area: contractRoom.area ?? 0,
     source,
     isConfirmed,
     status: isConfirmed ? "confirmed" : "unconfirmed",
-    polygon: contractRoom.polygon,
+    polygon: contractRoom.polygon ?? [],
   };
 }

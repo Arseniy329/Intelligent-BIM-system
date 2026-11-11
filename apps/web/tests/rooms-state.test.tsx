@@ -13,6 +13,7 @@ import {
   getRoomBlockingReasons,
   getRoomCompletenessStatus,
   getRoomConfirmationStatus,
+  mapContractRoomToRoom,
   BLOCKING_REASONS,
   type Room,
 } from "@/types/rooms";
@@ -392,5 +393,61 @@ describe("Status Badge Components (BIM-129 visual styles)", () => {
       expect(badge.className).toContain("text-emerald-800");
       expect(badge.className).toContain("border-emerald-200");
     });
+  });
+});
+
+describe("mapContractRoomToRoom - Confirmation Strictness (Issue 1 Regression)", () => {
+  it("never defaults missing or undefined confirmed to true for auto rooms", () => {
+    const rawContractRoom = {
+      id: "room-auto-unconfirmed",
+      drawingId: "dwg-1",
+      name: "Кабінет 101",
+      type: "office",
+      height: 3.2,
+      area: 48,
+      polygon: [
+        { x: 0, y: 0 },
+        { x: 8000, y: 0 },
+        { x: 8000, y: 6000 },
+        { x: 0, y: 6000 },
+      ],
+      // confirmed is intentionally absent
+    };
+
+    const mapped = mapContractRoomToRoom(rawContractRoom);
+    expect(mapped.isConfirmed).toBe(false);
+    expect(mapped.status).toBe("unconfirmed");
+  });
+
+  it("strictly respects explicit false for confirmed and isConfirmed", () => {
+    const mapped1 = mapContractRoomToRoom({
+      id: "r1",
+      drawingId: "dwg-1",
+      area: 20,
+      polygon: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }],
+      confirmed: false,
+    });
+    expect(mapped1.isConfirmed).toBe(false);
+
+    const mapped2 = mapContractRoomToRoom({
+      id: "r2",
+      drawingId: "dwg-1",
+      area: 20,
+      polygon: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }],
+      isConfirmed: false,
+    });
+    expect(mapped2.isConfirmed).toBe(false);
+  });
+
+  it("yields isConfirmed: true ONLY when confirmed: true or isConfirmed: true is explicitly provided", () => {
+    const mapped = mapContractRoomToRoom({
+      id: "r-confirmed",
+      drawingId: "dwg-1",
+      area: 20,
+      polygon: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }],
+      confirmed: true,
+    });
+    expect(mapped.isConfirmed).toBe(true);
+    expect(mapped.status).toBe("confirmed");
   });
 });

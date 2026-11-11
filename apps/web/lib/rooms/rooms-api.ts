@@ -7,6 +7,8 @@ export interface UpdateRoomPayload {
   room_type?: string | null;
   type?: string | null;
   height?: number | null;
+  confirmed?: boolean;
+  is_confirmed?: boolean;
 }
 
 /**
@@ -17,7 +19,12 @@ export async function updateRoom(
   patch: UpdateRoomPayload,
   signal?: AbortSignal
 ): Promise<Room> {
-  const body: { type?: string; height?: number | null } = {};
+  const body: {
+    type?: string;
+    height?: number | null;
+    confirmed?: boolean;
+    is_confirmed?: boolean;
+  } = {};
   const effectiveType = patch.room_type !== undefined ? patch.room_type : patch.type;
   if (effectiveType !== undefined) {
     if (effectiveType && effectiveType !== "unknown") {
@@ -26,6 +33,11 @@ export async function updateRoom(
   }
   if (patch.height !== undefined) {
     body.height = patch.height;
+  }
+  if (patch.confirmed !== undefined) {
+    body.confirmed = patch.confirmed;
+  } else if (patch.is_confirmed !== undefined) {
+    body.is_confirmed = patch.is_confirmed;
   }
 
   const response = await apiFetch(`/api/v1/rooms/${roomId}`, {
@@ -46,6 +58,14 @@ export async function updateRoom(
 
   const data = await response.json();
   return mapContractRoomToRoom(data);
+}
+
+export async function confirmRoom(roomId: string, signal?: AbortSignal): Promise<Room> {
+  return updateRoom(roomId, { confirmed: true }, signal);
+}
+
+export async function confirmAllRooms(roomIds: string[], signal?: AbortSignal): Promise<Room[]> {
+  return Promise.all(roomIds.map((id) => confirmRoom(id, signal)));
 }
 
 /**

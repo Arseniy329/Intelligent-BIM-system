@@ -306,4 +306,104 @@ describe("DrawingDetail - 4 Top-level Tabs Integration", () => {
       screen.getByText("Клік по назві виділяє те саме приміщення на плані.")
     ).toBeInTheDocument();
   });
+
+  it("renders an accessible edit trigger ('Редагувати') even when a room is complete and confirmed, and clicking it fires onEditRoom (Issue 3 Regression)", () => {
+    const onEditRoom = vi.fn();
+    const completeRoom: Room = {
+      id: "r-complete",
+      number: "101",
+      name: "Кабінет директора",
+      roomType: "office",
+      height: 3.0,
+      area: 24.5,
+      source: "auto",
+      isConfirmed: true,
+    };
+
+    renderWithClient(
+      <RoomsTable
+        rooms={[completeRoom]}
+        roomTypes={DEFAULT_ROOM_TYPES}
+        onEditRoom={onEditRoom}
+      />
+    );
+
+    const editButton = screen.getByRole("button", { name: /Редагувати/i });
+    expect(editButton).toBeInTheDocument();
+    fireEvent.click(editButton);
+
+    expect(onEditRoom).toHaveBeenCalledTimes(1);
+    expect(onEditRoom).toHaveBeenCalledWith(completeRoom);
+  });
+
+  it("renders explicit 'Підтвердити' action for unconfirmed room and fires onConfirmRoom", () => {
+    const onConfirmRoom = vi.fn();
+    const unconfirmedRoom: Room = {
+      id: "r-unconfirmed",
+      number: "102",
+      name: "Коридор",
+      roomType: "corridor",
+      height: 2.8,
+      area: 18.0,
+      source: "auto",
+      isConfirmed: false,
+    };
+
+    renderWithClient(
+      <RoomsTable
+        rooms={[unconfirmedRoom]}
+        roomTypes={DEFAULT_ROOM_TYPES}
+        onConfirmRoom={onConfirmRoom}
+      />
+    );
+
+    const confirmButton = screen.getByRole("button", { name: /Підтвердити$/i });
+    expect(confirmButton).toBeInTheDocument();
+    fireEvent.click(confirmButton);
+
+    expect(onConfirmRoom).toHaveBeenCalledTimes(1);
+    expect(onConfirmRoom).toHaveBeenCalledWith(unconfirmedRoom);
+  });
+
+  it("renders 'Підтвердити всі' button in header when there are unconfirmed rooms and fires onConfirmAllRooms", () => {
+    const onConfirmAllRooms = vi.fn();
+    const unconfirmedRooms: Room[] = [
+      {
+        id: "r1",
+        number: "101",
+        name: "Кімната 1",
+        roomType: "office",
+        height: 3.0,
+        area: 20.0,
+        source: "auto",
+        isConfirmed: false,
+      },
+      {
+        id: "r2",
+        number: "102",
+        name: "Кімната 2",
+        roomType: "corridor",
+        height: 2.8,
+        area: 15.0,
+        source: "manual",
+        isConfirmed: false,
+      },
+    ];
+
+    renderWithClient(
+      <RoomsTable
+        rooms={unconfirmedRooms}
+        roomTypes={DEFAULT_ROOM_TYPES}
+        onConfirmAllRooms={onConfirmAllRooms}
+      />
+    );
+
+    const confirmAllButton = screen.getByRole("button", {
+      name: /Підтвердити всі \(2\)/i,
+    });
+    expect(confirmAllButton).toBeInTheDocument();
+    fireEvent.click(confirmAllButton);
+
+    expect(onConfirmAllRooms).toHaveBeenCalledTimes(1);
+  });
 });

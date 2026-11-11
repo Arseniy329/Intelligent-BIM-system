@@ -34,6 +34,8 @@ export interface RoomsTableProps {
   onNavigateToPlan?: (room: Room) => void;
   onEditRoom?: (room: Room) => void;
   onVerifyRoom?: (room: Room) => void;
+  onConfirmRoom?: (room: Room) => void;
+  onConfirmAllRooms?: () => void;
   className?: string;
 }
 
@@ -53,6 +55,8 @@ export function RoomsTable({
   onNavigateToPlan,
   onEditRoom,
   onVerifyRoom,
+  onConfirmRoom,
+  onConfirmAllRooms,
   className,
 }: RoomsTableProps) {
   const { data: fetchedRoomTypes } = useRoomTypes(propRoomTypes);
@@ -80,17 +84,29 @@ export function RoomsTable({
       className={cn("space-y-5 min-w-0 w-full", className)}
     >
       {/* 1. Sub-header Counters & Dynamic Summary matching 02-rooms */}
-      <div className="space-y-1">
-        <h2 className="text-2xl font-bold tracking-tight text-[var(--bim-color-text-primary)]">
-          Приміщення
-        </h2>
-        <p
-          data-slot="rooms-summary"
-          className="text-sm text-[var(--bim-color-text-secondary)]"
-        >
-          {pluralizeRooms(total)} · {unconfirmedCount} не підтверджено ·{" "}
-          {incompleteCount} з неповними даними
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="space-y-1">
+          <h2 className="text-2xl font-bold tracking-tight text-[var(--bim-color-text-primary)]">
+            Приміщення
+          </h2>
+          <p
+            data-slot="rooms-summary"
+            className="text-sm text-[var(--bim-color-text-secondary)]"
+          >
+            {pluralizeRooms(total)} · {unconfirmedCount} не підтверджено ·{" "}
+            {incompleteCount} з неповними даними
+          </p>
+        </div>
+        {unconfirmedCount > 0 && onConfirmAllRooms && (
+          <button
+            type="button"
+            onClick={onConfirmAllRooms}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 cursor-pointer self-start sm:self-auto shadow-2xs"
+          >
+            <span aria-hidden="true">✓</span>
+            <span>Підтвердити всі ({unconfirmedCount})</span>
+          </button>
+        )}
       </div>
 
       {/* 2. Rooms Table matching Figma 02-rooms */}
@@ -195,35 +211,64 @@ export function RoomsTable({
 
                     {/* Column 7: Дія */}
                     <TableCell className="text-right">
-                      {!isComplete ? (
-                        <button
-                          type="button"
-                          onClick={() => onEditRoom?.(room)}
-                          className="text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
-                        >
-                          Заповнити
-                        </button>
-                      ) : !isConfirmed ? (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onVerifyRoom
-                              ? onVerifyRoom(room)
-                              : handleRoomClick(room)
-                          }
-                          className="text-xs font-semibold text-amber-700 hover:text-amber-900 hover:underline cursor-pointer"
-                        >
-                          Перевірити
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => handleRoomClick(room)}
-                          className="text-xs font-medium text-slate-600 hover:text-slate-900 hover:underline cursor-pointer"
-                        >
-                          На плані
-                        </button>
-                      )}
+                      <div className="inline-flex items-center justify-end gap-2.5">
+                        {!isConfirmed && onConfirmRoom && (
+                          <button
+                            type="button"
+                            onClick={() => onConfirmRoom(room)}
+                            className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 hover:underline cursor-pointer"
+                          >
+                            Підтвердити
+                          </button>
+                        )}
+                        {!isComplete ? (
+                          <button
+                            type="button"
+                            onClick={() => onEditRoom?.(room)}
+                            className="text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                          >
+                            Заповнити
+                          </button>
+                        ) : !isConfirmed && !onConfirmRoom ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onVerifyRoom
+                                  ? onVerifyRoom(room)
+                                  : handleRoomClick(room)
+                              }
+                              className="text-xs font-semibold text-amber-700 hover:text-amber-900 hover:underline cursor-pointer"
+                            >
+                              Перевірити
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onEditRoom?.(room)}
+                              className="text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                            >
+                              Редагувати
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onEditRoom?.(room)}
+                              className="text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                            >
+                              Редагувати
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRoomClick(room)}
+                              className="text-xs font-medium text-slate-600 hover:text-slate-900 hover:underline cursor-pointer"
+                            >
+                              На плані
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 );

@@ -69,7 +69,7 @@ async def update_room(
     if not changed:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Provide at least one field: type or height",
+            detail="Provide at least one field: type, height, or confirmed",
         )
     if "type" in changed and (
         payload.type is None or not room_type_exists(payload.type)
@@ -87,6 +87,10 @@ async def update_room(
         values["type_confirmed"] = True
     if "height" in changed:
         values["height"] = payload.height
+    if "confirmed" in changed and payload.confirmed is not None:
+        values["confirmed"] = payload.confirmed
+    elif "is_confirmed" in changed and payload.is_confirmed is not None:
+        values["confirmed"] = payload.is_confirmed
 
     updated = _first_row(
         supabase.table("rooms").update(values).eq("id", str(room_id)).execute()
