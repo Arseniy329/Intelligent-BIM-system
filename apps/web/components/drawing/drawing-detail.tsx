@@ -9,6 +9,12 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { drawingApi, drawingErrorMessage, drawingMetadata, downloadLink, fetchDrawingDownload, isDrawingResult, processingErrorMessage,
   type DownloadKind, type DrawingApi, type DrawingResponse } from "@/lib/drawing/drawing-api";
 import { useDrawingDetail } from "@/lib/drawing/use-drawing-detail";
+import { RoomsTable, RoomEditForm } from "@/components/rooms";
+import { mapContractRoomToRoom, getRoomBlockingReasons, type Room } from "@/types/rooms";
+import { useUpdateRoomMutation } from "@/lib/rooms/rooms-api";
+import { cn } from "@/lib/utils";
+
+export type DrawingTab = "plan" | "rooms" | "rules" | "report";
 
 const labels: Record<DrawingStatus | DrawingDetailStatus, string> = {
   pending: "Очікує завантаження", uploaded: "Готове до обробки", processing: "Обробляється",
@@ -34,13 +40,37 @@ function previewUrl(data: DrawingResponse): string | null {
   catch { return null; }
 }
 
-export function DrawingDetail({ id, api = drawingApi, demo = false }: { id: string; api?: DrawingApi; demo?: boolean }) {
+export function DrawingDetail({
+  id,
+  api = drawingApi,
+  demo = false,
+  initialTab = "plan",
+}: {
+  id: string;
+  api?: DrawingApi;
+  demo?: boolean;
+  initialTab?: DrawingTab;
+}) {
   // Key the complete stateful subtree, including mutations and viewer, on navigation.
-  return <DrawingDetailContent key={`${demo}:${id}`} id={id} api={api} demo={demo} />;
+  return <DrawingDetailContent key={`${demo}:${id}`} id={id} api={api} demo={demo} initialTab={initialTab} />;
 }
 
-function DrawingDetailContent({ id, api, demo }: { id: string; api: DrawingApi; demo: boolean }) {
+function DrawingDetailContent({
+  id,
+  api,
+  demo,
+  initialTab = "plan",
+}: {
+  id: string;
+  api: DrawingApi;
+  demo: boolean;
+  initialTab?: DrawingTab;
+}) {
   const state = useDrawingDetail(id, api, demo);
+  const updateRoomMutation = useUpdateRoomMutation(id);
+  const [activeTab, setActiveTab] = useState<DrawingTab>(initialTab);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [editingRoom, setEditingRoom] = useState<Room | null>(null);
   const [viewerAttempt, setViewerAttempt] = useState(0);
   const [confirmReprocess, setConfirmReprocess] = useState(false);
   const refreshFileLock = useRef(false);
@@ -101,6 +131,10 @@ function DrawingDetailContent({ id, api, demo }: { id: string; api: DrawingApi; 
   const processingFailed = state.currentJob?.status === "failed";
   const units = isDrawingResult(data) ? data.drawing.resolvedUnits : data.units;
   const reprocessing = !!result?.rooms.length || metadata.status === "processed";
+  const mappedRooms =
+    result?.rooms?.map((r, i) => mapContractRoomToRoom(r, i)) ?? [];
+  const blockingReasons = getRoomBlockingReasons(mappedRooms);
+  const hasPlacementBlocking = blockingReasons.length > 0;
 
   return (
     <div className="min-w-0 space-y-5">
@@ -116,10 +150,27 @@ function DrawingDetailContent({ id, api, demo }: { id: string; api: DrawingApi; 
           <button className={primaryButton} onClick={() => reprocessing ? setConfirmReprocess(true) : state.start()} disabled={state.busy || state.detail.isFetching || metadata.status === "pending"}>
             {state.process.isPending ? "Пошук приміщень…" : state.busy ? "Обробка…" : reprocessing ? "Обробити повторно" : "Обробити"}
           </button>
-          {api.placeDrawing && <button className={primaryButton} onClick={state.startPlacement}
-            disabled={state.busy || state.detail.isFetching || !result?.rooms.length || metadata.status === "pending"}>
-            {state.place.isPending ? "Розміщення приладів…" : "Розмістити"}
-          </button>}
+          {api.placeDrawing && (
+            <button
+              className={primaryButton}
+              onClick={state.startPlacement}
+              disabled={
+                state.busy ||
+                state.detail.isFetching ||
+                !result?.rooms.length ||
+                metadata.status === "pending" ||
+                hasPlacementBlocking
+              }
+              title={
+                hasPlacementBlocking
+                  ? `Розміщення заблоковано:\n${blockingReasons.join("\n")}`
+                  : undefined
+              }
+              aria-disabled={hasPlacementBlocking || undefined}
+            >
+              {state.place.isPending ? "Розміщення приладів…" : "Розмістити"}
+            </button>
+          )}
           {!!data.sourceDownloadUrl && <button className={button} disabled={download.isPending || state.busy}
             onClick={() => startDownload("source")}>
             {download.isPending ? "Завантаження DXF…" : "Завантажити оригінальний DXF"}
@@ -143,23 +194,187 @@ function DrawingDetailContent({ id, api, demo }: { id: string; api: DrawingApi; 
       {state.timedOut && <p role="status">Автоматичне оновлення зупинено через 2 хвилини. Обробка може тривати на сервері. Натисніть «Оновити стан», щоб перевірити результат.</p>}
       {download.isError && <p role="alert" className={errorMessage}>{drawingErrorMessage(download.error)}</p>}
       {download.isSuccess && <p role="status">DXF передано браузеру для збереження.</p>}
-      <section aria-label="План креслення" className="min-w-0 space-y-3">
-        <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
-          onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
-        <button className={button} disabled={state.detail.isFetching || state.busy} onClick={refreshFile}>Оновити файл</button>
-      </section>
-      {result ? <section aria-label="Результат обробки" className="space-y-3 rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-4 sm:p-6">
-        <h2 className="text-xl font-semibold">Результат обробки</h2>
-        <p>Приміщень: {result.rooms.length} · Сповіщувачів: {result.devices.length}</p>
-        {result.rooms.length ? <ul className="divide-y divide-[var(--bim-color-border-default)]">
-          {result.rooms.map((room, index) => <li key={room.id} className="flex flex-wrap justify-between gap-2 py-3">
-            <span className="min-w-0 break-words">{room.name ?? `Приміщення ${index + 1}`}</span>
-            <span>{room.area.toLocaleString("uk-UA", { maximumFractionDigits: 2 })} м²</span>
-          </li>)}
-        </ul> : <p>Приміщень не знайдено.</p>}
-        {!result.devices.length && <p>Сповіщувачів не знайдено.</p>}
-      </section> : <EmptyState title={metadata.status === "processed" ? "Результат ще недоступний" : "Результату обробки ще немає"}
-        description={metadata.status === "processed" ? "Сервер повернув лише відомості про креслення. Приміщення, сповіщувачі та DXF результату поки недоступні." : "Після обробки тут з’являться приміщення, їхні площі та кількість сповіщувачів."} />}
+
+      {/* Top-level 4 Tabs: План, Приміщення, Правила й норми, Звіт */}
+      <div
+        role="tablist"
+        aria-label="Розділи креслення"
+        className="flex border-b border-[var(--bim-color-border-default)] gap-1 pt-2"
+      >
+        <button
+          role="tab"
+          type="button"
+          aria-selected={activeTab === "plan"}
+          onClick={() => setActiveTab("plan")}
+          className={cn(
+            "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors cursor-pointer",
+            activeTab === "plan"
+              ? "border-[var(--bim-color-brand-primary)] text-[var(--bim-color-brand-primary)] font-semibold"
+              : "border-transparent text-[var(--bim-color-text-secondary)] hover:text-[var(--bim-color-text-primary)]"
+          )}
+        >
+          План
+        </button>
+        <button
+          role="tab"
+          type="button"
+          aria-selected={activeTab === "rooms"}
+          onClick={() => setActiveTab("rooms")}
+          className={cn(
+            "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5 cursor-pointer",
+            activeTab === "rooms"
+              ? "border-[var(--bim-color-brand-primary)] text-[var(--bim-color-brand-primary)] font-semibold"
+              : "border-transparent text-[var(--bim-color-text-secondary)] hover:text-[var(--bim-color-text-primary)]"
+          )}
+        >
+          <span>Приміщення</span>
+          {mappedRooms.length > 0 && (
+            <span className="text-xs px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700">
+              {mappedRooms.length}
+            </span>
+          )}
+        </button>
+        <button
+          role="tab"
+          type="button"
+          aria-selected={activeTab === "rules"}
+          onClick={() => setActiveTab("rules")}
+          className={cn(
+            "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors cursor-pointer",
+            activeTab === "rules"
+              ? "border-[var(--bim-color-brand-primary)] text-[var(--bim-color-brand-primary)] font-semibold"
+              : "border-transparent text-[var(--bim-color-text-secondary)] hover:text-[var(--bim-color-text-primary)]"
+          )}
+        >
+          Правила й норми
+        </button>
+        <button
+          role="tab"
+          type="button"
+          aria-selected={activeTab === "report"}
+          onClick={() => setActiveTab("report")}
+          className={cn(
+            "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors cursor-pointer",
+            activeTab === "report"
+              ? "border-[var(--bim-color-brand-primary)] text-[var(--bim-color-brand-primary)] font-semibold"
+              : "border-transparent text-[var(--bim-color-text-secondary)] hover:text-[var(--bim-color-text-primary)]"
+          )}
+        >
+          Звіт
+        </button>
+      </div>
+
+      {activeTab === "plan" && (
+        <div className="space-y-5">
+          {hasPlacementBlocking && (result?.rooms?.length ?? 0) > 0 && (
+            <div
+              role="alert"
+              data-slot="placement-blocked-banner"
+              className="rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-900 flex flex-wrap items-center justify-between gap-3 shadow-xs"
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  aria-hidden="true"
+                  className="inline-flex size-5 items-center justify-center rounded-full bg-amber-200 text-amber-900 text-xs font-bold shrink-0"
+                >
+                  !
+                </span>
+                <span>
+                  Розміщення приладів заблоковано: {blockingReasons.join("; ")}.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab("rooms")}
+                className="shrink-0 text-xs font-semibold text-amber-900 underline hover:text-amber-950 cursor-pointer"
+              >
+                Перейти до приміщень →
+              </button>
+            </div>
+          )}
+          <section aria-label="План креслення" className="min-w-0 space-y-3">
+            <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
+              onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
+            <button className={button} disabled={state.detail.isFetching || state.busy} onClick={refreshFile}>Оновити файл</button>
+          </section>
+          {result ? <section aria-label="Результат обробки" className="space-y-3 rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-4 sm:p-6">
+            <h2 className="text-xl font-semibold">Результат обробки</h2>
+            <p>Приміщень: {result.rooms.length} · Сповіщувачів: {result.devices.length}</p>
+            {result.rooms.length ? <ul className="divide-y divide-[var(--bim-color-border-default)]">
+              {result.rooms.map((room, index) => <li key={room.id} className="flex flex-wrap justify-between gap-2 py-3">
+                <span className="min-w-0 break-words">{room.name ?? `Приміщення ${index + 1}`}</span>
+                <span>{room.area.toLocaleString("uk-UA", { maximumFractionDigits: 2 })} м²</span>
+              </li>)}
+            </ul> : <p>Приміщень не знайдено.</p>}
+            {!result.devices.length && <p>Сповіщувачів не знайдено.</p>}
+          </section> : <EmptyState title={metadata.status === "processed" ? "Результат ще недоступний" : "Результату обробки ще немає"}
+            description={metadata.status === "processed" ? "Сервер повернув лише відомості про креслення. Приміщення, сповіщувачі та DXF результату поки недоступні." : "Після обробки тут з’являться приміщення, їхні площі та кількість сповіщувачів."} />}
+        </div>
+      )}
+
+      {activeTab === "rooms" && (
+        <div className="space-y-5">
+          {editingRoom ? (
+            <div className="space-y-4">
+              <button
+                type="button"
+                onClick={() => setEditingRoom(null)}
+                className="inline-flex items-center gap-1.5 text-sm text-[var(--bim-color-text-secondary)] hover:text-[var(--bim-color-text-primary)] cursor-pointer"
+              >
+                <span>←</span>
+                <span>До таблиці приміщень</span>
+              </button>
+              <RoomEditForm
+                room={
+                  mappedRooms.find((r) => r.id === editingRoom.id) ?? editingRoom
+                }
+                isSaving={updateRoomMutation.isPending}
+                onSave={async (updatedRoom) => {
+                  if (!updatedRoom.id) return;
+                  await updateRoomMutation.mutateAsync({
+                    roomId: updatedRoom.id,
+                    patch: {
+                      type: updatedRoom.roomType,
+                      height: updatedRoom.height,
+                    },
+                  });
+                  setEditingRoom(null);
+                }}
+                onCancel={() => setEditingRoom(null)}
+              />
+            </div>
+          ) : (
+            <RoomsTable
+              rooms={mappedRooms}
+              selectedRoomId={selectedRoomId}
+              onSelectRoom={(room) => setSelectedRoomId(room.id ?? null)}
+              onNavigateToPlan={(room) => {
+                setSelectedRoomId(room.id ?? null);
+                setActiveTab("plan");
+              }}
+              onEditRoom={(room) => setEditingRoom(room)}
+            />
+          )}
+        </div>
+      )}
+
+      {activeTab === "rules" && (
+        <section aria-label="Правила й норми" className="rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-6 space-y-3">
+          <h2 className="text-xl font-semibold">Правила й норми</h2>
+          <p className="text-sm text-[var(--bim-color-text-secondary)]">
+            Перевірка відповідності пожежних датчиків нормативним вимогам ДБН.
+          </p>
+        </section>
+      )}
+
+      {activeTab === "report" && (
+        <section aria-label="Звіт" className="rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-6 space-y-3">
+          <h2 className="text-xl font-semibold">Звіт</h2>
+          <p className="text-sm text-[var(--bim-color-text-secondary)]">
+            Зведений звіт про відповідність проекту вимогам безпеки.
+          </p>
+        </section>
+      )}
     </div>
   );
 }
