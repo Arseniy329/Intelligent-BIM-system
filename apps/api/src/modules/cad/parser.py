@@ -8,8 +8,9 @@ from uuid import UUID
 
 import ezdxf
 from ezdxf.entities import LWPolyline
-from shapely.geometry import LineString, Point, Polygon
-from shapely.ops import polygonize, unary_union
+from shapely.geometry import LinearRing, LineString, Point, Polygon
+from shapely.geometry.polygon import orient
+from shapely.ops import nearest_points, polygonize, unary_union
 
 from src.contracts.generated import Point as ContractPoint
 from src.contracts.generated import Room
@@ -44,8 +45,12 @@ EXPLICATION_PATTERN = re.compile(
     r"(?:\s*[\|\(].*|\s*[\d\.,]+\s*(?:m2|м2|м²|sqm|sq\s*m).*|\s*)$",
     re.IGNORECASE,
 )
+_AREA_CORE = (
+    r"(?:[~≈][ \t]*)?(?:\d+[\.,]\d+|\d+)[ \t]*"
+    r"(?:m\^?2|m²|м\^?2|м²|sqm|sq\.?[ \t]*m\.?)"
+)
 AREA_PATTERN = re.compile(
-    r"(\d+[\.,]\d+|\d+)\s*(m2|м2|м²|sqm|sq\s*m)",
+    rf"^[ \t]*(?:{_AREA_CORE}|\([ \t]*{_AREA_CORE}[ \t]*\))[ \t]*$",
     re.IGNORECASE,
 )
 
@@ -171,7 +176,11 @@ def _is_only_number(text: str) -> bool:
 
 
 def _is_area_string(text: str) -> bool:
-    return bool(AREA_PATTERN.search(text))
+    """Return True only when text is exclusively an area annotation."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    return bool(AREA_PATTERN.fullmatch(stripped))
 
 
 def _parse_explication(msp: Any) -> dict[str, str]:
@@ -194,7 +203,7 @@ def _parse_explication(msp: Any) -> dict[str, str]:
         content = content.replace(r"\P", "\n").replace(r"\p", "\n")
         for line in content.splitlines():
             line = line.strip()
-            if not line:
+            if not line or _is_area_string(line):
                 continue
             m = EXPLICATION_PATTERN.match(line)
             if m:
@@ -654,6 +663,216 @@ def _build_fire_rooms(
     return rooms
 
 
+def _closest_edge_param(
+    ring_pts: list[tuple[float, float]],
+    pt: tuple[float, float],
+) -> tuple[int, float] | None:
+    """Find the edge index and clamped [0, 1] parameter closest to pt."""
+    px, py = pt
+    n = len(ring_pts)
+    best: tuple[int, float] | None = None
+    best_dist_sq = float("inf")
+    for idx in range(n):
+        ax, ay = ring_pts[idx]
+        bx, by = ring_pts[(idx + 1) % n]
+        dx, dy = bx - ax, by - ay
+        seg_len_sq = dx * dx + dy * dy
+        if seg_len_sq <= 0:
+            continue
+        t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg_len_sq))
+        cx, cy = ax + t * dx, ay + t * dy
+        dist_sq = (px - cx) ** 2 + (py - cy) ** 2
+        if dist_sq < best_dist_sq:
+            best_dist_sq = dist_sq
+            best = (idx, t)
+    return best
+
+
+def _build_keyhole_ring(
+    outer: list[tuple[float, float]],
+    hole: list[tuple[float, float]],
+    outer_edge_idx: int,
+    t_outer: float,
+    hole_edge_idx: int,
+    t_hole: float,
+    eps: float,
+) -> list[tuple[float, float]] | None:
+    """Splice an interior hole into an outer ring via an infinitesimal-width slit."""
+    no = len(outer)
+    nh = len(hole)
+    ao = outer[outer_edge_idx]
+    bo = outer[(outer_edge_idx + 1) % no]
+    do_x, do_y = bo[0] - ao[0], bo[1] - ao[1]
+    len_o = math.hypot(do_x, do_y)
+    if len_o <= 0:
+        return None
+    eps_o = min(eps, 0.25 * len_o)
+    pos_o = min(t_outer * len_o, max(0.0, len_o - eps_o))
+    if pos_o + eps_o > len_o:
+        return None
+    uo_x, uo_y = do_x / len_o, do_y / len_o
+    entry_o = (ao[0] + pos_o * uo_x, ao[1] + pos_o * uo_y)
+    exit_o = (entry_o[0] + eps_o * uo_x, entry_o[1] + eps_o * uo_y)
+
+    # Map hole start-of-edge hits (t=0) to the end of the preceding edge (t=1).
+    if t_hole <= 1e-9:
+        hole_edge_idx = (hole_edge_idx - 1) % nh
+        t_hole = 1.0
+
+    ch = hole[hole_edge_idx]
+    dh = hole[(hole_edge_idx + 1) % nh]
+    dh_x, dh_y = dh[0] - ch[0], dh[1] - ch[1]
+    len_h = math.hypot(dh_x, dh_y)
+    if len_h <= 0:
+        return None
+    eps_h = min(eps, 0.25 * len_h)
+    pos_h = max(t_hole * len_h, min(len_h, eps_h))
+    if pos_h - eps_h < 0:
+        return None
+    uh_x, uh_y = dh_x / len_h, dh_y / len_h
+    entry_h = (ch[0] + pos_h * uh_x, ch[1] + pos_h * uh_y)
+    exit_h = (entry_h[0] - eps_h * uh_x, entry_h[1] - eps_h * uh_y)
+
+    # Ensure bridge is non-degenerate and slit return lies to the right of bridge.
+    vx, vy = entry_h[0] - entry_o[0], entry_h[1] - entry_o[1]
+    if math.hypot(vx, vy) <= eps * 2.0:
+        return None
+    if vx * (exit_o[1] - entry_o[1]) - vy * (exit_o[0] - entry_o[0]) >= 0:
+        return None
+    if vx * (exit_h[1] - entry_h[1]) - vy * (exit_h[0] - entry_h[0]) >= 0:
+        return None
+
+    hole_seq: list[tuple[float, float]] = []
+    if pos_h < len_h - 1e-12:
+        hole_seq.append(entry_h)
+    for k in range(1, nh + 1):
+        hole_seq.append(hole[(hole_edge_idx + k) % nh])
+    if pos_h - eps_h > 1e-12:
+        hole_seq.append(exit_h)
+
+    merged = list(outer[: outer_edge_idx + 1])
+    if pos_o > 1e-12:
+        merged.append(entry_o)
+    merged.extend(hole_seq)
+    if pos_o + eps_o < len_o - 1e-12:
+        merged.append(exit_o)
+    merged.extend(outer[outer_edge_idx + 1 :])
+    return merged
+
+
+def _candidate_bridges(
+    outer: list[tuple[float, float]],
+    hole: list[tuple[float, float]],
+    pt_o: tuple[float, float],
+    pt_h: tuple[float, float],
+) -> list[tuple[int, float, int, float]]:
+    """Build ordered bridge parameter candidates connecting outer and hole."""
+    candidates: list[tuple[int, float, int, float]] = []
+    outer_ring = LinearRing(outer)
+    hole_ring = LinearRing(hole)
+
+    eo = _closest_edge_param(outer, pt_o)
+    eh = _closest_edge_param(hole, pt_h)
+    if eo is not None and eh is not None:
+        candidates.append((eo[0], eo[1], eh[0], eh[1]))
+
+    for hi in range(len(hole)):
+        ax, ay = hole[hi]
+        bx, by = hole[(hi + 1) % len(hole)]
+        mid_h = Point(0.5 * (ax + bx), 0.5 * (ay + by))
+        near_o = nearest_points(outer_ring, mid_h)[0]
+        eo_mid = _closest_edge_param(outer, (near_o.x, near_o.y))
+        if eo_mid is not None:
+            candidates.append((eo_mid[0], eo_mid[1], hi, 0.5))
+
+    for oi in range(len(outer)):
+        ax, ay = outer[oi]
+        bx, by = outer[(oi + 1) % len(outer)]
+        mid_o = Point(0.5 * (ax + bx), 0.5 * (ay + by))
+        near_h = nearest_points(mid_o, hole_ring)[1]
+        eh_mid = _closest_edge_param(hole, (near_h.x, near_h.y))
+        if eh_mid is not None:
+            candidates.append((oi, 0.5, eh_mid[0], eh_mid[1]))
+
+    return candidates
+
+
+def _merge_hole_into_outer(
+    outer: list[tuple[float, float]],
+    hole: list[tuple[float, float]],
+    pt_o: tuple[float, float],
+    pt_h: tuple[float, float],
+    other_holes: list[Polygon],
+    poly_area: float,
+    eps: float,
+) -> list[tuple[float, float]] | None:
+    """Try merging one hole into outer without violating geometry validity."""
+    hole_poly = Polygon(hole)
+    for eo_idx, t_o, eh_idx, t_h in _candidate_bridges(outer, hole, pt_o, pt_h):
+        cand = _build_keyhole_ring(outer, hole, eo_idx, t_o, eh_idx, t_h, eps)
+        if cand is None or len(cand) < 3:
+            continue
+        cand_poly = Polygon(cand)
+        if not cand_poly.is_valid:
+            continue
+        if any(not cand_poly.contains(other) for other in other_holes):
+            continue
+        if cand_poly.intersection(hole_poly).area > 1e-6 * max(poly_area, 1e-12):
+            continue
+        oriented_cand = orient(cand_poly, sign=1.0)
+        return [(float(x), float(y)) for x, y in oriented_cand.exterior.coords[:-1]]
+    return None
+
+
+def _polygon_to_single_ring(poly: Polygon) -> list[tuple[float, float]]:
+    """Convert a polygon (possibly with interior holes) into one simple ring.
+
+    For polygons with interior rings, each hole is spliced into the exterior ring
+    via an obstacle-free keyhole slit whose width stays negligible compared to room
+    area while preserving OGC geometry validity for downstream spatial queries.
+    """
+    if not poly.interiors:
+        return [(float(x), float(y)) for x, y in poly.exterior.coords[:-1]]
+
+    oriented = orient(poly, sign=1.0)
+    outer = [(float(x), float(y)) for x, y in oriented.exterior.coords[:-1]]
+    holes = [
+        [(float(x), float(y)) for x, y in interior.coords[:-1]]
+        for interior in oriented.interiors
+    ]
+
+    all_pts = outer + [pt for hole in holes for pt in hole]
+    max_coord = max((max(abs(x), abs(y)) for x, y in all_pts), default=1.0)
+    eps = max(1e-10, max_coord * 1e-11)
+
+    while holes:
+        outer_ring = LinearRing(outer)
+        dists: list[tuple[float, int, tuple[float, float], tuple[float, float]]] = []
+        for idx, hole in enumerate(holes):
+            p_o, p_h = nearest_points(outer_ring, LinearRing(hole))
+            dists.append((p_o.distance(p_h), idx, (p_o.x, p_o.y), (p_h.x, p_h.y)))
+        dists.sort(key=lambda item: item[0])
+
+        merged_outer: list[tuple[float, float]] | None = None
+        chosen_idx: int | None = None
+        for _, idx, pt_o, pt_h in dists:
+            other_holes = [Polygon(holes[j]) for j in range(len(holes)) if j != idx]
+            candidate = _merge_hole_into_outer(
+                outer, holes[idx], pt_o, pt_h, other_holes, poly.area, eps
+            )
+            if candidate is not None:
+                merged_outer = candidate
+                chosen_idx = idx
+                break
+
+        if merged_outer is None or chosen_idx is None:
+            break
+        outer = merged_outer
+        holes.pop(chosen_idx)
+
+    return outer
+
+
 def _build_auto_rooms(
     polygons: list[Polygon],
     msp: Any,
@@ -674,6 +893,8 @@ def _build_auto_rooms(
 
         # 1. Direct explication pattern (e.g. "101 | Office")
         for t in texts_in_poly:
+            if _is_area_string(t):
+                continue
             m = EXPLICATION_PATTERN.match(t)
             if m:
                 matched_name = m.group(3).strip()
@@ -705,7 +926,7 @@ def _build_auto_rooms(
             name = DEFAULT_UNNAMED_ROOM_NAME
             room_type = None
 
-        coords = [(float(x), float(y)) for x, y in poly.exterior.coords[:-1]]
+        coords = _polygon_to_single_ring(poly)
         contract_polygon = [ContractPoint(x=x, y=y) for x, y in coords]
         area_m2 = round(poly.area * area_multiplier, 4)
 

@@ -8,6 +8,8 @@ from uuid import UUID
 
 import ezdxf
 from fastapi.testclient import TestClient
+from shapely.geometry import Point as ShapelyPoint
+from shapely.geometry import Polygon as ShapelyPolygon
 
 API_DIR = Path(__file__).resolve().parent.parent
 if str(API_DIR) not in sys.path:
@@ -26,7 +28,8 @@ from src.infrastructure.storage import (
 )
 from src.infrastructure.supabase import get_supabase_client
 from src.main import app
-from src.modules.cad.parser import parse_dxf_rooms
+from src.modules.cad.parser import _is_area_string, parse_dxf_rooms
+from src.modules.placement.service import RuleRecord, place_devices_from_rule
 
 FIXTURES_DIR = API_DIR / "tests" / "fixtures" / "test_drawing_dxf"
 
@@ -792,6 +795,161 @@ class TestCadParser(unittest.TestCase):
         with self.assertRaises(CADParsingError) as ctx:
             parse_dxf_rooms(dxf_path)
         self.assertIn("Приміщення не знайдено", str(ctx.exception))
+
+    def _create_donut_dxf(
+        self,
+        filename: str,
+        *,
+        insunits: int = 6,
+        scale: float = 1.0,
+        hall_label: str | None = "Hall",
+        office_label: str = "Office",
+        holes: list[tuple[float, float, float, float, str]] | None = None,
+    ) -> Path:
+        dxf_path = self.temp_dir / filename
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = insunits
+        doc.layers.add("WALLS")
+        doc.layers.add("TEXT")
+        msp = doc.modelspace()
+
+        msp.add_lwpolyline(
+            [(0, 0), (20 * scale, 0), (20 * scale, 10 * scale), (0, 10 * scale)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        if hall_label is not None:
+            msp.add_text(
+                hall_label,
+                dxfattribs={"insert": (1 * scale, 1 * scale, 0), "layer": "TEXT"},
+            )
+
+        hole_defs = (
+            holes if holes is not None else [(8.0, 4.0, 12.0, 6.0, office_label)]
+        )
+        for x0, y0, x1, y1, label in hole_defs:
+            msp.add_lwpolyline(
+                [
+                    (x0 * scale, y0 * scale),
+                    (x1 * scale, y0 * scale),
+                    (x1 * scale, y1 * scale),
+                    (x0 * scale, y1 * scale),
+                ],
+                close=True,
+                dxfattribs={"layer": "WALLS"},
+            )
+            msp.add_text(
+                label,
+                dxfattribs={
+                    "insert": (0.5 * (x0 + x1) * scale, 0.5 * (y0 + y1) * scale, 0),
+                    "layer": "TEXT",
+                },
+            )
+
+        doc.saveas(str(dxf_path))
+        return dxf_path
+
+    def test_donut_serialized_polygon_preserves_hole_and_net_area_meters(self) -> None:
+        """P1 (Test A1): Serialized polygon for donut Hall excludes inner Office."""
+        dxf_path = self._create_donut_dxf("donut_serialized_meters.dxf")
+        rooms = parse_dxf_rooms(dxf_path)
+        by_name = {r.name: r for r in rooms}
+        self.assertIn("Hall", by_name)
+        self.assertIn("Office", by_name)
+
+        hall_poly = ShapelyPolygon([(p.x, p.y) for p in by_name["Hall"].polygon])
+        office_poly = ShapelyPolygon([(p.x, p.y) for p in by_name["Office"].polygon])
+
+        self.assertTrue(hall_poly.is_valid)
+        self.assertAlmostEqual(hall_poly.area, 192.0, places=4)
+        self.assertAlmostEqual(hall_poly.intersection(office_poly).area, 0.0, places=6)
+
+        placed = place_devices_from_rule(
+            [(p.x, p.y) for p in by_name["Hall"].polygon],
+            RuleRecord(id="r1", threshold=4.0),
+        )
+        self.assertGreater(len(placed), 0)
+        for device in placed:
+            self.assertFalse(office_poly.contains(ShapelyPoint(device.x, device.y)))
+
+    def test_donut_serialized_polygon_preserves_hole_millimeters(self) -> None:
+        """P1 (Test A2): Serialized polygon keeps hole geometry in mm ($INSUNITS=4)."""
+        dxf_path = self._create_donut_dxf(
+            "donut_serialized_mm.dxf", insunits=4, scale=1000.0
+        )
+        rooms = parse_dxf_rooms(dxf_path)
+        by_name = {r.name: r for r in rooms}
+        self.assertIn("Hall", by_name)
+        self.assertIn("Office", by_name)
+
+        hall_poly = ShapelyPolygon([(p.x, p.y) for p in by_name["Hall"].polygon])
+        office_poly = ShapelyPolygon([(p.x, p.y) for p in by_name["Office"].polygon])
+
+        self.assertTrue(hall_poly.is_valid)
+        self.assertAlmostEqual(hall_poly.area * 1e-6, 192.0, places=4)
+        self.assertAlmostEqual(hall_poly.intersection(office_poly).area, 0.0, places=4)
+
+    def test_multi_hole_serialized_polygon_preserves_all_holes(self) -> None:
+        """P1 (Test A3): Room enclosing two rooms keeps net area and zero overlap."""
+        dxf_path = self._create_donut_dxf(
+            "donut_multi_holes.dxf",
+            holes=[(2.0, 2.0, 6.0, 8.0, "Room A"), (12.0, 2.0, 16.0, 8.0, "Room B")],
+        )
+        rooms = parse_dxf_rooms(dxf_path)
+        by_name = {r.name: r for r in rooms}
+        self.assertEqual(set(by_name.keys()), {"Hall", "Room A", "Room B"})
+
+        hall_poly = ShapelyPolygon([(p.x, p.y) for p in by_name["Hall"].polygon])
+        room_a = ShapelyPolygon([(p.x, p.y) for p in by_name["Room A"].polygon])
+        room_b = ShapelyPolygon([(p.x, p.y) for p in by_name["Room B"].polygon])
+
+        self.assertTrue(hall_poly.is_valid)
+        self.assertAlmostEqual(hall_poly.area, 152.0, places=4)
+        self.assertAlmostEqual(hall_poly.intersection(room_a).area, 0.0, places=6)
+        self.assertAlmostEqual(hall_poly.intersection(room_b).area, 0.0, places=6)
+
+    def test_combined_room_name_and_area_label_preserved(self) -> None:
+        """P2 (Test B1): Combined label 'Hall (192 m2)' is NOT treated as pure area."""
+        dxf_path = self._create_donut_dxf(
+            "donut_combined_label.dxf", hall_label="Hall (192 m2)"
+        )
+        rooms = parse_dxf_rooms(dxf_path)
+        by_name = {r.name: r for r in rooms}
+        self.assertIn("Hall (192 m2)", by_name)
+        self.assertIn("Office", by_name)
+        self.assertAlmostEqual(by_name["Hall (192 m2)"].area, 192.0, places=1)
+
+    def test_combined_explication_and_area_label_preserved(self) -> None:
+        """P2 (Test B2): Combined explication '101 | Hall | 192 m2' keeps the room."""
+        dxf_path = self._create_donut_dxf(
+            "donut_explication_area.dxf", hall_label="101 | Hall | 192 m2"
+        )
+        rooms = parse_dxf_rooms(dxf_path)
+        by_name = {r.name: r for r in rooms}
+        self.assertIn("Hall", by_name)
+        self.assertIn("Office", by_name)
+        self.assertAlmostEqual(by_name["Hall"].area, 192.0, places=1)
+
+    def test_is_area_string_only_matches_pure_area_annotations(self) -> None:
+        """P2 (Test B3): _is_area_string matches ONLY standalone area strings."""
+        for pure_area in ("192 m2", "~25.0 sq m", " 24.0 m² ", "≈ 12,5 sqm", "16.5 м2"):
+            self.assertTrue(_is_area_string(pure_area), msg=pure_area)
+
+        for mixed_or_other in (
+            "Hall (192 m2)",
+            "101 | Hall | 192 m2",
+            "Kitchen 16 m2",
+            "101",
+            "Office",
+        ):
+            self.assertFalse(_is_area_string(mixed_or_other), msg=mixed_or_other)
+
+        # Standalone area annotation inside an envelope must NOT save envelope
+        dxf_path = self._create_donut_dxf(
+            "donut_pure_area_only.dxf", hall_label="192 m2"
+        )
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual([r.name for r in rooms], ["Office"])
 
 
 class TestStorageUtility(unittest.TestCase):
