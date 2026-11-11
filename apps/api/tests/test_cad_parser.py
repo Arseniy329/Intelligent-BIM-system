@@ -575,6 +575,167 @@ class TestCadParser(unittest.TestCase):
         server_rooms = [r for r in rooms if r.name == "Server Room"]
         self.assertEqual(len(server_rooms), 2)
 
+    def test_donut_room_with_inner_office_meters(self) -> None:
+        """P1 (Test A1): Donut hall (20x10m with 4x2m inner room) in meters.
+
+        $INSUNITS=6 must return BOTH Hall (192 m2) and Office (8 m2).
+        """
+        dxf_path = self.temp_dir / "donut_hall_office_meters.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6  # meters
+        doc.layers.add("WALLS")
+        doc.layers.add("TEXT")
+        msp = doc.modelspace()
+
+        # 20x10 m outer contour
+        msp.add_lwpolyline(
+            [(0, 0), (20, 0), (20, 10), (0, 10)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text("Hall", dxfattribs={"insert": (4, 4, 0), "layer": "TEXT"})
+
+        # 4x2 m inner room at (8,4)-(12,6)
+        msp.add_lwpolyline(
+            [(8, 4), (12, 4), (12, 6), (8, 6)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text("Office", dxfattribs={"insert": (10, 5, 0), "layer": "TEXT"})
+
+        doc.saveas(str(dxf_path))
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 2)
+        by_name = {r.name: r for r in rooms}
+        self.assertIn("Hall", by_name)
+        self.assertIn("Office", by_name)
+        self.assertAlmostEqual(by_name["Hall"].area, 192.0, places=1)
+        self.assertAlmostEqual(by_name["Office"].area, 8.0, places=1)
+
+    def test_donut_room_with_inner_office_millimeters(self) -> None:
+        """P1 (Test A2): Donut hall in millimeters ($INSUNITS=4).
+
+        20000x10000 and 4000x2000 must return both rooms with exact areas.
+        """
+        dxf_path = self.temp_dir / "donut_hall_office_mm.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 4  # millimeters
+        doc.layers.add("WALLS")
+        doc.layers.add("TEXT")
+        msp = doc.modelspace()
+
+        # 20000x10000 mm outer contour
+        msp.add_lwpolyline(
+            [(0, 0), (20000, 0), (20000, 10000), (0, 10000)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text("Hall", dxfattribs={"insert": (4000, 4000, 0), "layer": "TEXT"})
+
+        # 4000x2000 mm inner room at (8000,4000)-(12000,6000)
+        msp.add_lwpolyline(
+            [(8000, 4000), (12000, 4000), (12000, 6000), (8000, 6000)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text("Office", dxfattribs={"insert": (10000, 5000, 0), "layer": "TEXT"})
+
+        doc.saveas(str(dxf_path))
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 2)
+        by_name = {r.name: r for r in rooms}
+        self.assertIn("Hall", by_name)
+        self.assertIn("Office", by_name)
+        self.assertAlmostEqual(by_name["Hall"].area, 192.0, places=1)
+        self.assertAlmostEqual(by_name["Office"].area, 8.0, places=1)
+
+    def test_true_envelope_discarded_when_unlabeled(self) -> None:
+        """P1 (Test A3): Outer 20x10 boundary has NO text label, but inside there are
+
+        two separate labeled rooms (4 m2 each) -> outer boundary is discarded.
+        """
+        dxf_path = self.temp_dir / "true_envelope_two_offices.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6  # meters
+        doc.layers.add("WALLS")
+        doc.layers.add("TEXT")
+        msp = doc.modelspace()
+
+        # Outer 20x10 boundary without text
+        msp.add_lwpolyline(
+            [(0, 0), (20, 0), (20, 10), (0, 10)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+
+        # Room 1: 2x2 m at (2, 2)
+        msp.add_lwpolyline(
+            [(2, 2), (4, 2), (4, 4), (2, 4)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text("Office 1", dxfattribs={"insert": (3, 3, 0), "layer": "TEXT"})
+
+        # Room 2: 2x2 m at (10, 2)
+        msp.add_lwpolyline(
+            [(10, 2), (12, 2), (12, 4), (10, 4)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text("Office 2", dxfattribs={"insert": (11, 3, 0), "layer": "TEXT"})
+
+        doc.saveas(str(dxf_path))
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 2)
+        names = {r.name for r in rooms}
+        self.assertEqual(names, {"Office 1", "Office 2"})
+        areas = sorted([r.area for r in rooms])
+        self.assertAlmostEqual(areas[0], 4.0, places=1)
+        self.assertAlmostEqual(areas[1], 4.0, places=1)
+
+    def test_extract_walls_and_bridge_gaps_explicit_max_gap(self) -> None:
+        """P2 (Test B1): Calling _extract_walls_and_bridge_gaps with explicit max_gap
+
+        (0 and 1.2) must not raise UnboundLocalError.
+        """
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6
+        doc.layers.add("WALLS")
+        msp = doc.modelspace()
+        msp.add_lwpolyline(
+            [(0, 0), (10, 0), (10, 10), (0, 10)],
+            close=False,
+            dxfattribs={"layer": "WALLS"},
+        )
+
+        from src.modules.cad.parser import _extract_walls_and_bridge_gaps
+
+        # Calling with max_gap=0 must succeed
+        segs_0 = _extract_walls_and_bridge_gaps(msp, max_gap=0)
+        self.assertIsInstance(segs_0, list)
+
+        # Calling with max_gap=1.2 must succeed
+        segs_12 = _extract_walls_and_bridge_gaps(msp, max_gap=1.2)
+        self.assertIsInstance(segs_12, list)
+
+    def test_extract_walls_and_bridge_gaps_zero_disables_bridging(self) -> None:
+        """P2 (Test B2): With max_gap=0, open contour (0.1m gap) is NOT closed."""
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6
+        doc.layers.add("WALLS")
+        msp = doc.modelspace()
+        msp.add_lwpolyline(
+            [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0.1)],
+            close=False,
+            dxfattribs={"layer": "WALLS"},
+        )
+
+        from src.modules.cad.parser import _extract_walls_and_bridge_gaps
+
+        # When max_gap=0, bridging is completely disabled: only 4 drawn segments exist
+        segs = _extract_walls_and_bridge_gaps(msp, max_gap=0)
+        self.assertEqual(len(segs), 4)
+
     def test_auto_polygonization_discards_envelope_and_artifacts(self) -> None:
         """Acceptance (BIM-162): Outer envelope and tiny artifacts are discarded."""
         dxf_path = self.temp_dir / "envelope_and_artifacts.dxf"

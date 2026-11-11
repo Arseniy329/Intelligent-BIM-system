@@ -318,6 +318,58 @@ def _bridge_gaps(segments: list[LineString], max_gap: float) -> list[LineString]
     return result
 
 
+def _extract_text_entries(msp: Any) -> list[tuple[Point, str]]:
+    """Extract (Point, first_line_text) entries from TEXT and MTEXT entities."""
+    text_entries: list[tuple[Point, str]] = []
+    if msp is None:
+        return text_entries
+
+    for entity in msp.query("TEXT MTEXT"):
+        if entity.dxftype() == "MTEXT":
+            content = (
+                entity.plain_text().strip()
+                if hasattr(entity, "plain_text")
+                else str(getattr(entity.dxf, "text", "")).strip()
+            )
+        else:
+            content = str(getattr(entity.dxf, "text", "")).strip()
+
+        if not content:
+            continue
+
+        content = content.replace(r"\P", "\n").replace(r"\p", "\n")
+        first_line = next(
+            (line.strip() for line in content.splitlines() if line.strip()), ""
+        )
+        if not first_line:
+            continue
+
+        insert = getattr(entity.dxf, "insert", (0.0, 0.0, 0.0))
+        align = getattr(entity.dxf, "align_point", None)
+        if align and (align[0] != 0.0 or align[1] != 0.0) and insert == (0.0, 0.0, 0.0):
+            pt = Point(float(align[0]), float(align[1]))
+        else:
+            pt = Point(float(insert[0]), float(insert[1]))
+
+        text_entries.append((pt, first_line))
+
+    return text_entries
+
+
+def _has_room_label(texts: list[str]) -> bool:
+    """Check if any text in the list represents a room name or identifier."""
+    for t in texts:
+        if _is_area_string(t):
+            continue
+        if EXPLICATION_PATTERN.match(t):
+            return True
+        if not _is_only_number(t):
+            return True
+        if _is_only_number(t):
+            return True
+    return False
+
+
 def _extract_walls_and_bridge_gaps(
     msp: Any,
     max_gap: float | None = None,
@@ -329,6 +381,7 @@ def _extract_walls_and_bridge_gaps(
         all_layers = {layer.dxf.name for layer in doc.layers}
 
     has_wall_layer = any(_is_wall_layer(name) for name in all_layers)
+    length_scale = get_length_scale(doc)
 
     segments: list[LineString] = []
     open_loops: list[tuple[tuple[float, float], tuple[float, float], float]] = []
@@ -421,21 +474,24 @@ def _extract_walls_and_bridge_gaps(
     if not segments:
         return []
 
+    max_coord = max(
+        max(abs(pt[0]), abs(pt[1]))
+        for s in segments
+        for pt in (s.coords[0], s.coords[-1])
+    )
+    if max_coord < 500 and length_scale < 0.1:
+        length_scale = 1.0
+
     if max_gap is None:
-        length_scale = get_length_scale(doc)
-        max_coord = max(
-            max(abs(pt[0]), abs(pt[1]))
-            for s in segments
-            for pt in (s.coords[0], s.coords[-1])
-        )
-        if max_coord < 500 and length_scale < 0.1:
-            length_scale = 1.0
         max_gap = 3.1 / length_scale
+
+    if max_gap <= 0:
+        return segments
 
     for p_end, p0, dist in open_loops:
         is_collinear = abs(p0[0] - p_end[0]) < 1e-3 or abs(p0[1] - p_end[1]) < 1e-3
         if (is_collinear and 1e-4 < dist <= max_gap) or (
-            1e-4 < dist <= 0.1 / length_scale
+            1e-4 < dist <= min(max_gap, 0.1 / length_scale)
         ):
             segments.append(LineString([p_end, p0]))
 
@@ -446,10 +502,15 @@ def _polygonize_and_filter(
     segments: list[LineString],
     min_area_m2: float = 0.5,
     area_multiplier: float = 1.0,
+    msp: Any = None,
+    text_entries: list[tuple[Point, str]] | None = None,
 ) -> list[Polygon]:
     """Polygonize segments, discard largest bounding polygon and small artifacts."""
     if not segments:
         return []
+
+    if text_entries is None and msp is not None:
+        text_entries = _extract_text_entries(msp)
 
     noded = unary_union(segments)
     raw_polys = list(polygonize(noded))
@@ -479,7 +540,18 @@ def _polygonize_and_filter(
                 len(largest.interiors) > 0
                 and all(largest.contains(p.centroid) for p in others)
             ):
-                is_bounding = True
+                # A polygon is an envelope only if:
+                # (a) It has NO room text/identifier of its own; AND
+                # (b) Its exterior boundary encompasses all other detected rooms.
+                has_own_label = False
+                if text_entries:
+                    texts_in_largest = [
+                        text for pt, text in text_entries if largest.contains(pt)
+                    ]
+                    has_own_label = _has_room_label(texts_in_largest)
+
+                if not has_own_label:
+                    is_bounding = True
 
         if is_bounding:
             valid_polys = others
@@ -588,37 +660,11 @@ def _build_auto_rooms(
     explication_map: dict[str, str],
     resolved_drawing_id: UUID,
     area_multiplier: float,
+    text_entries: list[tuple[Point, str]] | None = None,
 ) -> ParsedRoomsList:
     """Build Room entities from automatically polygonized contours."""
-    text_entries: list[tuple[Point, str]] = []
-    for entity in msp.query("TEXT MTEXT"):
-        if entity.dxftype() == "MTEXT":
-            content = (
-                entity.plain_text().strip()
-                if hasattr(entity, "plain_text")
-                else str(getattr(entity.dxf, "text", "")).strip()
-            )
-        else:
-            content = str(getattr(entity.dxf, "text", "")).strip()
-
-        if not content:
-            continue
-
-        content = content.replace(r"\P", "\n").replace(r"\p", "\n")
-        first_line = next(
-            (line.strip() for line in content.splitlines() if line.strip()), ""
-        )
-        if not first_line:
-            continue
-
-        insert = getattr(entity.dxf, "insert", (0.0, 0.0, 0.0))
-        align = getattr(entity.dxf, "align_point", None)
-        if align and (align[0] != 0.0 or align[1] != 0.0) and insert == (0.0, 0.0, 0.0):
-            pt = Point(float(align[0]), float(align[1]))
-        else:
-            pt = Point(float(insert[0]), float(insert[1]))
-
-        text_entries.append((pt, first_line))
+    if text_entries is None:
+        text_entries = _extract_text_entries(msp)
 
     rooms = ParsedRoomsList(source="auto")
     for poly in polygons:
@@ -724,10 +770,12 @@ def parse_dxf_rooms(
 
     # 2. Fallback path: Automatic wall polygonization (Option A)
     segments = _extract_walls_and_bridge_gaps(msp)
+    text_entries = _extract_text_entries(msp)
     filtered_polygons = _polygonize_and_filter(
         segments,
         min_area_m2=0.5,
         area_multiplier=area_multiplier,
+        text_entries=text_entries,
     )
     if not filtered_polygons:
         raise CADParsingError("Приміщення не знайдено")
@@ -739,6 +787,7 @@ def parse_dxf_rooms(
         explication_map,
         resolved_drawing_id,
         area_multiplier,
+        text_entries=text_entries,
     )
     if not rooms:
         raise CADParsingError("Приміщення не знайдено")
