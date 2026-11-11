@@ -28,7 +28,11 @@ from src.infrastructure.storage import (
 )
 from src.infrastructure.supabase import get_supabase_client
 from src.main import app
-from src.modules.cad.parser import _is_area_string, parse_dxf_rooms
+from src.modules.cad.parser import (
+    _is_area_string,
+    _polygon_to_single_ring,
+    parse_dxf_rooms,
+)
 from src.modules.placement.service import RuleRecord, place_devices_from_rule
 
 FIXTURES_DIR = API_DIR / "tests" / "fixtures" / "test_drawing_dxf"
@@ -950,6 +954,104 @@ class TestCadParser(unittest.TestCase):
         )
         rooms = parse_dxf_rooms(dxf_path)
         self.assertEqual([r.name for r in rooms], ["Office"])
+
+    def test_touching_hole_serialized_polygon_excludes_office(self) -> None:
+        """P1: Hole touching exterior boundary at (0, 5) is spliced cleanly."""
+        dxf_path = self.temp_dir / "touching_hole_meters.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6
+        doc.layers.add("WALLS")
+        doc.layers.add("TEXT")
+        msp = doc.modelspace()
+
+        outer_pts = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
+        office_pts = [(0.0, 5.0), (3.0, 3.0), (5.0, 5.0), (3.0, 7.0)]
+
+        msp.add_lwpolyline(outer_pts, close=True, dxfattribs={"layer": "WALLS"})
+        msp.add_lwpolyline(office_pts, close=True, dxfattribs={"layer": "WALLS"})
+        msp.add_text("Hall", dxfattribs={"insert": (10.0, 2.0, 0.0), "layer": "TEXT"})
+        msp.add_text("Office", dxfattribs={"insert": (3.0, 5.0, 0.0), "layer": "TEXT"})
+        doc.saveas(str(dxf_path))
+
+        rooms = parse_dxf_rooms(dxf_path)
+        by_name = {r.name: r for r in rooms}
+        self.assertEqual(set(by_name.keys()), {"Hall", "Office"})
+        self.assertAlmostEqual(by_name["Hall"].area, 190.0, places=4)
+        self.assertAlmostEqual(by_name["Office"].area, 10.0, places=4)
+
+        reconstructed_hall = ShapelyPolygon(
+            [(p.x, p.y) for p in by_name["Hall"].polygon]
+        )
+        office_poly = ShapelyPolygon([(p.x, p.y) for p in by_name["Office"].polygon])
+        original_shapely_hall = ShapelyPolygon(outer_pts, [office_pts])
+
+        self.assertTrue(reconstructed_hall.is_valid)
+        self.assertAlmostEqual(reconstructed_hall.area, 190.0, delta=1e-3)
+        self.assertAlmostEqual(
+            reconstructed_hall.intersection(office_poly).area, 0.0, places=6
+        )
+        self.assertLessEqual(
+            reconstructed_hall.symmetric_difference(original_shapely_hall).area, 1e-3
+        )
+
+        # Also ensure empty-grid placement fallback lands in Hall, not Office
+        placed = place_devices_from_rule(
+            [(p.x, p.y) for p in by_name["Hall"].polygon],
+            RuleRecord(id="r-touch-fallback", threshold=12.0),
+        )
+        self.assertGreaterEqual(len(placed), 1)
+        for device in placed:
+            pt = ShapelyPoint(device.x, device.y)
+            self.assertTrue(reconstructed_hall.covers(pt))
+            self.assertFalse(office_poly.contains(pt))
+
+    def test_touching_hole_variants_and_strict_validation(self) -> None:
+        """P1: Touching holes convert cleanly; failures raise CADParsingError."""
+        variants = [
+            # Outer vertex (4, 5) touching interior of hole edge (4, 2)-(4, 8)
+            ShapelyPolygon(
+                [(0, 0), (20, 0), (20, 10), (0, 10), (4, 5)],
+                [[(4, 2), (8, 2), (8, 8), (4, 8)]],
+            ),
+            # Corner-to-corner touch at (0, 0)
+            ShapelyPolygon(
+                [(0, 0), (20, 0), (20, 10), (0, 10)],
+                [[(0, 0), (3, 1), (4, 4), (1, 3)]],
+            ),
+            # Two holes touching exterior at the same point (0, 5)
+            ShapelyPolygon(
+                [(0, 0), (20, 0), (20, 10), (0, 10)],
+                [[(0, 5), (3, 3), (4, 4)], [(0, 5), (4, 6), (3, 7)]],
+            ),
+        ]
+        for poly in variants:
+            ring = _polygon_to_single_ring(poly)
+            reconstructed = ShapelyPolygon(ring)
+            self.assertTrue(reconstructed.is_valid)
+            self.assertLessEqual(reconstructed.symmetric_difference(poly).area, 1e-3)
+
+        donut = ShapelyPolygon(
+            [(0, 0), (20, 0), (20, 10), (0, 10)],
+            [[(8, 4), (12, 4), (12, 6), (8, 6)]],
+        )
+        with patch("src.modules.cad.parser._merge_hole_into_outer", return_value=None):
+            with self.assertRaises(CADParsingError) as ctx:
+                _polygon_to_single_ring(donut)
+            self.assertIn(
+                "Не вдалося коректно обробити внутрішні отвори приміщення",
+                str(ctx.exception),
+            )
+
+        with patch(
+            "src.modules.cad.parser._merge_hole_into_outer",
+            return_value=[(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)],
+        ):
+            with self.assertRaises(CADParsingError) as ctx:
+                _polygon_to_single_ring(donut)
+            self.assertIn(
+                "Не вдалося коректно обробити внутрішні отвори приміщення",
+                str(ctx.exception),
+            )
 
 
 class TestStorageUtility(unittest.TestCase):

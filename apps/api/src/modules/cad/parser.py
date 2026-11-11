@@ -2,6 +2,7 @@ import io
 import math
 import re
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -797,6 +798,147 @@ def _candidate_bridges(
     return candidates
 
 
+def _ensure_vertex_on_ring(
+    ring: list[tuple[float, float]],
+    pt: tuple[float, float],
+    snap_tol: float,
+) -> tuple[list[tuple[float, float]], int] | None:
+    """Return ring and index of pt, projecting/inserting into an edge if needed."""
+    best_idx: int | None = None
+    best_dist = float("inf")
+    for idx, vertex in enumerate(ring):
+        dist = math.hypot(vertex[0] - pt[0], vertex[1] - pt[1])
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = idx
+    if best_idx is not None and best_dist <= snap_tol:
+        return list(ring), best_idx
+
+    edge_param = _closest_edge_param(ring, pt)
+    if edge_param is None:
+        return None
+    edge_idx, t = edge_param
+    n = len(ring)
+    ax, ay = ring[edge_idx]
+    bx, by = ring[(edge_idx + 1) % n]
+    proj = (ax + t * (bx - ax), ay + t * (by - ay))
+    if math.hypot(proj[0] - ax, proj[1] - ay) <= snap_tol:
+        return list(ring), edge_idx
+    if math.hypot(proj[0] - bx, proj[1] - by) <= snap_tol:
+        return list(ring), (edge_idx + 1) % n
+    new_ring = [*ring[: edge_idx + 1], proj, *ring[edge_idx + 1 :]]
+    return new_ring, edge_idx + 1
+
+
+def _point_along_segment(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    dist: float,
+) -> tuple[float, float] | None:
+    """Return point along segment start->end at clamped distance from start."""
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    seg_len = math.hypot(dx, dy)
+    if seg_len <= 0:
+        return None
+    step = min(dist, 0.25 * seg_len)
+    return (start[0] + step * dx / seg_len, start[1] + step * dy / seg_len)
+
+
+def _build_touch_keyhole_rings(
+    outer: list[tuple[float, float]],
+    hole: list[tuple[float, float]],
+    pt_o: tuple[float, float],
+    eps: float,
+    snap_tol: float,
+) -> list[list[tuple[float, float]]]:
+    """Build candidate single rings when a hole touches the outer boundary."""
+    outer_res = _ensure_vertex_on_ring(outer, pt_o, snap_tol)
+    if outer_res is None:
+        return []
+    outer_m, idx_o = outer_res
+    p_touch = outer_m[idx_o]
+
+    hole_res = _ensure_vertex_on_ring(hole, p_touch, snap_tol)
+    if hole_res is None:
+        return []
+    hole_m, idx_h = hole_res
+
+    no = len(outer_m)
+    nh = len(hole_m)
+    a_o = outer_m[(idx_o - 1) % no]
+    b_o = outer_m[(idx_o + 1) % no]
+    c_h = hole_m[(idx_h - 1) % nh]
+    d_h = hole_m[(idx_h + 1) % nh]
+    hole_seq = [hole_m[(idx_h + k) % nh] for k in range(1, nh)]
+
+    entry_o = _point_along_segment(p_touch, a_o, eps)
+    entry_h = _point_along_segment(p_touch, d_h, eps)
+    exit_h = _point_along_segment(p_touch, c_h, eps)
+    exit_o = _point_along_segment(p_touch, b_o, eps)
+
+    candidates: list[list[tuple[float, float]]] = []
+    if entry_o is not None and entry_h is not None:
+        candidates.append(
+            [
+                *outer_m[:idx_o],
+                entry_o,
+                entry_h,
+                *hole_seq,
+                p_touch,
+                *outer_m[idx_o + 1 :],
+            ]
+        )
+    if exit_h is not None and exit_o is not None:
+        candidates.append(
+            [
+                *outer_m[:idx_o],
+                p_touch,
+                *hole_seq,
+                exit_h,
+                exit_o,
+                *outer_m[idx_o + 1 :],
+            ]
+        )
+    if (
+        entry_o is not None
+        and entry_h is not None
+        and exit_h is not None
+        and exit_o is not None
+    ):
+        candidates.append(
+            [
+                *outer_m[:idx_o],
+                entry_o,
+                entry_h,
+                *hole_seq,
+                exit_h,
+                exit_o,
+                *outer_m[idx_o + 1 :],
+            ]
+        )
+    return candidates
+
+
+def _validate_merged_ring(
+    cand: list[tuple[float, float]] | None,
+    hole_poly: Polygon,
+    other_holes: list[Polygon],
+    poly_area: float,
+) -> list[tuple[float, float]] | None:
+    """Validate candidate single ring and return CCW-oriented vertices if valid."""
+    if cand is None or len(cand) < 3:
+        return None
+    cand_poly = Polygon(cand)
+    if not cand_poly.is_valid:
+        return None
+    if any(not cand_poly.contains(other) for other in other_holes):
+        return None
+    if cand_poly.intersection(hole_poly).area > 1e-6 * max(poly_area, 1e-12):
+        return None
+    oriented_cand = orient(cand_poly, sign=1.0)
+    return [(float(x), float(y)) for x, y in oriented_cand.exterior.coords[:-1]]
+
+
 def _merge_hole_into_outer(
     outer: list[tuple[float, float]],
     hole: list[tuple[float, float]],
@@ -808,19 +950,23 @@ def _merge_hole_into_outer(
 ) -> list[tuple[float, float]] | None:
     """Try merging one hole into outer without violating geometry validity."""
     hole_poly = Polygon(hole)
-    for eo_idx, t_o, eh_idx, t_h in _candidate_bridges(outer, hole, pt_o, pt_h):
-        cand = _build_keyhole_ring(outer, hole, eo_idx, t_o, eh_idx, t_h, eps)
-        if cand is None or len(cand) < 3:
-            continue
-        cand_poly = Polygon(cand)
-        if not cand_poly.is_valid:
-            continue
-        if any(not cand_poly.contains(other) for other in other_holes):
-            continue
-        if cand_poly.intersection(hole_poly).area > 1e-6 * max(poly_area, 1e-12):
-            continue
-        oriented_cand = orient(cand_poly, sign=1.0)
-        return [(float(x), float(y)) for x, y in oriented_cand.exterior.coords[:-1]]
+    touch_dist = math.hypot(pt_o[0] - pt_h[0], pt_o[1] - pt_h[1])
+    snap_tol = max(1e-12, 0.1 * eps)
+    touch_tol = max(1e-9, 10.0 * eps)
+
+    def _iter_candidates() -> Iterator[list[tuple[float, float]] | None]:
+        if touch_dist <= eps:
+            yield from _build_touch_keyhole_rings(outer, hole, pt_o, eps, snap_tol)
+        for eo_idx, t_o, eh_idx, t_h in _candidate_bridges(outer, hole, pt_o, pt_h):
+            yield _build_keyhole_ring(outer, hole, eo_idx, t_o, eh_idx, t_h, eps)
+        if eps < touch_dist <= touch_tol:
+            yield from _build_touch_keyhole_rings(outer, hole, pt_o, eps, snap_tol)
+
+    for cand in _iter_candidates():
+        validated = _validate_merged_ring(cand, hole_poly, other_holes, poly_area)
+        if validated is not None:
+            return validated
+
     return None
 
 
@@ -866,9 +1012,26 @@ def _polygon_to_single_ring(poly: Polygon) -> list[tuple[float, float]]:
                 break
 
         if merged_outer is None or chosen_idx is None:
-            break
+            raise CADParsingError(
+                "Не вдалося коректно обробити внутрішні отвори приміщення"
+            )
         outer = merged_outer
         holes.pop(chosen_idx)
+
+    if holes:
+        raise CADParsingError(
+            "Не вдалося коректно обробити внутрішні отвори приміщення"
+        )
+
+    reconstructed_poly = Polygon(outer)
+    tolerance = max(1e-3, 1e-7 * poly.area)
+    if (
+        not reconstructed_poly.is_valid
+        or reconstructed_poly.symmetric_difference(poly).area > tolerance
+    ):
+        raise CADParsingError(
+            "Не вдалося коректно обробити внутрішні отвори приміщення"
+        )
 
     return outer
 
