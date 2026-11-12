@@ -5,6 +5,12 @@ import { fetchRules, type Rule } from "@/lib/api/rules";
 import { RulesTable } from "@/components/rules/rules-table";
 import { NormsLookupForm } from "@/components/rules/norms-lookup-form";
 
+function getRulesErrorMessage(loadError: unknown): string {
+  return loadError instanceof Error && loadError.message
+    ? loadError.message
+    : "Не вдалося завантажити правила. Спробуйте ще раз.";
+}
+
 export default function RulesPage() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [loading, setLoading] = useState(true);
@@ -18,19 +24,34 @@ export default function RulesPage() {
       const data = await fetchRules();
       setRules(data);
     } catch (loadError) {
-      setError(
-        loadError instanceof Error && loadError.message
-          ? loadError.message
-          : "Не вдалося завантажити правила. Спробуйте ще раз.",
-      );
+      setError(getRulesErrorMessage(loadError));
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void loadRules();
-  }, [loadRules]);
+    const controller = new AbortController();
+
+    async function load() {
+      try {
+        const data = await fetchRules(controller.signal);
+        if (controller.signal.aborted) return;
+        setRules(data);
+      } catch (loadError) {
+        if (controller.signal.aborted) return;
+        setError(getRulesErrorMessage(loadError));
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void load();
+
+    return () => controller.abort();
+  }, []);
 
   return (
     <div className="space-y-[var(--bim-spacing-6)]">
