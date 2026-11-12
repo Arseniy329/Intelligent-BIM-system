@@ -15,11 +15,20 @@ if str(API_DIR) not in sys.path:
 from src.core.auth import CurrentUser, get_current_user  # noqa: E402
 from src.main import app  # noqa: E402
 
+LIST_KEYS = {
+    "id",
+    "filename",
+    "uploaded_at",
+    "status",
+    "error_message",
+    "has_result",
+}
+
 
 class FakeQuery:
     def __init__(self, rows: list[dict]):
         self._rows = rows
-        self._filter: tuple[str, object] | None = None
+        self._filters: list[tuple[str, object]] = []
         self._order: str | None = None
         self._desc = False
 
@@ -27,7 +36,7 @@ class FakeQuery:
         return self
 
     def eq(self, key, value):
-        self._filter = (key, value)
+        self._filters.append((key, value))
         return self
 
     def order(self, key, desc=False):
@@ -37,8 +46,7 @@ class FakeQuery:
 
     def execute(self):
         rows = list(self._rows)
-        if self._filter is not None:
-            key, value = self._filter
+        for key, value in self._filters:
             rows = [row for row in rows if str(row.get(key)) == str(value)]
         if self._order is not None:
             rows.sort(key=lambda row: row[self._order], reverse=self._desc)
@@ -46,19 +54,21 @@ class FakeQuery:
 
 
 class FakeSupabase:
-    def __init__(self, rows: list[dict]):
-        self.rows = rows
+    def __init__(self, rows_by_table: dict[str, list[dict]] | None = None):
+        self.tables = {
+            name: list(rows) for name, rows in (rows_by_table or {}).items()
+        }
         self.queries: list[FakeQuery] = []
 
-    def table(self, _name):
-        query = FakeQuery(self.rows)
+    def table(self, name):
+        query = FakeQuery(self.tables.setdefault(name, []))
         self.queries.append(query)
         return query
 
 
 @pytest.fixture
 def fake_supabase(monkeypatch):
-    fake = FakeSupabase([])
+    fake = FakeSupabase()
     monkeypatch.setattr(
         "src.infrastructure.supabase._get_cached_client",
         lambda *args, **kwargs: fake,
@@ -81,6 +91,23 @@ def authenticate(user_id: str, role: str = "engineer") -> None:
     )
 
 
+def drawing_row(
+    drawing_id: str,
+    owner_id: str,
+    created_at: str,
+    status: str = "uploaded",
+    **extra,
+) -> dict:
+    return {
+        "id": drawing_id,
+        "owner_id": owner_id,
+        "original_file_name": f"{drawing_id}.dxf",
+        "created_at": created_at,
+        "status": status,
+        **extra,
+    }
+
+
 def test_list_drawings_unauthenticated_returns_401(client):
     response = client.get("/api/v1/drawings")
 
@@ -88,35 +115,11 @@ def test_list_drawings_unauthenticated_returns_401(client):
 
 
 def test_list_drawings_only_returns_owned_rows(client, fake_supabase):
-    fake_supabase.rows = [
-        {
-            "id": "a-old",
-            "owner_id": "user-a",
-            "original_file_name": "a-old.dxf",
-            "created_at": "2026-01-01T00:00:00Z",
-            "status": "uploaded",
-        },
-        {
-            "id": "b-only",
-            "owner_id": "user-b",
-            "original_file_name": "b-only.dxf",
-            "created_at": "2026-04-01T00:00:00Z",
-            "status": "processing",
-        },
-        {
-            "id": "a-mid",
-            "owner_id": "user-a",
-            "original_file_name": "a-mid.dxf",
-            "created_at": "2026-02-01T00:00:00Z",
-            "status": "processed",
-        },
-        {
-            "id": "a-new",
-            "owner_id": "user-a",
-            "original_file_name": "a-new.dxf",
-            "created_at": "2026-03-01T00:00:00Z",
-            "status": "processing",
-        },
+    fake_supabase.tables["drawings"] = [
+        drawing_row("a-old", "user-a", "2026-01-01T00:00:00Z"),
+        drawing_row("b-only", "user-b", "2026-04-01T00:00:00Z", "processing"),
+        drawing_row("a-mid", "user-a", "2026-02-01T00:00:00Z", "processed"),
+        drawing_row("a-new", "user-a", "2026-03-01T00:00:00Z", "processing"),
     ]
     authenticate("user-a")
 
@@ -128,29 +131,13 @@ def test_list_drawings_only_returns_owned_rows(client, fake_supabase):
     assert "b-only" not in ids
 
 
-def test_list_drawings_orders_newest_first(client, fake_supabase):
-    fake_supabase.rows = [
-        {
-            "id": "oldest",
-            "owner_id": "user-a",
-            "original_file_name": "oldest.dxf",
-            "created_at": "2026-01-01T00:00:00Z",
-            "status": "uploaded",
-        },
-        {
-            "id": "newest",
-            "owner_id": "user-a",
-            "original_file_name": "newest.dxf",
-            "created_at": "2026-03-01T00:00:00Z",
-            "status": "uploaded",
-        },
-        {
-            "id": "middle",
-            "owner_id": "user-a",
-            "original_file_name": "middle.dxf",
-            "created_at": "2026-02-01T00:00:00Z",
-            "status": "uploaded",
-        },
+def test_list_drawings_orders_newest_first_regardless_of_insert_order(
+    client, fake_supabase
+):
+    fake_supabase.tables["drawings"] = [
+        drawing_row("oldest", "user-a", "2026-01-01T00:00:00Z"),
+        drawing_row("newest", "user-a", "2026-03-01T00:00:00Z"),
+        drawing_row("middle", "user-a", "2026-02-01T00:00:00Z"),
     ]
     authenticate("user-a")
 
@@ -164,36 +151,20 @@ def test_list_drawings_orders_newest_first(client, fake_supabase):
     ]
 
 
-def test_list_drawings_maps_statuses_and_keeps_error_rows(client, fake_supabase):
-    fake_supabase.rows = [
-        {
-            "id": "failed-row",
-            "owner_id": "user-a",
-            "original_file_name": "failed.dxf",
-            "created_at": "2026-04-01T00:00:00Z",
-            "status": "failed",
-        },
-        {
-            "id": "ready-row",
-            "owner_id": "user-a",
-            "original_file_name": "ready.dxf",
-            "created_at": "2026-03-01T00:00:00Z",
-            "status": "ready",
-        },
-        {
-            "id": "completed-row",
-            "owner_id": "user-a",
-            "original_file_name": "completed.dxf",
-            "created_at": "2026-02-01T00:00:00Z",
-            "status": "completed",
-        },
-        {
-            "id": "error-row",
-            "owner_id": "user-a",
-            "original_file_name": "error.dxf",
-            "created_at": "2026-01-01T00:00:00Z",
-            "status": "error",
-        },
+def test_list_drawings_maps_every_contract_status(client, fake_supabase):
+    fake_supabase.tables["drawings"] = [
+        drawing_row("uploaded-row", "user-a", "2026-04-01T00:00:00Z", "uploaded"),
+        drawing_row(
+            "processing-row", "user-a", "2026-03-01T00:00:00Z", "processing"
+        ),
+        drawing_row("processed-row", "user-a", "2026-02-01T00:00:00Z", "processed"),
+        drawing_row(
+            "failed-row",
+            "user-a",
+            "2026-01-01T00:00:00Z",
+            "failed",
+            error_message="DXF parsing failed",
+        ),
     ]
     authenticate("user-a")
 
@@ -201,33 +172,68 @@ def test_list_drawings_maps_statuses_and_keeps_error_rows(client, fake_supabase)
 
     assert response.status_code == 200
     by_id = {item["id"]: item for item in response.json()}
-    assert set(by_id) == {
-        "failed-row",
-        "ready-row",
-        "completed-row",
-        "error-row",
-    }
-    assert by_id["failed-row"]["status"] == "error"
-    assert by_id["error-row"]["status"] == "error"
-    assert by_id["ready-row"]["status"] == "done"
-    assert by_id["completed-row"]["status"] == "done"
+    assert by_id["uploaded-row"]["status"] == "uploaded"
+    assert by_id["processing-row"]["status"] == "processing"
+    assert by_id["processed-row"]["status"] == "processed"
+    assert by_id["failed-row"]["status"] == "failed"
+    assert by_id["failed-row"]["error_message"]
+    assert by_id["failed-row"]["error_message"] == "DXF parsing failed"
+    for non_failed in ("uploaded-row", "processing-row", "processed-row"):
+        assert by_id[non_failed]["error_message"] is None
 
 
-def test_list_drawings_for_user_without_rows_returns_empty_list(
+def test_list_drawings_has_result_reflects_stored_placement(
     client, fake_supabase
 ):
-    fake_supabase.rows = [
-        {
-            "id": "b-only",
-            "owner_id": "user-b",
-            "original_file_name": "b-only.dxf",
-            "created_at": "2026-04-01T00:00:00Z",
-            "status": "processing",
-        }
+    fake_supabase.tables["drawings"] = [
+        drawing_row("with-result", "user-a", "2026-02-01T00:00:00Z", "processed"),
+        drawing_row("without-result", "user-a", "2026-01-01T00:00:00Z", "uploaded"),
+    ]
+    fake_supabase.tables["rooms"] = [
+        {"id": "room-1", "drawing_id": "with-result"},
+    ]
+    fake_supabase.tables["devices"] = [
+        {"id": "device-1", "drawing_id": "with-result"},
     ]
     authenticate("user-a")
 
     response = client.get("/api/v1/drawings")
 
     assert response.status_code == 200
-    assert response.json() == []
+    by_id = {item["id"]: item for item in response.json()}
+    assert by_id["with-result"]["has_result"] is True
+    assert by_id["without-result"]["has_result"] is False
+
+
+def test_list_drawings_ignores_user_id_query_parameter(client, fake_supabase):
+    fake_supabase.tables["drawings"] = [
+        drawing_row("a-only", "user-a", "2026-02-01T00:00:00Z"),
+        drawing_row("b-only", "user-b", "2026-03-01T00:00:00Z"),
+    ]
+    authenticate("user-a")
+
+    response = client.get("/api/v1/drawings", params={"user_id": "user-b"})
+
+    assert response.status_code == 200
+    ids = {item["id"] for item in response.json()}
+    assert ids == {"a-only"}
+    assert "b-only" not in ids
+
+
+def test_list_drawings_uses_snake_case_contract_keys(client, fake_supabase):
+    fake_supabase.tables["drawings"] = [
+        drawing_row("a-only", "user-a", "2026-02-01T00:00:00Z", "uploaded"),
+    ]
+    authenticate("user-a")
+
+    response = client.get("/api/v1/drawings")
+
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 1
+    assert set(items[0]) == LIST_KEYS
+    assert items[0]["id"] == "a-only"
+    assert items[0]["filename"] == "a-only.dxf"
+    assert items[0]["uploaded_at"] == "2026-02-01T00:00:00Z"
+    assert items[0]["status"] == "uploaded"
+    assert items[0]["has_result"] is False

@@ -1,26 +1,30 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { ApiAuthenticationError, ApiHttpError } from "@/lib/api";
-import { listDrawings } from "@/lib/drawing/drawing-api";
-import type { DrawingListItem } from "@/lib/drawing/drawing-api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError, listDrawings } from "@/lib/api/drawings";
+import type { DrawingListItem } from "@/lib/api/drawings";
 
 export interface UseDrawingsResult {
   drawings: DrawingListItem[];
   isLoading: boolean;
   error: string | null;
-  isUnauthorized: boolean;
-  reload: () => void;
-}
-
-function isUnauthorizedError(error: unknown): boolean {
-  return error instanceof ApiAuthenticationError ||
-    (error instanceof ApiHttpError && error.statusCode === 401);
+  refresh: () => void;
 }
 
 function drawingsErrorMessage(error: unknown): string {
-  if (isUnauthorizedError(error)) {
-    return "Сеанс завершився. Увійдіть у свій обліковий запис знову.";
+  if (error instanceof ApiError) {
+    if (error.status === 401) {
+      return "Сеанс завершився. Увійдіть у свій обліковий запис знову.";
+    }
+    if (error.status === 404) {
+      return "Креслення не знайдено.";
+    }
+    if (error.status >= 500) {
+      return "Помилка сервера. Спробуйте пізніше.";
+    }
+    if (error.message) {
+      return error.message;
+    }
   }
   if (error instanceof Error && error.message) {
     return error.message;
@@ -28,43 +32,68 @@ function drawingsErrorMessage(error: unknown): string {
   return "Не вдалося завантажити список креслень. Спробуйте ще раз.";
 }
 
+function sortByUploadedAtDesc(items: DrawingListItem[]): DrawingListItem[] {
+  return items
+    .map((item, index) => ({
+      item,
+      index,
+      time: Date.parse(item.uploaded_at),
+    }))
+    .sort((a, b) => {
+      const aValid = Number.isFinite(a.time);
+      const bValid = Number.isFinite(b.time);
+      if (aValid && bValid && a.time !== b.time) {
+        return b.time - a.time;
+      }
+      if (aValid !== bValid) {
+        return aValid ? -1 : 1;
+      }
+      return a.index - b.index;
+    })
+    .map(({ item }) => item);
+}
+
 export function useDrawings(): UseDrawingsResult {
   const [drawings, setDrawings] = useState<DrawingListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isUnauthorized, setIsUnauthorized] = useState(false);
-  const [reloadToken, setReloadToken] = useState(0);
+  const [refreshToken, setRefreshToken] = useState(0);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
-    let active = true;
+    const requestId = ++requestIdRef.current;
     const controller = new AbortController();
 
     listDrawings(controller.signal)
-      .then(items => {
-        if (!active) return;
-        setDrawings(items);
+      .then((items) => {
+        if (controller.signal.aborted || requestId !== requestIdRef.current) {
+          return;
+        }
+        setDrawings(sortByUploadedAtDesc(items));
       })
       .catch((reason: unknown) => {
-        if (!active || controller.signal.aborted) return;
+        if (controller.signal.aborted || requestId !== requestIdRef.current) {
+          return;
+        }
         setError(drawingsErrorMessage(reason));
-        setIsUnauthorized(isUnauthorizedError(reason));
       })
       .finally(() => {
-        if (active) setIsLoading(false);
+        if (controller.signal.aborted || requestId !== requestIdRef.current) {
+          return;
+        }
+        setIsLoading(false);
       });
 
     return () => {
-      active = false;
       controller.abort();
     };
-  }, [reloadToken]);
+  }, [refreshToken]);
 
-  const reload = useCallback(() => {
+  const refresh = useCallback(() => {
     setIsLoading(true);
     setError(null);
-    setIsUnauthorized(false);
-    setReloadToken(token => token + 1);
+    setRefreshToken((token) => token + 1);
   }, []);
 
-  return { drawings, isLoading, error, isUnauthorized, reload };
+  return { drawings, isLoading, error, refresh };
 }

@@ -1,12 +1,20 @@
 from datetime import datetime
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-DrawingStatus = Literal[
+
+class DrawingStatus(str, Enum):  # noqa: UP042
+    uploaded = "uploaded"
+    processing = "processing"
+    processed = "processed"
+    failed = "failed"
+
+
+DrawingRecordStatus = Literal[
     "pending", "uploaded", "processing", "processed", "failed", "error"
 ]
-DrawingListItemStatus = Literal["pending", "processing", "done", "error"]
 DrawingUnits = Literal["mm", "m", "from_file"]
 
 
@@ -27,15 +35,17 @@ class DrawingRecord(BaseModel):
     original_file_name: str
     storage_path: str
     units: str
-    status: DrawingStatus
+    status: DrawingRecordStatus
     created_at: datetime
 
 
 class DrawingListItem(BaseModel):
     id: str
     filename: str
-    created_at: datetime
-    status: DrawingListItemStatus
+    uploaded_at: datetime
+    status: DrawingStatus
+    error_message: str | None = None
+    has_result: bool
 
 
 class CreateDrawingResponse(BaseModel):
@@ -49,7 +59,7 @@ class DrawingDetailResponse(BaseModel):
     original_file_name: str
     storage_path: str
     units: str
-    status: DrawingStatus
+    status: DrawingRecordStatus
     created_at: datetime
     source_download_url: str | None = None
     source_download_url_expires_at: datetime | None = None

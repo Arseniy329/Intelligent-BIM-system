@@ -151,9 +151,9 @@ async def create_drawing(
 @router.get("", response_model=list[DrawingListItem])
 async def list_drawings(
     current_user: CurrentUser = Depends(get_current_user),
+    supabase: Annotated[Client | None, Depends(get_supabase_client)] = None,
 ):
-    supabase = get_supabase_client(settings)
-    return list_drawings_for_user(current_user.id, supabase)
+    return await list_drawings_for_user(current_user.id, supabase)
 
 
 @router.post("/{drawing_id}/process")
