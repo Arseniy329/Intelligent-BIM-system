@@ -6,7 +6,68 @@ from supabase import Client
 
 from src.core.config import get_settings
 from src.infrastructure.storage import cleanup_file, download_dxf_to_tmp
+from src.infrastructure.supabase import get_supabase_client_for_settings
 from src.modules.cad.writer import add_sensors_to_dxf
+from src.modules.drawings.schemas import DrawingListItem, DrawingListItemStatus
+
+_ERROR_STATUSES = {"failed", "processing_failed", "error"}
+_DONE_STATUSES = {"completed", "ready", "processed", "success"}
+_PENDING_STATUSES = {"queued", "new"}
+
+
+def _normalize_status(raw_status: object) -> DrawingListItemStatus:
+    value = str(raw_status or "pending").strip().lower()
+    if value in _ERROR_STATUSES:
+        return "error"
+    if value in _DONE_STATUSES:
+        return "done"
+    if value in _PENDING_STATUSES:
+        return "pending"
+    if value == "processing":
+        return "processing"
+    return "pending"
+
+
+def list_drawings_for_user(
+    user_id: str, supabase: Client | None = None
+) -> list[DrawingListItem]:
+    """Return the authenticated user's drawings, newest first."""
+    if supabase is None:
+        supabase = get_supabase_client_for_settings(get_settings())
+
+    response = (
+        supabase.table("drawings")
+        .select("*")
+        .eq("owner_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    rows = response.data
+    if not isinstance(rows, list):
+        return []
+
+    drawings: list[DrawingListItem] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        filename = (
+            row.get("original_file_name")
+            or row.get("filename")
+            or row.get("original_filename")
+            or row.get("name")
+            or ""
+        )
+        drawings.append(
+            DrawingListItem(
+                id=str(row["id"]),
+                filename=str(filename),
+                created_at=row["created_at"],
+                status=_normalize_status(row.get("status")),
+            )
+        )
+
+    return drawings
 
 
 def generate_and_upload_result_dxf(drawing_id: str, supabase: Client) -> str:

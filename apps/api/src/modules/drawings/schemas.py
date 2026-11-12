@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 DrawingStatus = Literal[
     "pending", "uploaded", "processing", "processed", "failed", "error"
 ]
+DrawingListItemStatus = Literal["pending", "processing", "done", "error"]
 DrawingUnits = Literal["mm", "m", "from_file"]
 
 
@@ -28,6 +29,13 @@ class DrawingRecord(BaseModel):
     units: str
     status: DrawingStatus
     created_at: datetime
+
+
+class DrawingListItem(BaseModel):
+    id: str
+    filename: str
+    created_at: datetime
+    status: DrawingListItemStatus
 
 
 class CreateDrawingResponse(BaseModel):

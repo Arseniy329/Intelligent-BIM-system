@@ -1,5 +1,15 @@
+// @vitest-environment jsdom
+import "@testing-library/jest-dom/vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  cleanup,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { MouseEvent, ReactNode } from "react";
 import type { NormalizedDrawingRecord } from "@/lib/api";
 import {
   ApiAuthenticationError,
@@ -7,6 +17,7 @@ import {
   listDrawings,
   normalizeDrawingRecord,
 } from "@/lib/api";
+import type { DrawingListItem } from "@/lib/drawing/drawing-api";
 import {
   DrawingStatusBadge,
   DrawingsList,
@@ -16,15 +27,66 @@ import DrawingsPage from "@/app/(protected)/drawings/page";
 import { AppHeader } from "@/components/app-header";
 
 // Mock Supabase client for listDrawings tests
-const { getSession } = vi.hoisted(() => ({ getSession: vi.fn() }));
+const { getSession, routerPush } = vi.hoisted(() => ({
+  getSession: vi.fn(),
+  routerPush: vi.fn(),
+}));
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({ auth: { getSession } }),
 }));
 
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => ({ push: routerPush, replace: vi.fn(), refresh: vi.fn() }),
   usePathname: () => "/drawings",
 }));
+
+vi.mock("next/link", async () => {
+  const React = await import("react");
+  return {
+    default: React.forwardRef<
+      HTMLAnchorElement,
+      {
+        href: string | { pathname?: string };
+        onClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
+        children?: ReactNode;
+        className?: string;
+        "data-testid"?: string;
+        "data-status"?: string;
+      }
+    >(function MockLink(
+      {
+        href,
+        onClick,
+        children,
+        className,
+        "data-testid": testId,
+        "data-status": dataStatus,
+      },
+      ref,
+    ) {
+      const hrefValue = typeof href === "string" ? href : href.pathname ?? "";
+      return (
+        <a
+          ref={ref}
+          href={hrefValue}
+          className={className}
+          data-testid={testId}
+          data-status={dataStatus}
+          onClick={(event) => {
+            onClick?.(event);
+            if (event.defaultPrevented) {
+              return;
+            }
+            event.preventDefault();
+            routerPush(hrefValue);
+          }}
+        >
+          {children}
+        </a>
+      );
+    }),
+  };
+});
 
 vi.mock("@/components/ui/error-toast-provider", () => ({
   useErrorToast: () => ({ showErrorToast: vi.fn() }),
@@ -389,5 +451,121 @@ describe("DrawingsPage and AppHeader integration", () => {
     expect(html).toContain("Мої креслення");
     expect(html).toContain('href="/upload"');
     expect(html).toContain("Завантажити");
+  });
+});
+
+const listDrawingsFixture: DrawingListItem[] = [
+  {
+    id: "draw-new",
+    filename: "newest.dxf",
+    createdAt: "2026-11-02T08:30:00.000Z",
+    status: "pending",
+  },
+  {
+    id: "draw-processing",
+    filename: "processing.dxf",
+    createdAt: "2026-11-01T09:00:00.000Z",
+    status: "processing",
+  },
+  {
+    id: "draw-done",
+    filename: "done.dxf",
+    createdAt: "2026-10-31T10:15:00.000Z",
+    status: "done",
+  },
+  {
+    id: "draw-error",
+    filename: "broken.dxf",
+    createdAt: "2026-10-30T11:45:00.000Z",
+    status: "error",
+  },
+];
+
+describe("DrawingsList rendering and interactions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    queryState.value = {
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+      isFetching: false,
+      refetch: vi.fn(),
+    };
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("renders filenames and Ukrainian dates in the given order without re-sorting", () => {
+    render(<DrawingsList drawings={listDrawingsFixture} />);
+
+    const rows = screen.getAllByTestId("drawing-row");
+    expect(rows).toHaveLength(listDrawingsFixture.length);
+
+    listDrawingsFixture.forEach((drawing, index) => {
+      const row = within(rows[index]);
+      expect(row.getByText(drawing.filename)).toBeInTheDocument();
+      expect(
+        row.getByText(formatUkrainianDate(drawing.createdAt)),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("renders Ukrainian status badges and marks the error row with data-status=\"error\"", () => {
+    render(<DrawingsList drawings={listDrawingsFixture} />);
+
+    const rows = screen.getAllByTestId("drawing-row");
+    const rowFor = (status: DrawingListItem["status"]) =>
+      rows.find((row) => row.getAttribute("data-status") === status);
+
+    expect(within(rowFor("pending")!).getByText("Очікує")).toBeInTheDocument();
+    expect(
+      within(rowFor("processing")!).getByText("Обробка"),
+    ).toBeInTheDocument();
+    expect(within(rowFor("done")!).getByText("Готово")).toBeInTheDocument();
+
+    const errorRow = rowFor("error");
+    expect(errorRow!).toHaveAttribute("data-status", "error");
+    expect(
+      within(errorRow!).getByText("Помилка обробки"),
+    ).toBeInTheDocument();
+  });
+
+  it("calls onOpen with the drawing id when a row is clicked", async () => {
+    const user = userEvent.setup();
+    const onOpen = vi.fn();
+    const [drawing] = listDrawingsFixture;
+
+    render(<DrawingsList drawings={[drawing]} onOpen={onOpen} />);
+
+    await user.click(screen.getByTestId("drawing-row"));
+
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onOpen).toHaveBeenCalledWith(drawing.id);
+    expect(routerPush).not.toHaveBeenCalled();
+  });
+
+  it("pushes /drawings/<id> when onOpen is omitted", async () => {
+    const user = userEvent.setup();
+    const drawing = listDrawingsFixture[1];
+
+    render(<DrawingsList drawings={[drawing]} />);
+
+    await user.click(screen.getByTestId("drawing-row"));
+
+    expect(routerPush).toHaveBeenCalledWith(`/drawings/${drawing.id}`);
+  });
+
+  it("shows the empty state with a link to /upload", () => {
+    render(<DrawingsList drawings={[]} />);
+
+    expect(screen.getByText("У вас ще немає креслень")).toBeInTheDocument();
+
+    const uploadLink = screen.getByRole("link", {
+      name: /Завантажити (DXF|креслення)/,
+    });
+    expect(uploadLink).toHaveAttribute("href", "/upload");
   });
 });

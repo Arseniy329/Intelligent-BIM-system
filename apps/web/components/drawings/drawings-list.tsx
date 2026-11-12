@@ -11,7 +11,18 @@ import {
 } from "lucide-react";
 import type { DrawingUiStatus, NormalizedDrawingRecord } from "@/lib/api";
 import { listDrawings } from "@/lib/api";
+import type { DrawingListItem, DrawingStatus } from "@/lib/drawing/drawing-api";
 import { EmptyState } from "@/components/ui/empty-state";
+
+export interface DrawingsListProps {
+  drawings?: DrawingListItem[];
+  isLoading?: boolean;
+  error?: string | null;
+  onOpen?: (id: string) => void;
+}
+
+type AnyDrawingStatus = DrawingUiStatus | DrawingStatus;
+type StatusSource = "legacy" | "list";
 
 interface StatusConfig {
   label: string;
@@ -22,7 +33,7 @@ interface StatusConfig {
   }>;
 }
 
-const STATUS_CONFIGS: Record<DrawingUiStatus, StatusConfig> = {
+const LEGACY_STATUS_CONFIGS: Record<DrawingUiStatus, StatusConfig> = {
   pending: {
     label: "Очікує",
     className:
@@ -61,25 +72,68 @@ const STATUS_CONFIGS: Record<DrawingUiStatus, StatusConfig> = {
   },
 };
 
-export function DrawingStatusBadge({ status }: { status: DrawingUiStatus }) {
-  const config = STATUS_CONFIGS[status] ?? {
-    label: String(status),
+const LIST_STATUS_CONFIGS: Record<DrawingStatus, StatusConfig> = {
+  pending: {
+    label: "Очікує",
     className:
       "border-[var(--bim-color-border-default)] bg-[var(--bim-color-badge-neutral-bg)] text-[var(--bim-color-badge-neutral-text)]",
-    icon: FileText,
-  };
-  const Icon = config.icon;
+    icon: Clock,
+  },
+  processing: {
+    label: "Обробка",
+    className:
+      "border-[var(--bim-color-semantic-warning-border)] bg-[var(--bim-color-badge-warning-bg)] text-[var(--bim-color-badge-warning-text)]",
+    icon: Loader2,
+  },
+  done: {
+    label: "Готово",
+    className:
+      "border-[var(--bim-color-semantic-success-border)] bg-[var(--bim-color-badge-success-bg)] text-[var(--bim-color-badge-success-text)]",
+    icon: CheckCircle2,
+  },
+  error: {
+    label: "Помилка обробки",
+    className:
+      "border-[var(--bim-color-semantic-error-border)] bg-[var(--bim-color-badge-error-bg)] text-[var(--bim-color-badge-error-text)]",
+    icon: AlertCircle,
+  },
+};
+
+const FALLBACK_STATUS_CONFIG: StatusConfig = {
+  label: "",
+  className:
+    "border-[var(--bim-color-border-default)] bg-[var(--bim-color-badge-neutral-bg)] text-[var(--bim-color-badge-neutral-text)]",
+  icon: FileText,
+};
+
+export function DrawingStatusBadge({
+  status,
+  source = "legacy",
+}: {
+  status: AnyDrawingStatus;
+  source?: StatusSource;
+}) {
+  const config =
+    source === "list"
+      ? LIST_STATUS_CONFIGS[status as DrawingStatus]
+      : LEGACY_STATUS_CONFIGS[status as DrawingUiStatus];
+  const resolved =
+    config ??
+    LIST_STATUS_CONFIGS[status as DrawingStatus] ??
+    LEGACY_STATUS_CONFIGS[status as DrawingUiStatus] ??
+    { ...FALLBACK_STATUS_CONFIG, label: String(status) };
+  const Icon = resolved.icon;
   const isSpinning = status === "processing";
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-[var(--bim-radius-full)] border px-2.5 py-0.5 text-xs font-medium ${config.className}`}
+      className={`inline-flex items-center gap-1.5 rounded-[var(--bim-radius-full)] border px-2.5 py-0.5 text-xs font-medium ${resolved.className}`}
     >
       <Icon
         className={`size-3.5 shrink-0 ${isSpinning ? "animate-spin" : ""}`}
         aria-hidden="true"
       />
-      <span>{config.label}</span>
+      <span>{resolved.label}</span>
     </span>
   );
 }
@@ -102,7 +156,46 @@ export function formatUkrainianDate(isoString: string): string {
   }
 }
 
+interface DrawingRow {
+  id: string;
+  filename: string;
+  createdAt: string;
+  status: AnyDrawingStatus;
+  source: StatusSource;
+}
+
+function isDrawingListItem(
+  drawing: NormalizedDrawingRecord | DrawingListItem,
+): drawing is DrawingListItem {
+  return "filename" in drawing;
+}
+
+function toRow(
+  drawing: NormalizedDrawingRecord | DrawingListItem,
+): DrawingRow {
+  if (isDrawingListItem(drawing)) {
+    return {
+      id: drawing.id,
+      filename: drawing.filename,
+      createdAt: drawing.createdAt,
+      status: drawing.status,
+      source: "list",
+    };
+  }
+
+  return {
+    id: drawing.id,
+    filename: drawing.originalFileName,
+    createdAt: drawing.createdAt,
+    status: drawing.status,
+    source: "legacy",
+  };
+}
+
 function getErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error) {
+    return error;
+  }
   if (error instanceof Error) {
     if (
       error.message.includes("401") ||
@@ -149,10 +242,12 @@ function DrawingsErrorAlert({
   error,
   onRetry,
   isRetrying,
+  canRetry = true,
 }: {
   error: unknown;
   onRetry: () => void;
   isRetrying: boolean;
+  canRetry?: boolean;
 }) {
   return (
     <div
@@ -168,45 +263,60 @@ function DrawingsErrorAlert({
           <p className="mt-1 text-sm text-[var(--bim-color-text-secondary)]">
             {getErrorMessage(error)}
           </p>
-          <button
-            type="button"
-            onClick={onRetry}
-            disabled={isRetrying}
-            className="mt-[var(--bim-spacing-4)] inline-flex min-h-[var(--bim-size-control-md)] items-center justify-center rounded-[var(--bim-radius-md)] border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-[var(--bim-spacing-4)] text-sm font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] active:bg-[var(--bim-color-button-secondary-pressed-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] transition-colors disabled:opacity-50"
-          >
-            {isRetrying ? "Оновлення…" : "Спробувати знову"}
-          </button>
+          {canRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={isRetrying}
+              className="mt-[var(--bim-spacing-4)] inline-flex min-h-[var(--bim-size-control-md)] items-center justify-center rounded-[var(--bim-radius-md)] border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-[var(--bim-spacing-4)] text-sm font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] active:bg-[var(--bim-color-button-secondary-pressed-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] transition-colors disabled:opacity-50"
+            >
+              {isRetrying ? "Оновлення…" : "Спробувати знову"}
+            </button>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-export function DrawingsList() {
+export function DrawingsList({
+  drawings: providedDrawings,
+  isLoading: providedIsLoading = false,
+  error: providedError = null,
+  onOpen,
+}: DrawingsListProps = {}) {
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery<
     NormalizedDrawingRecord[]
   >({
     queryKey: ["drawings"],
     queryFn: ({ signal }) => listDrawings(signal),
+    enabled: providedDrawings === undefined,
   });
 
-  if (isLoading) {
+  const usingProvidedDrawings = providedDrawings !== undefined;
+
+  if (usingProvidedDrawings ? providedIsLoading : isLoading) {
     return <DrawingsLoadingSkeleton />;
   }
 
-  if (isError) {
+  if (usingProvidedDrawings ? Boolean(providedError) : isError) {
     return (
       <DrawingsErrorAlert
-        error={error}
-        onRetry={() => refetch()}
-        isRetrying={isFetching}
+        error={usingProvidedDrawings ? providedError : error}
+        onRetry={() => {
+          if (!usingProvidedDrawings) {
+            refetch();
+          }
+        }}
+        isRetrying={usingProvidedDrawings ? false : isFetching}
+        canRetry={!usingProvidedDrawings}
       />
     );
   }
 
-  const drawings = data ?? [];
+  const rows = (providedDrawings ?? data ?? []).map(toRow);
 
-  if (drawings.length === 0) {
+  if (rows.length === 0) {
     return (
       <EmptyState
         title="У вас ще немає креслень"
@@ -224,105 +334,57 @@ export function DrawingsList() {
   }
 
   return (
-    <div className="space-y-[var(--bim-spacing-4)]">
-      {/* Mobile Card Layout (prevents horizontal overflow at 375px) */}
-      <div
-        className="flex flex-col gap-[var(--bim-spacing-3)] md:hidden"
-        aria-label="Список креслень"
-      >
-        {drawings.map((drawing) => (
-          <article
-            key={drawing.id}
-            className="rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-[var(--bim-spacing-4)] shadow-[var(--bim-shadow-sm)] flex flex-col gap-[var(--bim-spacing-3)]"
-          >
-            <div className="flex items-start gap-2.5 min-w-0">
-              <FileText
-                className="size-5 shrink-0 text-[var(--bim-color-brand-primary)] mt-0.5"
-                aria-hidden="true"
-              />
-              <div className="min-w-0 flex-1">
-                <p className="font-semibold text-sm text-[var(--bim-color-text-primary)] break-all">
-                  {drawing.originalFileName}
-                </p>
-                <time
-                  dateTime={drawing.createdAt}
-                  className="mt-1 block text-xs text-[var(--bim-color-text-secondary)]"
-                >
-                  {formatUkrainianDate(drawing.createdAt)}
-                </time>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-2 pt-2 border-t border-[var(--bim-color-table-divider)]">
-              <DrawingStatusBadge status={drawing.status} />
-              <Link
-                href={`/drawings/${drawing.id}`}
-                className="inline-flex min-h-[var(--bim-size-control-md)] items-center justify-center rounded-[var(--bim-radius-md)] border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-[var(--bim-spacing-4)] text-sm font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] active:bg-[var(--bim-color-button-secondary-pressed-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] transition-colors"
-              >
-                Відкрити
-              </Link>
-            </div>
-          </article>
-        ))}
-      </div>
-
-      {/* Desktop Table Layout */}
-      <div className="hidden md:block overflow-hidden rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] shadow-[var(--bim-shadow-sm)]">
-        <table className="w-full text-left text-sm" aria-label="Список креслень">
-          <thead className="border-b border-[var(--bim-color-table-divider)] bg-[var(--bim-color-table-header-bg)] text-xs font-semibold text-[var(--bim-color-table-header-text)]">
-            <tr>
-              <th scope="col" className="px-6 py-3.5">
-                Назва файлу
-              </th>
-              <th scope="col" className="px-6 py-3.5">
-                Дата створення
-              </th>
-              <th scope="col" className="px-6 py-3.5">
-                Статус
-              </th>
-              <th scope="col" className="px-6 py-3.5 text-right">
-                Дія
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[var(--bim-color-table-divider)] bg-[var(--bim-color-table-row-bg)]">
-            {drawings.map((drawing) => (
-              <tr
-                key={drawing.id}
-                className="hover:bg-[var(--bim-color-table-row-hover-bg)] transition-colors"
-              >
-                <td className="px-6 py-4 font-medium text-[var(--bim-color-text-primary)]">
-                  <div className="flex items-center gap-2.5">
-                    <FileText
-                      className="size-4 shrink-0 text-[var(--bim-color-brand-primary)]"
-                      aria-hidden="true"
-                    />
-                    <span className="break-all">
-                      {drawing.originalFileName}
-                    </span>
-                  </div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-[var(--bim-color-text-secondary)]">
-                  <time dateTime={drawing.createdAt}>
+    <div
+      className="overflow-hidden rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] shadow-[var(--bim-shadow-sm)]"
+      aria-label="Список креслень"
+    >
+      <ul className="divide-y divide-[var(--bim-color-table-divider)]">
+        {rows.map((drawing) => (
+          <li key={drawing.id}>
+            <Link
+              href={`/drawings/${drawing.id}`}
+              data-testid="drawing-row"
+              data-status={drawing.status}
+              onClick={
+                onOpen
+                  ? (event) => {
+                      event.preventDefault();
+                      onOpen(drawing.id);
+                    }
+                  : undefined
+              }
+              className="flex w-full items-center justify-between gap-[var(--bim-spacing-4)] px-[var(--bim-spacing-4)] py-[var(--bim-spacing-4)] text-left transition-colors hover:bg-[var(--bim-color-table-row-hover-bg)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--bim-color-border-focus)] sm:px-[var(--bim-spacing-6)]"
+            >
+              <span className="flex min-w-0 flex-1 items-center gap-[var(--bim-spacing-3)]">
+                <FileText
+                  className="size-5 shrink-0 text-[var(--bim-color-brand-primary)]"
+                  aria-hidden="true"
+                />
+                <span className="min-w-0">
+                  <span className="block break-all text-sm font-medium text-[var(--bim-color-text-primary)]">
+                    {drawing.filename}
+                  </span>
+                  <time
+                    dateTime={drawing.createdAt}
+                    className="mt-1 block text-xs text-[var(--bim-color-text-secondary)]"
+                  >
                     {formatUkrainianDate(drawing.createdAt)}
                   </time>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <DrawingStatusBadge status={drawing.status} />
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-right">
-                  <Link
-                    href={`/drawings/${drawing.id}`}
-                    className="inline-flex min-h-[var(--bim-size-control-md)] items-center justify-center rounded-[var(--bim-radius-md)] border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-[var(--bim-spacing-4)] text-sm font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] active:bg-[var(--bim-color-button-secondary-pressed-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] transition-colors"
-                  >
-                    Відкрити
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                </span>
+              </span>
+              <span className="flex shrink-0 items-center gap-[var(--bim-spacing-3)]">
+                <DrawingStatusBadge
+                  status={drawing.status}
+                  source={drawing.source}
+                />
+                <span className="inline-flex min-h-[var(--bim-size-control-md)] items-center justify-center rounded-[var(--bim-radius-md)] border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-[var(--bim-spacing-4)] text-sm font-medium text-[var(--bim-color-button-secondary-text)] transition-colors group-hover:bg-[var(--bim-color-button-secondary-hover-bg)]">
+                  Відкрити
+                </span>
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
