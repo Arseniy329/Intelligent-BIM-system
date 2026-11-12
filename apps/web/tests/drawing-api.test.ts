@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DrawingDetailResponse } from "@bim/contracts";
 import { ApiAuthenticationError, ApiHttpError, createDrawing } from "@/lib/api";
-import { drawingApi, drawingErrorMessage, downloadLink, fetchDrawingDownload, normalizeDrawingDetail, parseDrawing, parseJob, parseDrawingOperation, processingErrorMessage } from "@/lib/drawing/drawing-api";
+import { drawingApi, drawingErrorMessage, downloadLink, fetchDrawingDownload, listDrawings, normalizeDrawingDetail, parseDrawing, parseJob, parseDrawingOperation, processingErrorMessage } from "@/lib/drawing/drawing-api";
 import { DEMO_RESULT } from "@/lib/drawing/demo-drawing";
 import { createDemoDrawingApi } from "@/lib/drawing/demo-api";
 import { isDrawingDemoEnabled } from "@/lib/drawing/demo-mode";
@@ -194,5 +194,47 @@ describe("explicit local demo", () => {
     expect(isDrawingDemoEnabled()).toBe(false);
     expect(() => createDemoDrawingApi("blob:http://localhost/fixture")).toThrow("disabled");
     expect(() => downloadLink({ ...detail, sourceDownloadUrl: "blob:http://localhost/fixture" }, "source")).toThrow();
+  });
+});
+
+describe("listDrawings", () => {
+  it("maps snake_case list records to the DrawingListItem shape", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify([
+      { id: "d-1", filename: "plan.dxf", created_at: "2026-11-01T10:00:00Z", status: "pending" },
+      { id: "d-2", filename: "done.dxf", created_at: "2026-11-02T11:30:00Z", status: "done" },
+    ])));
+
+    expect(await listDrawings()).toEqual([
+      { id: "d-1", filename: "plan.dxf", createdAt: "2026-11-01T10:00:00Z", status: "pending" },
+      { id: "d-2", filename: "done.dxf", createdAt: "2026-11-02T11:30:00Z", status: "done" },
+    ]);
+  });
+
+  it("accepts a { items: [...] } envelope", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      items: [
+        { id: "d-3", filename: "wrapped.dxf", created_at: "2026-11-03T12:00:00Z", status: "processing" },
+      ],
+    })));
+
+    expect(await listDrawings()).toEqual([
+      { id: "d-3", filename: "wrapped.dxf", createdAt: "2026-11-03T12:00:00Z", status: "processing" },
+    ]);
+  });
+
+  it("sends the Authorization header to the drawings endpoint", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify([])));
+
+    await listDrawings();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url.pathname).toBe("/api/v1/drawings");
+    expect(init.headers.get("Authorization")).toBe("Bearer test-access-token");
+  });
+
+  it("throws an error whose message contains the status code on a 500 response", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ detail: "Internal error" }), { status: 500 }));
+
+    await expect(listDrawings()).rejects.toThrow(/500/);
   });
 });
