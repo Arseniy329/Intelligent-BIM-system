@@ -1,4 +1,9 @@
+import type { NormLookupResult } from "@bim/contracts";
 import { apiFetch, ApiHttpError } from "@/lib/api";
+
+export type { NormLookupResult } from "@bim/contracts";
+
+export type NormLookupResponse = NormLookupResult;
 
 export type RuleStatus =
   | "verified"
@@ -23,16 +28,6 @@ export interface Rule {
 export interface RulesResponse {
   items: Rule[];
   total?: number;
-}
-
-export interface NormLookupResponse {
-  document: string;
-  clause: string;
-  link?: string | null;
-  status: RuleStatus;
-  value?: string | null;
-  answer?: string;
-  requires_engineer_review?: boolean;
 }
 
 export const RULES_API_PATH = "/api/v1/rules";
@@ -70,6 +65,20 @@ function toRule(raw: unknown): Rule {
   };
 }
 
+function toNormLookupResult(raw: unknown): NormLookupResult {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  return {
+    document: (record.document ?? null) as string | null,
+    clause: (record.clause ?? null) as string | null,
+    value: (record.value ?? null) as string | number | null,
+    sourceUrl: (record.sourceUrl ?? null) as string | null,
+    checkedAt: String(record.checkedAt ?? ""),
+    status: record.status as NormLookupResult["status"],
+    summary: String(record.summary ?? ""),
+    rawSnippet: (record.rawSnippet ?? null) as string | null,
+  };
+}
+
 /**
  * GET /api/v1/rules -> Promise<Rule[]>
  * Accepts either a bare array or a `{ items }` envelope.
@@ -104,12 +113,12 @@ export async function fetchRules(signal?: AbortSignal): Promise<Rule[]> {
 }
 
 /**
- * POST /api/v1/norms/lookup -> Promise<NormLookupResponse>
+ * POST /api/v1/norms/lookup -> Promise<NormLookupResult>
  */
 export async function lookupNorm(
   query: string,
   signal?: AbortSignal,
-): Promise<NormLookupResponse> {
+): Promise<NormLookupResult> {
   const response = await apiFetch(NORMS_LOOKUP_API_PATH, {
     method: "POST",
     credentials: "include",
@@ -129,5 +138,5 @@ export async function lookupNorm(
     );
   }
 
-  return (await response.json()) as NormLookupResponse;
+  return toNormLookupResult(await response.json());
 }

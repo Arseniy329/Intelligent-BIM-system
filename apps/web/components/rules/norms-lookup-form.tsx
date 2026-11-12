@@ -12,13 +12,21 @@ interface NormsLookupFormProps {
 }
 
 function statusLabel(status: NormLookupResponse["status"]): string {
-  if (status === "verified") {
+  if (status === "found_in_official_source") {
     return "Знайдено в офіційному джерелі";
   }
   if (status === "needs_verification") {
     return "Треба перевірити";
   }
   return status || "—";
+}
+
+function formatCheckedAt(value: string): string {
+  if (!value) {
+    return "—";
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("uk-UA");
 }
 
 export function NormsLookupForm({ onResult }: NormsLookupFormProps) {
@@ -117,19 +125,19 @@ export function NormsLookupForm({ onResult }: NormsLookupFormProps) {
                 {result.clause || "—"}
               </dd>
             </div>
-            {result.link ? (
+            {result.sourceUrl ? (
               <div className="space-y-0.5">
                 <dt className="font-semibold text-[var(--bim-color-text-primary)]">
-                  Посилання
+                  Джерело
                 </dt>
                 <dd>
                   <a
-                    href={result.link}
+                    href={result.sourceUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="break-all text-[var(--bim-color-brand-primary)] underline underline-offset-2"
                   >
-                    {result.link}
+                    {result.sourceUrl}
                   </a>
                 </dd>
               </div>
@@ -140,7 +148,11 @@ export function NormsLookupForm({ onResult }: NormsLookupFormProps) {
               </dt>
               <dd>
                 <Badge
-                  variant={result.status === "verified" ? "success" : "secondary"}
+                  variant={
+                    result.status === "found_in_official_source"
+                      ? "success"
+                      : "secondary"
+                  }
                   className={
                     needsVerification
                       ? "border-amber-300 bg-amber-50 text-amber-800"
@@ -151,7 +163,7 @@ export function NormsLookupForm({ onResult }: NormsLookupFormProps) {
                 </Badge>
               </dd>
             </div>
-            {result.value ? (
+            {result.value !== null && result.value !== undefined ? (
               <div className="space-y-0.5">
                 <dt className="font-semibold text-[var(--bim-color-text-primary)]">
                   Значення
@@ -161,11 +173,19 @@ export function NormsLookupForm({ onResult }: NormsLookupFormProps) {
                 </dd>
               </div>
             ) : null}
+            <div className="space-y-0.5">
+              <dt className="font-semibold text-[var(--bim-color-text-primary)]">
+                Перевірено
+              </dt>
+              <dd className="text-[var(--bim-color-text-secondary)]">
+                {formatCheckedAt(result.checkedAt)}
+              </dd>
+            </div>
           </dl>
 
-          {result.answer ? (
+          {result.summary ? (
             <p className="text-sm text-[var(--bim-color-text-primary)]">
-              {result.answer}
+              {result.summary}
             </p>
           ) : null}
 
