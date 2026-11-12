@@ -15,6 +15,7 @@ from src.contracts.generated import (
     DrawingUnits,
     Point,
     Room,
+    Source,
     Type,
 )
 from src.core.auth import CurrentUser, get_current_user
@@ -213,8 +214,8 @@ async def process_drawing(
                 "height": r.height,
                 "area": float(r.area),
                 "polygon": [{"x": p.x, "y": p.y} for p in r.polygon],
-                "source": getattr(r, "source", default_source),
-                "confirmed": False,
+                "source": r.source.value if r.source is not None else default_source,
+                "confirmed": bool(getattr(r, "confirmed", False)),
             }
             for r in rooms
         ]
@@ -481,6 +482,17 @@ async def get_drawing_detail(
                     else None
                 )
 
+                raw_source = r.get("source")
+                source_val: Source | None = None
+                if raw_source in ("auto", "fire_rooms"):
+                    source_val = Source.auto
+                elif raw_source == "manual":
+                    source_val = Source.manual
+                elif raw_source is not None and raw_source in Source._value2member_map_:
+                    source_val = Source(raw_source)
+
+                confirmed_val = bool(r.get("confirmed", False))
+
                 rooms.append(
                     Room(
                         id=str(r["id"]),
@@ -490,6 +502,8 @@ async def get_drawing_detail(
                         height=height_val,
                         area=float(r.get("area") or 0.0),
                         polygon=poly_pts,
+                        source=source_val,
+                        confirmed=confirmed_val,
                     )
                 )
 

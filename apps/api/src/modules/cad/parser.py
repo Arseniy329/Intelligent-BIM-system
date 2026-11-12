@@ -14,7 +14,7 @@ from shapely.geometry.polygon import orient
 from shapely.ops import nearest_points, polygonize, unary_union
 
 from src.contracts.generated import Point as ContractPoint
-from src.contracts.generated import Room
+from src.contracts.generated import Room, Source
 from src.core.exceptions import (
     CADParsingError,
 )
@@ -657,8 +657,9 @@ def _build_fire_rooms(
             height=None,
             area=area_m2,
             polygon=contract_polygon,
+            source=Source.fire_rooms,
+            confirmed=False,
         )
-        object.__setattr__(room, "source", "fire_rooms")
         rooms.append(room)
 
     return rooms
@@ -1101,8 +1102,9 @@ def _build_auto_rooms(
             height=None,
             area=area_m2,
             polygon=contract_polygon,
+            source=Source.auto,
+            confirmed=False,
         )
-        object.__setattr__(room, "source", "auto")
         rooms.append(room)
 
     return rooms

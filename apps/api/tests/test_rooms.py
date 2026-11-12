@@ -233,6 +233,35 @@ class TestRoomsApi(unittest.TestCase):
         update = self.rooms_table.updates[-1]
         self.assertNotIn("type", update)
         self.assertNotIn("type_confirmed", update)
+        self.assertNotIn("confirmed", update)
+
+    def test_patch_type_and_height_does_not_touch_contour_confirmation(self) -> None:
+        response = self.client.patch(
+            f"/api/v1/rooms/{self.room_id}", json={"type": "office", "height": 3.0}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        update = self.rooms_table.updates[-1]
+        self.assertEqual(update["type"], "office")
+        self.assertEqual(update["height"], 3.0)
+        self.assertNotIn("confirmed", update)
+
+    def test_patch_confirmed_explicit(self) -> None:
+        response = self.client.patch(
+            f"/api/v1/rooms/{self.room_id}", json={"confirmed": True}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        update = self.rooms_table.updates[-1]
+        self.assertTrue(update["confirmed"])
+        self.assertNotIn("type", update)
+        self.assertNotIn("height", update)
+
+    def test_patch_is_confirmed_alias(self) -> None:
+        response = self.client.patch(
+            f"/api/v1/rooms/{self.room_id}", json={"is_confirmed": True}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        update = self.rooms_table.updates[-1]
+        self.assertTrue(update["confirmed"])
 
     def test_patch_null_height_clears_it(self) -> None:
         response = self.client.patch(

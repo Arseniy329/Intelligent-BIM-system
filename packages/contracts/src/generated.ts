@@ -71,6 +71,14 @@ export interface Room {
    * @minItems 3
    */
   polygon: [Point, Point, Point, ...Point[]];
+  /**
+   * Походження контуру: розпізнано автоматично або додано вручну
+   */
+  source?: "auto" | "manual" | "fire_rooms";
+  /**
+   * Чи підтверджено контур користувачем
+   */
+  confirmed?: boolean;
 }
 /**
  * Координата у двовимірній світовій системі DXF (WCS): початок (0, 0), +X праворуч, +Y вгору. Значення передаються без масштабування в одиницях Drawing.resolvedUnits; перетворення для Canvas/SVG виконує лише клієнт.
@@ -96,6 +104,14 @@ export interface RoomType {
 export interface RoomUpdateRequest {
   type?: string;
   height?: number | null;
+  /**
+   * Статус підтвердження контуру користувачем
+   */
+  confirmed?: boolean;
+  /**
+   * Аліас для confirmed
+   */
+  is_confirmed?: boolean;
 }
 export interface Device {
   id: string;
