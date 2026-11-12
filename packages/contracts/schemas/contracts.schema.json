@@ -207,6 +207,15 @@
           "items": {
             "$ref": "#/$defs/Point"
           }
+        },
+        "source": {
+          "type": "string",
+          "enum": ["auto", "manual", "fire_rooms"],
+          "description": "Походження контуру: розпізнано автоматично або додано вручну"
+        },
+        "confirmed": {
+          "type": "boolean",
+          "description": "Чи підтверджено контур користувачем"
         }
       }
     },
@@ -257,6 +266,14 @@
           ],
           "exclusiveMinimum": 0,
           "maximum": 100
+        },
+        "confirmed": {
+          "type": "boolean",
+          "description": "Статус підтвердження контуру користувачем"
+        },
+        "is_confirmed": {
+          "type": "boolean",
+          "description": "Аліас для confirmed"
         }
       }
     },
