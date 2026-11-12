@@ -3,8 +3,12 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { DrawingViewer } from "@/components/drawing/drawing-viewer";
-import { ApiError, getDrawing, type DrawingDetail } from "@/lib/api/drawings";
+import { DrawingDetail } from "@/components/drawing/drawing-detail";
+import {
+  ApiError,
+  getDrawing,
+  type DrawingDetail as DrawingDetailData,
+} from "@/lib/api/drawings";
 import {
   drawingApi as legacyDrawingApi,
   type DrawingResponse,
@@ -21,7 +25,7 @@ const panel =
 
 type LoadState =
   | { kind: "loading" }
-  | { kind: "ready"; drawing: DrawingDetail; sourceUrl: string | null }
+  | { kind: "ready"; drawing: DrawingDetailData; sourceUrl: string | null }
   | { kind: "not-found" }
   | { kind: "forbidden" }
   | { kind: "unauthorized" }
@@ -51,7 +55,7 @@ function legacyMetadata(value: DrawingResponse) {
   return "drawing" in value ? value.drawing : value;
 }
 
-function legacyStatus(value: DrawingResponse): DrawingDetail["status"] | null {
+function legacyStatus(value: DrawingResponse): DrawingDetailData["status"] | null {
   const status = String(legacyMetadata(value).status);
   if (status === "pending") return "uploaded";
   if (status === "done") return "processed";
@@ -75,7 +79,7 @@ function legacySourceUrl(value: DrawingResponse): string | null {
   return typeof url === "string" && url ? url : null;
 }
 
-function embeddedSourceUrl(value: DrawingDetail): string | null {
+function embeddedSourceUrl(value: DrawingDetailData): string | null {
   const record = value as unknown as Record<string, unknown>;
   for (const key of ["sourceDownloadUrl", "source_download_url"]) {
     const url = record[key];
@@ -85,9 +89,9 @@ function embeddedSourceUrl(value: DrawingDetail): string | null {
 }
 
 function mergeDrawing(
-  primary: DrawingDetail,
+  primary: DrawingDetailData,
   legacy: DrawingResponse | null,
-): DrawingDetail {
+): DrawingDetailData {
   if (!legacy) return primary;
 
   const metadata = legacyMetadata(legacy);
@@ -125,30 +129,6 @@ function LoadingSkeleton() {
   );
 }
 
-function SourcePlanNotice() {
-  return (
-    <p
-      role="status"
-      className="rounded-lg border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-subtle)] p-3 text-sm text-[var(--bim-color-text-secondary)]"
-    >
-      Результат розміщення для цього креслення ще не збережено. Показано
-      вихідний план.
-    </p>
-  );
-}
-
-function UnavailablePlan() {
-  return (
-    <p
-      role="status"
-      className="rounded-lg border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-subtle)] p-3 text-sm text-[var(--bim-color-text-secondary)]"
-    >
-      Файл для перегляду недоступний. Оновіть сторінку, щоб отримати нове
-      посилання на план.
-    </p>
-  );
-}
-
 export function DrawingDetailRoute({ id }: { id: string }) {
   const router = useRouter();
   const [attempt, setAttempt] = useState(0);
@@ -163,7 +143,7 @@ export function DrawingDetailRoute({ id }: { id: string }) {
     let active = true;
 
     void (async () => {
-      let drawing: DrawingDetail;
+      let drawing: DrawingDetailData;
       try {
         drawing = await getDrawing(id, controller.signal);
       } catch (error) {
@@ -261,112 +241,7 @@ export function DrawingDetailRoute({ id }: { id: string }) {
         </section>
       )}
 
-      {state.kind === "ready" && (
-        <DrawingContent
-          drawing={state.drawing}
-          sourceUrl={state.sourceUrl}
-          refresh={refresh}
-        />
-      )}
+      {state.kind === "ready" && <DrawingDetail id={id} />}
     </div>
-  );
-}
-
-function DrawingContent({
-  drawing,
-  sourceUrl,
-  refresh,
-}: {
-  drawing: DrawingDetail;
-  sourceUrl: string | null;
-  refresh: () => void;
-}) {
-  const filename = drawing.filename || "Креслення";
-  const rooms = drawing.rooms ?? [];
-  const devices = drawing.devices ?? [];
-
-  if (drawing.status === "processing") {
-    return (
-      <section className={panel}>
-        <h1 className="text-2xl font-semibold">Обробка триває</h1>
-        <p className="break-all text-[var(--bim-color-text-secondary)]">
-          {filename}
-        </p>
-        <p>
-          Креслення ще обробляється. Оновіть сторінку, щоб перевірити
-          результат.
-        </p>
-        <button type="button" className={primaryButton} onClick={refresh}>
-          Оновити
-        </button>
-      </section>
-    );
-  }
-
-  if (drawing.status === "failed") {
-    return (
-      <section role="alert" className={errorPanel}>
-        <h1 className="text-2xl font-semibold">Помилка обробки креслення</h1>
-        <p className="break-all font-medium">{filename}</p>
-        <p>
-          {drawing.error_message?.trim() ||
-            "Сервер не повідомив причину помилки. Спробуйте обробити креслення повторно."}
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Link href="/drawings" className={primaryButton}>
-            До списку креслень
-          </Link>
-          <button type="button" className={secondaryButton} onClick={refresh}>
-            Оновити стан
-          </button>
-        </div>
-      </section>
-    );
-  }
-
-  if (drawing.status === "processed" && !drawing.has_result) {
-    return (
-      <section aria-label="План креслення" className="space-y-3">
-        <h1 className="break-all text-2xl font-semibold">{filename}</h1>
-        <SourcePlanNotice />
-        {sourceUrl ? (
-          <DrawingViewer url={sourceUrl} fileName={filename} />
-        ) : (
-          <UnavailablePlan />
-        )}
-      </section>
-    );
-  }
-
-  if (drawing.has_result) {
-    return (
-      <section aria-label="План креслення" className="space-y-3">
-        <div className="space-y-1">
-          <h1 className="break-all text-2xl font-semibold">{filename}</h1>
-          <p className="text-sm text-[var(--bim-color-text-secondary)]">
-            Приміщень: {rooms.length} · Пристроїв: {devices.length}
-          </p>
-        </div>
-        {!sourceUrl && <UnavailablePlan />}
-        <DrawingViewer
-          url={sourceUrl ?? ""}
-          fileName={filename}
-          rooms={rooms}
-          devices={devices}
-        />
-      </section>
-    );
-  }
-
-  return (
-    <section aria-label="План креслення" className="space-y-3">
-      <h1 className="break-all text-2xl font-semibold">{filename}</h1>
-      <SourcePlanNotice />
-      {sourceUrl ? (
-        <DrawingViewer url={sourceUrl} fileName={filename} />
-      ) : (
-        <UnavailablePlan />
-      )}
-    </section>
   );
 }

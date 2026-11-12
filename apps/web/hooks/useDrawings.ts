@@ -32,6 +32,12 @@ function drawingsErrorMessage(error: unknown): string {
   return "Не вдалося завантажити список креслень. Спробуйте ще раз.";
 }
 
+const PROCESSING_POLL_INTERVAL_MS = 5000;
+
+function hasActiveProcessing(items: DrawingListItem[]): boolean {
+  return items.some((item) => item.status === "processing");
+}
+
 function sortByUploadedAtDesc(items: DrawingListItem[]): DrawingListItem[] {
   return items
     .map((item, index) => ({
@@ -70,6 +76,7 @@ export function useDrawings(): UseDrawingsResult {
           return;
         }
         setDrawings(sortByUploadedAtDesc(items));
+        setError(null);
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted || requestId !== requestIdRef.current) {
@@ -89,11 +96,57 @@ export function useDrawings(): UseDrawingsResult {
     };
   }, [refreshToken]);
 
+  const requestRefresh = useCallback(() => {
+    setRefreshToken((token) => token + 1);
+  }, []);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+      requestRefresh();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        requestRefresh();
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [requestRefresh]);
+
+  const isProcessing = hasActiveProcessing(drawings);
+
+  useEffect(() => {
+    if (!isProcessing) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+      requestRefresh();
+    }, PROCESSING_POLL_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isProcessing, requestRefresh]);
+
   const refresh = useCallback(() => {
     setIsLoading(true);
     setError(null);
-    setRefreshToken((token) => token + 1);
-  }, []);
+    requestRefresh();
+  }, [requestRefresh]);
 
   return { drawings, isLoading, error, refresh };
 }

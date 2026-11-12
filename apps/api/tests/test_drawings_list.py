@@ -1,8 +1,9 @@
 import os
 import sys
+import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("SUPABASE_URL", "https://mock.supabase.co")
@@ -66,31 +67,6 @@ class FakeSupabase:
         return query
 
 
-@pytest.fixture
-def fake_supabase(monkeypatch):
-    fake = FakeSupabase()
-    monkeypatch.setattr(
-        "src.infrastructure.supabase._get_cached_client",
-        lambda *args, **kwargs: fake,
-    )
-    app.dependency_overrides.clear()
-    yield fake
-    app.dependency_overrides.clear()
-
-
-@pytest.fixture
-def client(fake_supabase):
-    return TestClient(app)
-
-
-def authenticate(user_id: str, role: str = "engineer") -> None:
-    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
-        id=user_id,
-        email=f"{user_id}@example.com",
-        role=role,
-    )
-
-
 def drawing_row(
     drawing_id: str,
     owner_id: str,
@@ -108,132 +84,163 @@ def drawing_row(
     }
 
 
-def test_list_drawings_unauthenticated_returns_401(client):
-    response = client.get("/api/v1/drawings")
+class TestDrawingsList(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fake_supabase = FakeSupabase()
+        self._client_patcher = patch(
+            "src.infrastructure.supabase._get_cached_client",
+            lambda *args, **kwargs: self.fake_supabase,
+        )
+        self._client_patcher.start()
+        app.dependency_overrides.clear()
+        self.client = TestClient(app)
 
-    assert response.status_code == 401
+    def tearDown(self) -> None:
+        app.dependency_overrides.clear()
+        self._client_patcher.stop()
+
+    def authenticate(self, user_id: str, role: str = "engineer") -> None:
+        app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+            id=user_id,
+            email=f"{user_id}@example.com",
+            role=role,
+        )
+
+    def test_list_drawings_unauthenticated_returns_401(self) -> None:
+        response = self.client.get("/api/v1/drawings")
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_list_drawings_only_returns_owned_rows(self) -> None:
+        self.fake_supabase.tables["drawings"] = [
+            drawing_row("a-old", "user-a", "2026-01-01T00:00:00Z"),
+            drawing_row("b-only", "user-b", "2026-04-01T00:00:00Z", "processing"),
+            drawing_row("a-mid", "user-a", "2026-02-01T00:00:00Z", "processed"),
+            drawing_row("a-new", "user-a", "2026-03-01T00:00:00Z", "processing"),
+        ]
+        self.authenticate("user-a")
+
+        response = self.client.get("/api/v1/drawings")
+
+        self.assertEqual(response.status_code, 200)
+        ids = {item["id"] for item in response.json()}
+        self.assertEqual(ids, {"a-old", "a-mid", "a-new"})
+        self.assertNotIn("b-only", ids)
+
+    def test_list_drawings_orders_newest_first_regardless_of_insert_order(
+        self,
+    ) -> None:
+        self.fake_supabase.tables["drawings"] = [
+            drawing_row("oldest", "user-a", "2026-01-01T00:00:00Z"),
+            drawing_row("newest", "user-a", "2026-03-01T00:00:00Z"),
+            drawing_row("middle", "user-a", "2026-02-01T00:00:00Z"),
+        ]
+        self.authenticate("user-a")
+
+        response = self.client.get("/api/v1/drawings")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["id"] for item in response.json()],
+            ["newest", "middle", "oldest"],
+        )
+
+    def test_list_drawings_maps_every_contract_status(self) -> None:
+        self.fake_supabase.tables["drawings"] = [
+            drawing_row(
+                "uploaded-row", "user-a", "2026-04-01T00:00:00Z", "uploaded"
+            ),
+            drawing_row(
+                "processing-row", "user-a", "2026-03-01T00:00:00Z", "processing"
+            ),
+            drawing_row(
+                "processed-row", "user-a", "2026-02-01T00:00:00Z", "processed"
+            ),
+            drawing_row(
+                "failed-row",
+                "user-a",
+                "2026-01-01T00:00:00Z",
+                "failed",
+                error_message="DXF parsing failed",
+            ),
+        ]
+        self.authenticate("user-a")
+
+        response = self.client.get("/api/v1/drawings")
+
+        self.assertEqual(response.status_code, 200)
+        by_id = {item["id"]: item for item in response.json()}
+        self.assertEqual(by_id["uploaded-row"]["status"], "uploaded")
+        self.assertEqual(by_id["processing-row"]["status"], "processing")
+        self.assertEqual(by_id["processed-row"]["status"], "processed")
+        self.assertEqual(by_id["failed-row"]["status"], "failed")
+        self.assertTrue(by_id["failed-row"]["error_message"])
+        self.assertEqual(
+            by_id["failed-row"]["error_message"], "DXF parsing failed"
+        )
+        for non_failed in ("uploaded-row", "processing-row", "processed-row"):
+            self.assertIsNone(by_id[non_failed]["error_message"])
+
+    def test_list_drawings_has_result_reflects_stored_placement(self) -> None:
+        self.fake_supabase.tables["drawings"] = [
+            drawing_row(
+                "with-result", "user-a", "2026-02-01T00:00:00Z", "processed"
+            ),
+            drawing_row(
+                "without-result", "user-a", "2026-01-01T00:00:00Z", "uploaded"
+            ),
+        ]
+        self.fake_supabase.tables["rooms"] = [
+            {"id": "room-1", "drawing_id": "with-result"},
+        ]
+        self.fake_supabase.tables["devices"] = [
+            {"id": "device-1", "drawing_id": "with-result"},
+        ]
+        self.authenticate("user-a")
+
+        response = self.client.get("/api/v1/drawings")
+
+        self.assertEqual(response.status_code, 200)
+        by_id = {item["id"]: item for item in response.json()}
+        self.assertIs(by_id["with-result"]["has_result"], True)
+        self.assertIs(by_id["without-result"]["has_result"], False)
+
+    def test_list_drawings_ignores_user_id_query_parameter(self) -> None:
+        self.fake_supabase.tables["drawings"] = [
+            drawing_row("a-only", "user-a", "2026-02-01T00:00:00Z"),
+            drawing_row("b-only", "user-b", "2026-03-01T00:00:00Z"),
+        ]
+        self.authenticate("user-a")
+
+        response = self.client.get(
+            "/api/v1/drawings", params={"user_id": "user-b"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        ids = {item["id"] for item in response.json()}
+        self.assertEqual(ids, {"a-only"})
+        self.assertNotIn("b-only", ids)
+
+    def test_list_drawings_uses_snake_case_contract_keys(self) -> None:
+        self.fake_supabase.tables["drawings"] = [
+            drawing_row(
+                "a-only", "user-a", "2026-02-01T00:00:00Z", "uploaded"
+            ),
+        ]
+        self.authenticate("user-a")
+
+        response = self.client.get("/api/v1/drawings")
+
+        self.assertEqual(response.status_code, 200)
+        items = response.json()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(set(items[0]), LIST_KEYS)
+        self.assertEqual(items[0]["id"], "a-only")
+        self.assertEqual(items[0]["filename"], "a-only.dxf")
+        self.assertEqual(items[0]["uploaded_at"], "2026-02-01T00:00:00Z")
+        self.assertEqual(items[0]["status"], "uploaded")
+        self.assertIs(items[0]["has_result"], False)
 
 
-def test_list_drawings_only_returns_owned_rows(client, fake_supabase):
-    fake_supabase.tables["drawings"] = [
-        drawing_row("a-old", "user-a", "2026-01-01T00:00:00Z"),
-        drawing_row("b-only", "user-b", "2026-04-01T00:00:00Z", "processing"),
-        drawing_row("a-mid", "user-a", "2026-02-01T00:00:00Z", "processed"),
-        drawing_row("a-new", "user-a", "2026-03-01T00:00:00Z", "processing"),
-    ]
-    authenticate("user-a")
-
-    response = client.get("/api/v1/drawings")
-
-    assert response.status_code == 200
-    ids = {item["id"] for item in response.json()}
-    assert ids == {"a-old", "a-mid", "a-new"}
-    assert "b-only" not in ids
-
-
-def test_list_drawings_orders_newest_first_regardless_of_insert_order(
-    client, fake_supabase
-):
-    fake_supabase.tables["drawings"] = [
-        drawing_row("oldest", "user-a", "2026-01-01T00:00:00Z"),
-        drawing_row("newest", "user-a", "2026-03-01T00:00:00Z"),
-        drawing_row("middle", "user-a", "2026-02-01T00:00:00Z"),
-    ]
-    authenticate("user-a")
-
-    response = client.get("/api/v1/drawings")
-
-    assert response.status_code == 200
-    assert [item["id"] for item in response.json()] == [
-        "newest",
-        "middle",
-        "oldest",
-    ]
-
-
-def test_list_drawings_maps_every_contract_status(client, fake_supabase):
-    fake_supabase.tables["drawings"] = [
-        drawing_row("uploaded-row", "user-a", "2026-04-01T00:00:00Z", "uploaded"),
-        drawing_row(
-            "processing-row", "user-a", "2026-03-01T00:00:00Z", "processing"
-        ),
-        drawing_row("processed-row", "user-a", "2026-02-01T00:00:00Z", "processed"),
-        drawing_row(
-            "failed-row",
-            "user-a",
-            "2026-01-01T00:00:00Z",
-            "failed",
-            error_message="DXF parsing failed",
-        ),
-    ]
-    authenticate("user-a")
-
-    response = client.get("/api/v1/drawings")
-
-    assert response.status_code == 200
-    by_id = {item["id"]: item for item in response.json()}
-    assert by_id["uploaded-row"]["status"] == "uploaded"
-    assert by_id["processing-row"]["status"] == "processing"
-    assert by_id["processed-row"]["status"] == "processed"
-    assert by_id["failed-row"]["status"] == "failed"
-    assert by_id["failed-row"]["error_message"]
-    assert by_id["failed-row"]["error_message"] == "DXF parsing failed"
-    for non_failed in ("uploaded-row", "processing-row", "processed-row"):
-        assert by_id[non_failed]["error_message"] is None
-
-
-def test_list_drawings_has_result_reflects_stored_placement(
-    client, fake_supabase
-):
-    fake_supabase.tables["drawings"] = [
-        drawing_row("with-result", "user-a", "2026-02-01T00:00:00Z", "processed"),
-        drawing_row("without-result", "user-a", "2026-01-01T00:00:00Z", "uploaded"),
-    ]
-    fake_supabase.tables["rooms"] = [
-        {"id": "room-1", "drawing_id": "with-result"},
-    ]
-    fake_supabase.tables["devices"] = [
-        {"id": "device-1", "drawing_id": "with-result"},
-    ]
-    authenticate("user-a")
-
-    response = client.get("/api/v1/drawings")
-
-    assert response.status_code == 200
-    by_id = {item["id"]: item for item in response.json()}
-    assert by_id["with-result"]["has_result"] is True
-    assert by_id["without-result"]["has_result"] is False
-
-
-def test_list_drawings_ignores_user_id_query_parameter(client, fake_supabase):
-    fake_supabase.tables["drawings"] = [
-        drawing_row("a-only", "user-a", "2026-02-01T00:00:00Z"),
-        drawing_row("b-only", "user-b", "2026-03-01T00:00:00Z"),
-    ]
-    authenticate("user-a")
-
-    response = client.get("/api/v1/drawings", params={"user_id": "user-b"})
-
-    assert response.status_code == 200
-    ids = {item["id"] for item in response.json()}
-    assert ids == {"a-only"}
-    assert "b-only" not in ids
-
-
-def test_list_drawings_uses_snake_case_contract_keys(client, fake_supabase):
-    fake_supabase.tables["drawings"] = [
-        drawing_row("a-only", "user-a", "2026-02-01T00:00:00Z", "uploaded"),
-    ]
-    authenticate("user-a")
-
-    response = client.get("/api/v1/drawings")
-
-    assert response.status_code == 200
-    items = response.json()
-    assert len(items) == 1
-    assert set(items[0]) == LIST_KEYS
-    assert items[0]["id"] == "a-only"
-    assert items[0]["filename"] == "a-only.dxf"
-    assert items[0]["uploaded_at"] == "2026-02-01T00:00:00Z"
-    assert items[0]["status"] == "uploaded"
-    assert items[0]["has_result"] is False
+if __name__ == "__main__":
+    unittest.main()

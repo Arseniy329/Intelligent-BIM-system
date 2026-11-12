@@ -3,7 +3,9 @@ import "@testing-library/jest-dom/vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
+  fireEvent,
   render,
   screen,
   within,
@@ -783,5 +785,109 @@ describe("DrawingsList contract coverage", () => {
     );
 
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("DrawingsList refresh on focus and visibility", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listDrawingsMock.mockReset();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("refetches on window focus and updates a processing drawing to processed", async () => {
+    vi.useFakeTimers();
+
+    const processingDrawing = {
+      id: "draw-poll",
+      filename: "polling.dxf",
+      uploaded_at: "2026-11-06T09:00:00.000Z",
+      status: "processing" as const,
+      has_result: false,
+    };
+    const processedDrawing = {
+      ...processingDrawing,
+      status: "processed" as const,
+      has_result: true,
+    };
+
+    listDrawingsMock
+      .mockResolvedValueOnce([processingDrawing])
+      .mockResolvedValueOnce([processedDrawing]);
+
+    const flushPromises = async () => {
+      for (let index = 0; index < 6; index += 1) {
+        await Promise.resolve();
+      }
+    };
+
+    render(<DrawingsList />);
+
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(screen.getByText("Обробка")).toBeInTheDocument();
+    expect(listDrawingsMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      fireEvent.focus(window);
+      await flushPromises();
+    });
+
+    expect(listDrawingsMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Готово")).toBeInTheDocument();
+    expect(screen.queryByText("Обробка")).not.toBeInTheDocument();
+  });
+
+  it("refetches when the document becomes visible again", async () => {
+    vi.useFakeTimers();
+
+    const processingDrawing = {
+      id: "draw-visible",
+      filename: "visible.dxf",
+      uploaded_at: "2026-11-06T09:00:00.000Z",
+      status: "processing" as const,
+      has_result: false,
+    };
+
+    listDrawingsMock
+      .mockResolvedValueOnce([processingDrawing])
+      .mockResolvedValueOnce([
+        {
+          ...processingDrawing,
+          status: "processed" as const,
+          has_result: true,
+        },
+      ]);
+
+    const flushPromises = async () => {
+      for (let index = 0; index < 6; index += 1) {
+        await Promise.resolve();
+      }
+    };
+
+    render(<DrawingsList />);
+
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(screen.getByText("Обробка")).toBeInTheDocument();
+
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await flushPromises();
+    });
+
+    expect(listDrawingsMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Готово")).toBeInTheDocument();
   });
 });
