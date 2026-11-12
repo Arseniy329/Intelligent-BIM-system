@@ -17,6 +17,8 @@
       "type": "office",
       "height": 3.2,
       "area": 48,
+      "source": "auto",
+      "confirmed": true,
       "polygon": [
         { "x": 0, "y": 0 },
         { "x": 8000, "y": 0 },

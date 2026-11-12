@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from src.contracts.generated import Point, Room, RoomType
+from src.contracts.generated import Point, Room, RoomType, Source
 
 ROOM_TYPES_PATH = Path(__file__).with_name("room_types.json")
 UNKNOWN_ROOM_TYPE = "unknown"
@@ -107,6 +107,17 @@ def room_from_row(row: dict[str, Any]) -> Room:
     raw_height = row.get("height")
     height = float(raw_height) if raw_height is not None else None
 
+    raw_source = row.get("source")
+    source_val: Source | None = None
+    if raw_source in ("auto", "fire_rooms"):
+        source_val = Source.auto
+    elif raw_source == "manual":
+        source_val = Source.manual
+    elif raw_source is not None and raw_source in Source._value2member_map_:
+        source_val = Source(raw_source)
+
+    confirmed_val = bool(row.get("confirmed", False))
+
     return Room(
         id=str(row["id"]),
         drawingId=UUID(str(row["drawing_id"])),
@@ -115,4 +126,6 @@ def room_from_row(row: dict[str, Any]) -> Room:
         height=height if height is not None and height > 0 else None,
         area=float(row.get("area") or 0.0),
         polygon=points,
+        source=source_val,
+        confirmed=confirmed_val,
     )

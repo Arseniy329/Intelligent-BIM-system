@@ -95,3 +95,8 @@ it("does not use a generated DXF as the overlay background", () => {
   expect(render(<DrawingDetail id={result.drawing.id} />)).toContain("Файл для перегляду недоступний");
   expect(viewer).not.toHaveBeenCalled();
 });
+
+it("propagates selectedRoomId to the DrawingViewer props (Issue 2 Regression)", () => {
+  render(<DrawingDetail id={result.drawing.id} />);
+  expect(viewer.mock.calls[0][0]).toHaveProperty("selectedRoomId");
+});

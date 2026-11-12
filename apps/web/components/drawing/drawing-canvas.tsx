@@ -15,6 +15,7 @@ type LoadState =
 
 export default function DrawingCanvas({
   url, onReady, onRetry, retryPending = false, rooms, devices, initialRoomLabelsVisible = true,
+  selectedRoomId,
 }: DrawingViewerProps & { onRetry: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const adapterRef = useRef<DrawingViewerAdapter | null>(null);
@@ -99,7 +100,8 @@ export default function DrawingCanvas({
         <div ref={hostRef} className={styles.canvas} aria-label="Полотно DXF" />
         {state.status === "ready" && (rooms?.length || devices?.length) ? (
           <DrawingOverlay controller={state.controller} rooms={rooms} devices={devices}
-            showRooms={showRooms} showDevices={showDevices} showRoomLabels={showRoomLabels} />
+            showRooms={showRooms} showDevices={showDevices} showRoomLabels={showRoomLabels}
+            selectedRoomId={selectedRoomId} />
         ) : null}
         {state.status === "loading" && (
           <div className={styles.message} role="status">Завантаження креслення…</div>
