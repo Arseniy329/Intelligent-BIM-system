@@ -28,9 +28,13 @@ from src.modules.drawings.schemas import (
     CreateDrawingRequest,
     CreateDrawingResponse,
     DrawingDetailResponse,
+    DrawingListItem,
     DrawingRecord,
 )
-from src.modules.drawings.service import generate_and_upload_result_dxf
+from src.modules.drawings.service import (
+    generate_and_upload_result_dxf,
+    list_drawings_for_user,
+)
 from src.modules.placement.service import RuleRecord, place_devices_from_rule
 
 router = APIRouter(prefix="/drawings", tags=["drawings"])
@@ -145,40 +149,12 @@ async def create_drawing(
     }
 
 
-@router.get("", response_model=list[DrawingRecord])
+@router.get("", response_model=list[DrawingListItem])
 async def list_drawings(
     current_user: CurrentUser = Depends(get_current_user),
+    supabase: Annotated[Client | None, Depends(get_supabase_client)] = None,
 ):
-    supabase = get_supabase_client(settings)
-
-    response = (
-        supabase.table("drawings")
-        .select("*")
-        .eq("owner_id", current_user.id)
-        .order("created_at", desc=True)
-        .execute()
-    )
-
-    rows = response.data
-    if not isinstance(rows, list):
-        return []
-
-    drawings: list[DrawingRecord] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid drawing record format in database",
-            )
-        try:
-            drawings.append(DrawingRecord.model_validate(row))
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to parse drawing record",
-            ) from exc
-
-    return drawings
+    return await list_drawings_for_user(current_user.id, supabase)
 
 
 @router.post("/{drawing_id}/process")

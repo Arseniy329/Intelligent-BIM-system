@@ -1,6 +1,12 @@
-import { DrawingDetail } from "@/components/drawing/drawing-detail";
+import { DrawingDetailRoute } from "./drawing-detail-route";
 
-export default async function DrawingPage({ params }: { params: Promise<{ id: string }> }) {
+type DrawingPageParams = Promise<{ id: string }> | { id: string };
+
+export default async function DrawingPage({
+  params,
+}: {
+  params: DrawingPageParams;
+}) {
   const { id } = await params;
-  return <DrawingDetail key={id} id={id} />;
+  return <DrawingDetailRoute key={id} id={id} />;
 }

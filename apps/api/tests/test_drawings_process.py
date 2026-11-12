@@ -1,4 +1,5 @@
 import io
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -7,6 +8,9 @@ from uuid import uuid4
 
 import ezdxf
 from fastapi.testclient import TestClient
+
+os.environ.setdefault("SUPABASE_URL", "https://mock.supabase.co")
+os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "mock-service-role-key")
 
 API_DIR = Path(__file__).resolve().parent.parent
 if str(API_DIR) not in sys.path:
