@@ -1,0 +1,12 @@
+# Authoritative denylist for local-only verification.
+# Every entry below is banned inside micro-agent shells and in the local-only
+# verification recipe. The runbook at docs/specs/local-only-verification.md
+# must never contain any of these entries literally.
+supabase start
+supabase stop
+docker
+docker compose
+npm run dev
+next dev
+uvicorn
+fastapi dev
