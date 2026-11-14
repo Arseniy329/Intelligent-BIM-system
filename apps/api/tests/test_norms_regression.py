@@ -194,13 +194,23 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
         )
 
         service = get_norms_service()
+        service.verified_retrieval = True
         call_count = 0
-        original_lookup = service.provider.lookup
+        verified_result = NormLookupResult(
+            document="ДБН В.2.5-56:2014",
+            clause="Таблиця А.1",
+            value="85 м²",
+            sourceUrl="https://dsns.gov.ua/test",
+            checkedAt=datetime.now(UTC),
+            status=NormVerificationStatus.found_in_official_source,
+            summary="Перевірено з кешуванням",
+            rawSnippet="Таблиця А.1 площа 85 м².",
+        )
 
         async def spy_lookup(request: NormLookupRequest) -> NormLookupResult:
             nonlocal call_count
             call_count += 1
-            return await original_lookup(request)
+            return verified_result
 
         service.provider.lookup = spy_lookup  # type: ignore[method-assign]
 
@@ -223,6 +233,22 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
         app.dependency_overrides[get_current_user] = lambda: CurrentUser(
             id="spammy-user-id", email="spam@example.com"
         )
+        service = get_norms_service()
+        stub_res = NormLookupResult(
+            document=None,
+            clause=None,
+            value=None,
+            sourceUrl=None,
+            checkedAt=datetime.now(UTC),
+            status=NormVerificationStatus.needs_verification,
+            summary="Stub",
+            rawSnippet=None,
+        )
+
+        async def fast_stub(req: NormLookupRequest) -> NormLookupResult:
+            return stub_res
+
+        service.provider.lookup = fast_stub  # type: ignore[method-assign]
 
         for i in range(1, 11):
             res = self.client.post(
@@ -241,6 +267,126 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(res_limit.status_code, 429)
         self.assertIn("Перевищено ліміт", res_limit.json().get("detail", ""))
+
+    # --------------------------------------------------------------------------
+    # Regression Test 7: Resilient JSON Parsing & Aliases
+    # --------------------------------------------------------------------------
+    def test_parse_llm_json_response_resilience(self) -> None:
+        """Tests parsing with markdown fences, conversational prose, and alias keys."""
+        from src.services.norms.provider import parse_llm_json_response
+
+        # Markdown fences with json tag
+        fenced = (
+            "```json\n"
+            "{\"document\": \"ДБН В.2.5-56:2014\", \"clause\": \"6.2.23\"}\n"
+            "```"
+        )
+        self.assertEqual(
+            parse_llm_json_response(fenced).get("document"),
+            "ДБН В.2.5-56:2014",
+        )
+
+        # Surrounding conversational prose
+        prose = (
+            "Ось норма згідно з реєстром:\n"
+            "{\"document\": \"ДСТУ EN 54\", \"clause\": \"5.1\", "
+            "\"source_url\": \"https://zakon.rada.gov.ua/test\", "
+            "\"raw_snippet\": \"цитата\"}\n"
+            "Зверніть увагу на обмеження."
+        )
+        parsed = parse_llm_json_response(prose)
+        self.assertEqual(parsed.get("document"), "ДСТУ EN 54")
+        self.assertEqual(parsed.get("sourceUrl"), "https://zakon.rada.gov.ua/test")
+        self.assertEqual(parsed.get("rawSnippet"), "цитата")
+
+    # --------------------------------------------------------------------------
+    # Regression Test 8: Unverified Responses Are NOT Stored In Cache
+    # --------------------------------------------------------------------------
+    async def test_unverified_responses_not_cached(self) -> None:
+        """Failed or unverified lookups must not be cached."""
+        call_count = 0
+        unverified_result = NormLookupResult(
+            document=None,
+            clause=None,
+            value=None,
+            sourceUrl=None,
+            checkedAt=datetime.now(UTC),
+            status=NormVerificationStatus.needs_verification,
+            summary="Не знайдено.",
+            rawSnippet=None,
+        )
+
+        async def counting_lookup(req: NormLookupRequest) -> NormLookupResult:
+            nonlocal call_count
+            call_count += 1
+            return unverified_result
+
+        mock_provider = MockNormsSearchProvider(handler=counting_lookup)
+        service = NormsService(provider=mock_provider)
+
+        req = NormLookupRequest(query="шо ти вмієш?")
+        res1 = await service.lookup(req)
+        self.assertEqual(res1.status, NormVerificationStatus.needs_verification)
+        self.assertEqual(call_count, 1)
+        self.assertEqual(service.cache_size, 0)
+
+        # Second identical request must re-query provider because not cached
+        res2 = await service.lookup(req)
+        self.assertEqual(res2.status, NormVerificationStatus.needs_verification)
+        self.assertEqual(call_count, 2)
+
+    # --------------------------------------------------------------------------
+    # Regression Test 9: Provider URL Normalization
+    # --------------------------------------------------------------------------
+    def test_normalize_provider_url(self) -> None:
+        """Validates provider URL normalization appends /chat/completions."""
+        from src.services.norms.provider import normalize_provider_url
+
+        self.assertEqual(
+            normalize_provider_url("https://models.github.ai/inference"),
+            "https://models.github.ai/inference/chat/completions",
+        )
+        self.assertEqual(
+            normalize_provider_url(
+                "https://models.github.ai/inference/chat/completions"
+            ),
+            "https://models.github.ai/inference/chat/completions",
+        )
+        self.assertEqual(
+            normalize_provider_url("https://api.openai.com/v1/"),
+            "https://api.openai.com/v1/chat/completions",
+        )
+        self.assertEqual(
+            normalize_provider_url(""),
+            "https://models.github.ai/inference/chat/completions",
+        )
+
+    # --------------------------------------------------------------------------
+    # Regression Test 10: Non-JSON Response (Plain 'OK') Does Not Crash
+    # --------------------------------------------------------------------------
+    async def test_non_json_plain_text_response_handled_cleanly(self) -> None:
+        """Provider returning text 'OK' must be handled without JSONDecodeError."""
+        import httpx
+
+        def plain_text_transport(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                status_code=200,
+                headers={"Content-Type": "text/plain"},
+                text="OK\r\n",
+            )
+
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(plain_text_transport)
+        )
+        provider = LLMDomainRestrictedSearchProvider(
+            api_key="mock-key",
+            base_url="https://models.github.ai/inference/chat/completions",
+            http_client=client,
+        )
+        result = await provider.lookup(NormLookupRequest(query="шо ти вмієш?"))
+        self.assertEqual(result.status, NormVerificationStatus.needs_verification)
+        self.assertNotIn("JSONDecodeError", result.summary)
+        self.assertIn("не у форматі JSON", result.summary)
 
 
 if __name__ == "__main__":

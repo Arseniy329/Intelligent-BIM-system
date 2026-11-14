@@ -17,6 +17,7 @@ from fastapi import Depends, HTTPException, status
 from src.contracts.norms import (
     NormLookupRequest,
     NormLookupResult,
+    NormVerificationStatus,
 )
 from src.core.config import Settings, get_settings
 from src.services.norms.guard import sanitize_and_verify_result
@@ -139,8 +140,9 @@ class NormsService:
             verified_retrieval=is_verified,
         )
 
-        # 4. Save verified result to cache
-        self._put_to_cache(cache_key, verified_result)
+        # 4. Save verified result to cache ONLY if found in official source
+        if verified_result.status == NormVerificationStatus.found_in_official_source:
+            self._put_to_cache(cache_key, verified_result)
 
         return verified_result
 
@@ -217,29 +219,35 @@ def get_norms_service(
     """
     global _norms_service_instance
     effective_settings = settings if settings is not None else get_settings()
+    model = getattr(effective_settings, "NORMS_SEARCH_MODEL", "openai/gpt-4o-mini")
 
     if _norms_service_instance is None:
         provider = LLMDomainRestrictedSearchProvider(
             api_key=effective_settings.NORMS_SEARCH_API_KEY,
             base_url=effective_settings.NORMS_SEARCH_PROVIDER_URL,
+            model=model,
         )
         _norms_service_instance = NormsService(
             provider=provider,
             cache_ttl_seconds=float(effective_settings.NORMS_CACHE_TTL_SECONDS),
         )
-    elif (
-        settings is not None
-        and getattr(_norms_service_instance.provider, "api_key", None)
-        != effective_settings.NORMS_SEARCH_API_KEY
-    ):
-        provider = LLMDomainRestrictedSearchProvider(
-            api_key=effective_settings.NORMS_SEARCH_API_KEY,
-            base_url=effective_settings.NORMS_SEARCH_PROVIDER_URL,
-        )
-        _norms_service_instance = NormsService(
-            provider=provider,
-            cache_ttl_seconds=float(effective_settings.NORMS_CACHE_TTL_SECONDS),
-        )
+    elif settings is not None:
+        current_provider = _norms_service_instance.provider
+        if (
+            not isinstance(current_provider, LLMDomainRestrictedSearchProvider)
+            or current_provider.api_key != effective_settings.NORMS_SEARCH_API_KEY
+            or current_provider.base_url != effective_settings.NORMS_SEARCH_PROVIDER_URL
+            or getattr(current_provider, "model", None) != model
+        ):
+            provider = LLMDomainRestrictedSearchProvider(
+                api_key=effective_settings.NORMS_SEARCH_API_KEY,
+                base_url=effective_settings.NORMS_SEARCH_PROVIDER_URL,
+                model=model,
+            )
+            _norms_service_instance = NormsService(
+                provider=provider,
+                cache_ttl_seconds=float(effective_settings.NORMS_CACHE_TTL_SECONDS),
+            )
 
     return _norms_service_instance
 

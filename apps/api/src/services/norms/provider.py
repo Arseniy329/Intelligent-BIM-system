@@ -111,9 +111,22 @@ def build_domain_restricted_query(
     return " ".join(query_parts)
 
 
+def normalize_provider_url(raw_url: str | None) -> str:
+    """Normalizes the LLM provider URL ensuring a valid chat completions endpoint."""
+    if not raw_url or not raw_url.strip():
+        return "https://models.github.ai/inference/chat/completions"
+    url = raw_url.strip().rstrip("/")
+    if url.endswith("/chat/completions"):
+        return url
+    return f"{url}/chat/completions"
+
+
 def parse_llm_json_response(raw_text: str) -> dict[str, object]:
     """Safely extracts and parses JSON payload from LLM response text."""
     text = raw_text.strip()
+    if not text:
+        return {}
+
     # Strip markdown code fences if present (e.g. ```json ... ```)
     if "```" in text:
         match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
@@ -124,9 +137,20 @@ def parse_llm_json_response(raw_text: str) -> dict[str, object]:
             text = re.sub(r"\s*```$", "", text)
             text = text.strip()
 
+    # Extract outermost JSON object if conversational prose surrounds it
+    if not text.startswith("{"):
+        obj_match = re.search(r"(\{.*\})", text, re.DOTALL)
+        if obj_match:
+            text = obj_match.group(1).strip()
+
     try:
         data = json.loads(text)
         if isinstance(data, dict):
+            # Normalize common casing/alias variations
+            if "source_url" in data and "sourceUrl" not in data:
+                data["sourceUrl"] = data["source_url"]
+            if "raw_snippet" in data and "rawSnippet" not in data:
+                data["rawSnippet"] = data["raw_snippet"]
             return data
     except json.JSONDecodeError:
         pass
@@ -159,7 +183,7 @@ class LLMDomainRestrictedSearchProvider(BaseNormsSearchProvider):
         self,
         api_key: str | None = None,
         base_url: str | None = None,
-        model: str = "gpt-4o-mini",
+        model: str = "openai/gpt-4o-mini",
         http_client: httpx.AsyncClient | None = None,
         llm_caller: Callable[[str, str], Awaitable[str]] | None = None,
         dry_run: bool = False,
@@ -203,49 +227,117 @@ class LLMDomainRestrictedSearchProvider(BaseNormsSearchProvider):
             "Знайди точну норму в чинних реєстрах України та надай відповідь JSON."
         )
 
+        target_url = normalize_provider_url(self.base_url)
+        headers = {
+            "Authorization": f"Bearer {self.api_key or ''}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": UKRAINIAN_NORMS_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+        }
+
         raw_response_text = ""
         try:
             if self.llm_caller:
                 raw_response_text = await self.llm_caller(
                     UKRAINIAN_NORMS_SYSTEM_PROMPT, user_prompt
                 )
-            elif self.http_client:
-                url = self.base_url or "https://api.openai.com/v1/chat/completions"
-                headers = {"Authorization": f"Bearer {self.api_key or ''}"}
-                payload = {
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": UKRAINIAN_NORMS_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": 0.0,
-                }
-                resp = await self.http_client.post(url, headers=headers, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                raw_response_text = (
-                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                )
             else:
-                url = self.base_url or "https://api.openai.com/v1/chat/completions"
-                headers = {"Authorization": f"Bearer {self.api_key or ''}"}
-                payload = {
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": UKRAINIAN_NORMS_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": 0.0,
-                }
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    raw_response_text = (
-                        data.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
+                if self.http_client:
+                    resp = await self.http_client.post(
+                        target_url, headers=headers, json=payload
                     )
+                else:
+                    async with httpx.AsyncClient(timeout=15.0) as client:
+                        resp = await client.post(
+                            target_url, headers=headers, json=payload
+                        )
+
+                if resp.status_code >= 400:
+                    logger.warning(
+                        "LLM provider returned HTTP error %d from %s: %s",
+                        resp.status_code,
+                        target_url,
+                        resp.text[:300],
+                    )
+                    return NormLookupResult(
+                        document=None,
+                        clause=None,
+                        value=None,
+                        sourceUrl=None,
+                        checkedAt=now_utc,
+                        status=NormVerificationStatus.needs_verification,
+                        summary=(
+                            f"Помилка сервера провайдера норм "
+                            f"(HTTP {resp.status_code}). "
+                            "Потрібна ручна верифікація інженером."
+                        ),
+                        rawSnippet=None,
+                    )
+
+                content_type = resp.headers.get("content-type", "").lower()
+                resp_text = resp.text.strip()
+
+                if (
+                    not resp_text.startswith(("{", "["))
+                    or resp_text == "OK"
+                    or "text/plain" in content_type
+                ):
+                    logger.warning(
+                        "LLM provider returned non-JSON response from %s "
+                        "(status=%d, content-type=%s): %s",
+                        target_url,
+                        resp.status_code,
+                        content_type,
+                        resp_text[:100],
+                    )
+                    return NormLookupResult(
+                        document=None,
+                        clause=None,
+                        value=None,
+                        sourceUrl=None,
+                        checkedAt=now_utc,
+                        status=NormVerificationStatus.needs_verification,
+                        summary=(
+                            "Провайдер норм повернув некоректну відповідь "
+                            "(не у форматі JSON). "
+                            "Потрібна ручна верифікація інженером."
+                        ),
+                        rawSnippet=resp_text[:300] if resp_text else None,
+                    )
+
+                try:
+                    data = resp.json()
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to decode JSON from provider response: %s", exc
+                    )
+                    return NormLookupResult(
+                        document=None,
+                        clause=None,
+                        value=None,
+                        sourceUrl=None,
+                        checkedAt=now_utc,
+                        status=NormVerificationStatus.needs_verification,
+                        summary=(
+                            "Помилка розбору JSON відповіді провайдера норм. "
+                            "Потрібна ручна верифікація інженером."
+                        ),
+                        rawSnippet=resp_text[:300] if resp_text else None,
+                    )
+
+                raw_response_text = (
+                    data.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
         except Exception as exc:
             logger.warning("LLM provider execution failed: %s", exc)
             return NormLookupResult(
