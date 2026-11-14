@@ -114,15 +114,19 @@ def build_domain_restricted_query(
 def normalize_provider_url(raw_url: str | None) -> str:
     """Normalizes the LLM provider URL ensuring a valid chat completions endpoint."""
     if not raw_url or not raw_url.strip():
-        return "https://models.github.ai/inference/chat/completions"
+        return (
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        )
     url = raw_url.strip().rstrip("/")
     if url.endswith("/chat/completions"):
         return url
     return f"{url}/chat/completions"
 
 
-def parse_llm_json_response(raw_text: str) -> dict[str, object]:
+def parse_llm_json_response(raw_text: str | None) -> dict[str, object]:
     """Safely extracts and parses JSON payload from LLM response text."""
+    if not isinstance(raw_text, str):
+        return {}
     text = raw_text.strip()
     if not text:
         return {}
@@ -137,23 +141,33 @@ def parse_llm_json_response(raw_text: str) -> dict[str, object]:
             text = re.sub(r"\s*```$", "", text)
             text = text.strip()
 
-    # Extract outermost JSON object if conversational prose surrounds it
-    if not text.startswith("{"):
-        obj_match = re.search(r"(\{.*\})", text, re.DOTALL)
-        if obj_match:
-            text = obj_match.group(1).strip()
+    start_idx = text.find("{")
+    if start_idx == -1:
+        return {}
 
     try:
-        data = json.loads(text)
-        if isinstance(data, dict):
-            # Normalize common casing/alias variations
-            if "source_url" in data and "sourceUrl" not in data:
-                data["sourceUrl"] = data["source_url"]
-            if "raw_snippet" in data and "rawSnippet" not in data:
-                data["rawSnippet"] = data["raw_snippet"]
-            return data
-    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        data, end_idx = decoder.raw_decode(text, idx=start_idx)
+        if not isinstance(data, dict):
+            return {}
+
+        # Suffix / trailing policy:
+        # Check if trailing text contains another ambiguous JSON object.
+        # Trailing plain prose (like commentary or notes) is accepted;
+        # ambiguous multiple objects (like {"a": 1} {"b": 2}) are rejected to {}.
+        trailing = text[end_idx:].strip()
+        if "{" in trailing:
+            return {}
+
+        # Normalize common casing/alias variations
+        if "source_url" in data and "sourceUrl" not in data:
+            data["sourceUrl"] = data["source_url"]
+        if "raw_snippet" in data and "rawSnippet" not in data:
+            data["rawSnippet"] = data["raw_snippet"]
+        return data
+    except (json.JSONDecodeError, ValueError):
         pass
+
     return {}
 
 
@@ -183,7 +197,7 @@ class LLMDomainRestrictedSearchProvider(BaseNormsSearchProvider):
         self,
         api_key: str | None = None,
         base_url: str | None = None,
-        model: str = "openai/gpt-4o-mini",
+        model: str = "gemini-2.5-flash",
         http_client: httpx.AsyncClient | None = None,
         llm_caller: Callable[[str, str], Awaitable[str]] | None = None,
         dry_run: bool = False,
@@ -333,11 +347,106 @@ class LLMDomainRestrictedSearchProvider(BaseNormsSearchProvider):
                         rawSnippet=resp_text[:300] if resp_text else None,
                     )
 
-                raw_response_text = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
+                # Validate envelope structure according to chat completions schema
+                if not isinstance(data, dict):
+                    logger.warning(
+                        "Provider response envelope is not a dict: %s",
+                        type(data).__name__,
+                    )
+                    return NormLookupResult(
+                        document=None,
+                        clause=None,
+                        value=None,
+                        sourceUrl=None,
+                        checkedAt=now_utc,
+                        status=NormVerificationStatus.needs_verification,
+                        summary=(
+                            "Провайдер норм повернув некоректну структуру відповіді. "
+                            "Потрібна ручна верифікація інженером."
+                        ),
+                        rawSnippet=None,
+                    )
+
+                choices = data.get("choices")
+                if not isinstance(choices, list) or len(choices) == 0:
+                    logger.warning("Provider response missing or empty choices list")
+                    return NormLookupResult(
+                        document=None,
+                        clause=None,
+                        value=None,
+                        sourceUrl=None,
+                        checkedAt=now_utc,
+                        status=NormVerificationStatus.needs_verification,
+                        summary=(
+                            "Провайдер норм повернув порожній список "
+                            "варіантів відповіді. "
+                            "Потрібна ручна верифікація інженером."
+                        ),
+                        rawSnippet=None,
+                    )
+
+                first_choice = choices[0]
+                if not isinstance(first_choice, dict):
+                    logger.warning(
+                        "Provider choices[0] is not a dict: %s",
+                        type(first_choice).__name__,
+                    )
+                    return NormLookupResult(
+                        document=None,
+                        clause=None,
+                        value=None,
+                        sourceUrl=None,
+                        checkedAt=now_utc,
+                        status=NormVerificationStatus.needs_verification,
+                        summary=(
+                            "Провайдер норм повернув некоректний елемент choices. "
+                            "Потрібна ручна верифікація інженером."
+                        ),
+                        rawSnippet=None,
+                    )
+
+                message = first_choice.get("message")
+                if not isinstance(message, dict):
+                    logger.warning(
+                        "Provider message is not a dict: %s",
+                        type(message).__name__,
+                    )
+                    return NormLookupResult(
+                        document=None,
+                        clause=None,
+                        value=None,
+                        sourceUrl=None,
+                        checkedAt=now_utc,
+                        status=NormVerificationStatus.needs_verification,
+                        summary=(
+                            "Провайдер норм повернув некоректне повідомлення. "
+                            "Потрібна ручна верифікація інженером."
+                        ),
+                        rawSnippet=None,
+                    )
+
+                content = message.get("content")
+                if not isinstance(content, str) or not content.strip():
+                    logger.warning(
+                        "Provider message content is not a non-empty string: %s",
+                        type(content).__name__ if content is not None else "null",
+                    )
+                    return NormLookupResult(
+                        document=None,
+                        clause=None,
+                        value=None,
+                        sourceUrl=None,
+                        checkedAt=now_utc,
+                        status=NormVerificationStatus.needs_verification,
+                        summary=(
+                            "Провайдер норм повернув порожній або некоректний "
+                            "вміст відповіді. "
+                            "Потрібна ручна верифікація інженером."
+                        ),
+                        rawSnippet=None,
+                    )
+
+                raw_response_text = content
         except Exception as exc:
             logger.warning("LLM provider execution failed: %s", exc)
             return NormLookupResult(

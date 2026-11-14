@@ -8,6 +8,7 @@ Demonstrates:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import unittest
@@ -24,6 +25,7 @@ API_DIR = Path(__file__).resolve().parent.parent
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
+import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from src.contracts.norms import (  # noqa: E402
@@ -343,14 +345,22 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
         from src.services.norms.provider import normalize_provider_url
 
         self.assertEqual(
-            normalize_provider_url("https://models.github.ai/inference"),
-            "https://models.github.ai/inference/chat/completions",
+            normalize_provider_url(
+                "https://generativelanguage.googleapis.com/v1beta/openai/"
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         )
         self.assertEqual(
             normalize_provider_url(
-                "https://models.github.ai/inference/chat/completions"
+                "https://generativelanguage.googleapis.com/v1beta/openai"
             ),
-            "https://models.github.ai/inference/chat/completions",
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        )
+        self.assertEqual(
+            normalize_provider_url(
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         )
         self.assertEqual(
             normalize_provider_url("https://api.openai.com/v1/"),
@@ -358,7 +368,11 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             normalize_provider_url(""),
-            "https://models.github.ai/inference/chat/completions",
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        )
+        self.assertEqual(
+            normalize_provider_url(None),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         )
 
     # --------------------------------------------------------------------------
@@ -366,8 +380,6 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
     # --------------------------------------------------------------------------
     async def test_non_json_plain_text_response_handled_cleanly(self) -> None:
         """Provider returning text 'OK' must be handled without JSONDecodeError."""
-        import httpx
-
         def plain_text_transport(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 status_code=200,
@@ -387,6 +399,191 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, NormVerificationStatus.needs_verification)
         self.assertNotIn("JSONDecodeError", result.summary)
         self.assertIn("не у форматі JSON", result.summary)
+
+    # --------------------------------------------------------------------------
+    # Regression Test 11: Issue 3 - Suffix-Only Prose & Raw Decode Policies
+    # --------------------------------------------------------------------------
+    def test_parse_llm_json_response_suffix_prose_and_policies(self) -> None:
+        """Reproduces Issue 3: Suffix-only prose, surrounding text, and multi-object."""
+        from src.services.norms.provider import parse_llm_json_response
+
+        # Suffix-only prose (starts with '{' but ends with commentary)
+        suffix_text = '{"summary":"ok"}\nПотрібна ручна перевірка.'
+        res_suffix = parse_llm_json_response(suffix_text)
+        self.assertEqual(res_suffix.get("summary"), "ok")
+
+        # Surrounding prose (both leading and trailing commentary)
+        surrounding_text = (
+            "Ось відповідь експерта:\n"
+            '{"document": "ДБН В.2.5-56:2014", "clause": "1.1"}\n'
+            "Зверніть увагу на виноску."
+        )
+        res_surr = parse_llm_json_response(surrounding_text)
+        self.assertEqual(res_surr.get("document"), "ДБН В.2.5-56:2014")
+        self.assertEqual(res_surr.get("clause"), "1.1")
+
+        # Code fence with trailing commentary
+        fenced_with_trailing = (
+            "```json\n"
+            '{"document": "ДСТУ EN 54", "source_url": "https://zakon.rada.gov.ua"}\n'
+            "```\n"
+            "Додаткова інформація відсутня."
+        )
+        res_fence = parse_llm_json_response(fenced_with_trailing)
+        self.assertEqual(res_fence.get("document"), "ДСТУ EN 54")
+        self.assertEqual(res_fence.get("sourceUrl"), "https://zakon.rada.gov.ua")
+
+        # Ambiguous multiple JSON objects: policy must reject cleanly to {}
+        multi_objects = '{"a": 1} {"b": 2}'
+        self.assertEqual(parse_llm_json_response(multi_objects), {})
+
+        # Non-string / null / empty inputs
+        self.assertEqual(parse_llm_json_response(None), {})  # type: ignore[arg-type]
+        self.assertEqual(parse_llm_json_response(""), {})
+        self.assertEqual(parse_llm_json_response("   "), {})
+
+    # --------------------------------------------------------------------------
+    # Regression Test 12: Issue 2 - Envelope Guard & Message Content Types
+    # --------------------------------------------------------------------------
+    async def test_envelope_guard_and_content_types(self) -> None:
+        """Reproduces Issue 2: content=null, content=[], choices=[], bad envelopes."""
+        cases = [
+            # 1. content is None (e.g. model refusal or empty generation)
+            ({"choices": [{"message": {"content": None}}]}, "null_content"),
+            # 2. content is a list (e.g. multi-modal response parts)
+            ({"choices": [{"message": {"content": []}}]}, "list_content"),
+            # 3. content is empty string
+            ({"choices": [{"message": {"content": ""}}]}, "empty_content"),
+            # 4. choices is empty list
+            ({"choices": []}, "empty_choices"),
+            # 5. envelope is not a dict
+            ([{"choices": []}], "envelope_not_dict"),
+            # 6. choices[0] is not a dict
+            ({"choices": [None]}, "choice_not_dict"),
+            # 7. message is not a dict
+            ({"choices": [{"message": None}]}, "message_not_dict"),
+        ]
+
+        for payload, label in cases:
+            transport = httpx.MockTransport(
+                lambda req, p=payload: httpx.Response(200, json=p)  # type: ignore[misc]
+            )
+            client = httpx.AsyncClient(transport=transport)
+            provider = LLMDomainRestrictedSearchProvider(
+                api_key="mock-key",
+                http_client=client,
+            )
+            result = await provider.lookup(NormLookupRequest(query=f"тест {label}"))
+            self.assertEqual(
+                result.status,
+                NormVerificationStatus.needs_verification,
+                f"Failed for case: {label}",
+            )
+            self.assertIsNone(result.document)
+            self.assertIsNone(result.clause)
+            self.assertNotIn("AttributeError", result.summary)
+            self.assertNotIn("IndexError", result.summary)
+
+    # --------------------------------------------------------------------------
+    # Regression Test 13: Issue 1 - Transport Outgoing Request & Model Assertion
+    # --------------------------------------------------------------------------
+    async def test_transport_outgoing_request_and_model_assertion(self) -> None:
+        """Asserts actual outgoing HTTP URL, Authorization header, and payload model."""
+        recorded_requests: list[httpx.Request] = []
+
+        def recording_transport(req: httpx.Request) -> httpx.Response:
+            recorded_requests.append(req)
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "document": "ДБН В.2.5-56:2014",
+                                        "clause": "6.2.23",
+                                        "value": "85 м²",
+                                        "sourceUrl": "https://dsns.gov.ua/norm",
+                                        "status": "found_in_official_source",
+                                        "summary": "Перевірено.",
+                                        "rawSnippet": "Таблиця А.1 площа 85 м²",
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(recording_transport))
+
+        # 1. Test Default Settings
+        with patch.dict(
+            os.environ,
+            {
+                "SUPABASE_URL": "https://mock.supabase.co",
+                "SUPABASE_SERVICE_ROLE_KEY": "mock-key",
+                "NORMS_SEARCH_API_KEY": "test-gemini-key",
+            },
+            clear=True,
+        ):
+            default_settings = Settings(_env_file=None)
+            provider_default = LLMDomainRestrictedSearchProvider(
+                api_key=default_settings.NORMS_SEARCH_API_KEY,
+                base_url=default_settings.NORMS_SEARCH_PROVIDER_URL,
+                model=default_settings.NORMS_SEARCH_MODEL,
+                http_client=client,
+            )
+            await provider_default.lookup(NormLookupRequest(query="запит 1"))
+            self.assertEqual(len(recorded_requests), 1)
+            req1 = recorded_requests[0]
+            self.assertEqual(
+                str(req1.url),
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            )
+            self.assertEqual(req1.headers["Authorization"], "Bearer test-gemini-key")
+            body1 = json.loads(req1.content.decode("utf-8"))
+            self.assertEqual(body1["model"], "gemini-2.5-flash")
+
+        # 2. Test URL without /chat/completions and trailing slash
+        provider_slash = LLMDomainRestrictedSearchProvider(
+            api_key="test-gemini-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            http_client=client,
+        )
+        await provider_slash.lookup(NormLookupRequest(query="запит 2"))
+        self.assertEqual(len(recorded_requests), 2)
+        req2 = recorded_requests[1]
+        self.assertEqual(
+            str(req2.url),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        )
+
+        # 3. Test Custom Settings
+        custom_settings = Settings(
+            SUPABASE_URL="https://mock.supabase.co",
+            SUPABASE_SERVICE_ROLE_KEY="mock-key",
+            NORMS_SEARCH_API_KEY="custom-api-key",
+            NORMS_SEARCH_PROVIDER_URL="https://custom.provider.ai/v1",
+            NORMS_SEARCH_MODEL="custom-llm-v2",
+        )
+        provider_custom = LLMDomainRestrictedSearchProvider(
+            api_key=custom_settings.NORMS_SEARCH_API_KEY,
+            base_url=custom_settings.NORMS_SEARCH_PROVIDER_URL,
+            model=custom_settings.NORMS_SEARCH_MODEL,
+            http_client=client,
+        )
+        await provider_custom.lookup(NormLookupRequest(query="запит 3"))
+        self.assertEqual(len(recorded_requests), 3)
+        req3 = recorded_requests[2]
+        self.assertEqual(
+            str(req3.url),
+            "https://custom.provider.ai/v1/chat/completions",
+        )
+        self.assertEqual(req3.headers["Authorization"], "Bearer custom-api-key")
+        body3 = json.loads(req3.content.decode("utf-8"))
+        self.assertEqual(body3["model"], "custom-llm-v2")
 
 
 if __name__ == "__main__":

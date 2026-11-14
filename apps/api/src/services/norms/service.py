@@ -219,7 +219,7 @@ def get_norms_service(
     """
     global _norms_service_instance
     effective_settings = settings if settings is not None else get_settings()
-    model = getattr(effective_settings, "NORMS_SEARCH_MODEL", "openai/gpt-4o-mini")
+    model = getattr(effective_settings, "NORMS_SEARCH_MODEL", "gemini-2.5-flash")
 
     if _norms_service_instance is None:
         provider = LLMDomainRestrictedSearchProvider(
