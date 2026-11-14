@@ -443,7 +443,68 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parse_llm_json_response("   "), {})
 
     # --------------------------------------------------------------------------
-    # Regression Test 12: Issue 2 - Envelope Guard & Message Content Types
+    # Regression Test 12: Paired Parity Tests (Plain Text vs Markdown Fences)
+    # --------------------------------------------------------------------------
+    def test_parse_llm_json_response_plain_and_markdown_parity(self) -> None:
+        """Verifies strict behavioral parity between plain text and Markdown fences."""
+        from src.services.norms.provider import parse_llm_json_response
+
+        # 1. Single JSON object
+        plain_single = '{"summary": "ok", "document": "ДБН В.2.5-56:2014"}'
+        fenced_single = (
+            "```json\n"
+            '{"summary": "ok", "document": "ДБН В.2.5-56:2014"}\n'
+            "```"
+        )
+        res_plain = parse_llm_json_response(plain_single)
+        res_fenced = parse_llm_json_response(fenced_single)
+        self.assertEqual(res_plain, res_fenced)
+        self.assertEqual(res_plain.get("document"), "ДБН В.2.5-56:2014")
+
+        # 2. Single JSON object + surrounding prose (prefix & suffix)
+        plain_surrounding = (
+            "Початок аналізу:\n"
+            '{"summary": "ok", "clause": "6.2.23"}\n'
+            "Кінець аналізу."
+        )
+        fenced_surrounding = (
+            "Початок аналізу:\n"
+            "```json\n"
+            '{"summary": "ok", "clause": "6.2.23"}\n'
+            "```\n"
+            "Кінець аналізу."
+        )
+        self.assertEqual(
+            parse_llm_json_response(plain_surrounding),
+            parse_llm_json_response(fenced_surrounding),
+        )
+        self.assertEqual(
+            parse_llm_json_response(fenced_surrounding).get("clause"),
+            "6.2.23",
+        )
+
+        # 3. Multiple JSON objects -> must reject to {} in both representations
+        plain_multi = '{"a": 1} {"b": 2}'
+        fenced_multi = "```json\n{\"a\": 1}\n```\n```json\n{\"b\": 2}\n```"
+        fenced_multi_with_prose = (
+            "Перший блок:\n"
+            "```json\n"
+            '{"a": 1}\n'
+            "```\n"
+            "Другий блок:\n"
+            "```json\n"
+            '{"b": 2}\n'
+            "```"
+        )
+        mixed_multi = '```json\n{"a": 1}\n```\nТакож див {"b": 2}'
+
+        self.assertEqual(parse_llm_json_response(plain_multi), {})
+        self.assertEqual(parse_llm_json_response(fenced_multi), {})
+        self.assertEqual(parse_llm_json_response(fenced_multi_with_prose), {})
+        self.assertEqual(parse_llm_json_response(mixed_multi), {})
+
+    # --------------------------------------------------------------------------
+    # Regression Test 13: Issue 2 - Envelope Guard & Message Content Types
     # --------------------------------------------------------------------------
     async def test_envelope_guard_and_content_types(self) -> None:
         """Reproduces Issue 2: content=null, content=[], choices=[], bad envelopes."""
@@ -485,7 +546,7 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("IndexError", result.summary)
 
     # --------------------------------------------------------------------------
-    # Regression Test 13: Issue 1 - Transport Outgoing Request & Model Assertion
+    # Regression Test 14: Issue 1 - Transport Outgoing Request & Model Assertion
     # --------------------------------------------------------------------------
     async def test_transport_outgoing_request_and_model_assertion(self) -> None:
         """Asserts actual outgoing HTTP URL, Authorization header, and payload model."""

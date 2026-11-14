@@ -131,15 +131,9 @@ def parse_llm_json_response(raw_text: str | None) -> dict[str, object]:
     if not text:
         return {}
 
-    # Strip markdown code fences if present (e.g. ```json ... ```)
+    # Strip markdown code fence markers if present (e.g. ```json ... ``` or ``` ... ```)
     if "```" in text:
-        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
-        else:
-            text = re.sub(r"^```(?:json)?\s*", "", text)
-            text = re.sub(r"\s*```$", "", text)
-            text = text.strip()
+        text = re.sub(r"```[a-zA-Z0-9_-]*", "", text).strip()
 
     start_idx = text.find("{")
     if start_idx == -1:
