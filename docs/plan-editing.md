@@ -1,8 +1,9 @@
 # BIM-164 / BIM-80: editing the plan
 
-Depends on BIM-120 (PR #39). Apply/verify migrations `006_manual_devices.sql`
-and `007_drawing_unit_scale.sql` before deploying the API. This change does not
-apply migrations or modify shared Supabase data.
+Depends on BIM-120 (PR #39, merged into dev). Shared Supabase was verified on
+2026-11-15: migration 006's nullable rule_id was already present; migration 007
+was applied with owner approval and its nullable numeric/positive constraint
+verified. The application does not automatically apply migrations.
 
 The plan and rooms table share the selected room. Select an outline or use the
 room selector, then change its vertices, confirm it, or request deletion.
@@ -34,11 +35,30 @@ issued to a client are not revoked by this marker.
 ## Validation
 
 - API: 191 unittest cases, Ruff and mypy.
-- Web: 307 Vitest cases, including 11 editor scenarios; contracts: 91 cases.
+- Web: 309 Vitest cases, including 11 editor scenarios and two DrawingDetail
+  integration regressions; contracts: 91 cases.
 - Contract generation, lint, TypeScript and production build.
 - Isolated Chromium with the real DXF renderer and an in-memory editing API:
   pointer drag/cancel, device type/add/save/delete, 390px viewport, no runtime
   errors. This is not a live Supabase or hosting acceptance test.
+
+## Entry points while plan editing is blocked
+
+`editor.blocked` includes a draft, pending deletion, saving, and uncertain writes.
+
+| Entry point | Protection |
+| --- | --- |
+| Four tabs and placement banner | Disabled controls plus shared navigation guard |
+| Rooms table return to plan | Same navigation guard |
+| Upload another drawing link | Prevents navigation while blocked |
+| Process/reprocess button and previously opened confirmation | Disabled and handler checks against current editor state |
+| Result download | Disabled and handler guard |
+| File refresh and viewer retry | Shared handler guard |
+| Placement and export recovery | Disabled while blocked |
+
+Integration tests render the real page and editor hooks: banner clicks preserve
+access to save/cancel, and opening reprocess confirmation before drafting cannot
+invoke processDrawing until cancellation. These tests use an in-memory API.
 
 ## Hosted acceptance after database verification and approved merge
 
