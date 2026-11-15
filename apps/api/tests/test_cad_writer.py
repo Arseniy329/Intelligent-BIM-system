@@ -10,7 +10,7 @@ API_DIR = Path(__file__).resolve().parent.parent
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
-from src.modules.cad.writer import add_sensors_to_dxf
+from src.modules.cad.writer import add_devices_to_dxf, add_sensors_to_dxf
 
 
 class TestCadWriter(unittest.TestCase):
@@ -117,6 +117,51 @@ class TestCadWriter(unittest.TestCase):
         msp = out_doc.modelspace()
         inserts = [e for e in msp if e.dxftype() == "INSERT"]
         self.assertEqual(len(inserts), 0)
+
+    def test_add_devices_uses_a_block_per_type(self) -> None:
+        """Each device type gets its own block: shape and label differ."""
+        devices = [
+            (100.0, 100.0, "smoke_detector"),
+            (200.0, 200.0, "heat_detector"),
+            (300.0, 300.0, "manual_call_point"),
+            (400.0, 400.0, "sounder"),
+            (500.0, 500.0, "unknown_type"),
+        ]
+        add_devices_to_dxf(self.input_dxf, self.output_dxf, devices)
+
+        out_doc = ezdxf.readfile(str(self.output_dxf))
+        inserts = [e for e in out_doc.modelspace() if e.dxftype() == "INSERT"]
+        self.assertEqual(
+            [(e.dxf.insert.x, e.dxf.name) for e in inserts],
+            [
+                (100.0, "FIRE_DET_SMOKE"),
+                (200.0, "FIRE_DET_HEAT"),
+                (300.0, "FIRE_MCP"),
+                (400.0, "FIRE_SOUNDER"),
+                (500.0, "FIRE_DET_SMOKE"),
+            ],
+        )
+        self.assertTrue(all(e.dxf.layer == "SYS_FIRE_SENSORS" for e in inserts))
+
+        expected = {
+            "FIRE_DET_SMOKE": ("CIRCLE", "S", 0),
+            "FIRE_DET_HEAT": ("LWPOLYLINE", "H", 3),
+            "FIRE_MCP": ("LWPOLYLINE", "M", 4),
+            "FIRE_SOUNDER": ("LWPOLYLINE", "A", 4),
+        }
+        for block_name, (outline_type, label, vertices) in expected.items():
+            with self.subTest(block=block_name):
+                entities = list(out_doc.blocks.get(block_name))
+                outlines = [e for e in entities if e.dxftype() == outline_type]
+                texts = [e for e in entities if e.dxftype() == "TEXT"]
+                self.assertEqual(len(outlines), 1)
+                self.assertEqual([t.dxf.text for t in texts], [label])
+                self.assertTrue(
+                    all(e.dxf.layer == "SYS_FIRE_SENSORS" for e in entities)
+                )
+                if vertices:
+                    self.assertTrue(outlines[0].closed)
+                    self.assertEqual(len(outlines[0]), vertices)
 
 
 if __name__ == "__main__":

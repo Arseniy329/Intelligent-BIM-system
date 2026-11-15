@@ -15,7 +15,6 @@ from src.contracts.generated import (
     DrawingUnits,
     Point,
     Room,
-    Source,
     Type,
 )
 from src.core.auth import CurrentUser, get_current_user
@@ -23,7 +22,7 @@ from src.core.config import get_settings
 from src.core.exceptions import BIMException
 from src.infrastructure.storage import cleanup_file, download_dxf_to_tmp
 from src.infrastructure.supabase import get_supabase_client
-from src.modules.cad.parser import parse_dxf_rooms
+from src.modules.cad.parser import parse_dxf_rooms_with_scale
 from src.modules.drawings.schemas import (
     CreateDrawingRequest,
     CreateDrawingResponse,
@@ -36,6 +35,7 @@ from src.modules.drawings.service import (
     list_drawings_for_user,
 )
 from src.modules.placement.service import RuleRecord, place_devices_from_rule
+from src.modules.rooms.service import room_from_row, row_points
 
 router = APIRouter(prefix="/drawings", tags=["drawings"])
 settings = get_settings()
@@ -200,7 +200,9 @@ async def process_drawing(
         except (ValueError, TypeError):
             pass
 
-        rooms = parse_dxf_rooms(input_tmp_path, drawing_id=resolved_drawing_id)
+        rooms, unit_scale_m = parse_dxf_rooms_with_scale(
+            input_tmp_path, drawing_id=resolved_drawing_id
+        )
 
         supabase.table("rooms").delete().eq("drawing_id", drawing_id).execute()
 
@@ -222,9 +224,11 @@ async def process_drawing(
         if room_rows:
             supabase.table("rooms").insert(room_rows).execute()
 
-        supabase.table("drawings").update({"status": "processing"}).eq(
-            "id", drawing_id
-        ).execute()
+        # unit_scale_m (migration 007) lets manual room edits compute areas
+        # even after every parsed room has been deleted.
+        supabase.table("drawings").update(
+            {"status": "processing", "unit_scale_m": unit_scale_m}
+        ).eq("id", drawing_id).execute()
 
         return {
             "drawing_id": drawing_id,
@@ -462,50 +466,9 @@ async def get_drawing_detail(
         )
         if isinstance(rooms_res.data, list):
             for r in rooms_res.data:
-                if not isinstance(r, dict):
+                if not isinstance(r, dict) or len(row_points(r)) < 3:
                     continue
-                raw_poly = r.get("polygon")
-                poly_pts: list[Point] = []
-                if isinstance(raw_poly, list):
-                    for pt in raw_poly:
-                        if isinstance(pt, dict) and "x" in pt and "y" in pt:
-                            poly_pts.append(Point(x=float(pt["x"]), y=float(pt["y"])))
-                        elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                            poly_pts.append(Point(x=float(pt[0]), y=float(pt[1])))
-                if len(poly_pts) < 3:
-                    continue
-
-                raw_height = r.get("height")
-                height_val = (
-                    float(raw_height)
-                    if raw_height is not None and float(raw_height) > 0
-                    else None
-                )
-
-                raw_source = r.get("source")
-                source_val: Source | None = None
-                if raw_source in ("auto", "fire_rooms"):
-                    source_val = Source.auto
-                elif raw_source == "manual":
-                    source_val = Source.manual
-                elif raw_source is not None and raw_source in Source._value2member_map_:
-                    source_val = Source(raw_source)
-
-                confirmed_val = bool(r.get("confirmed", False))
-
-                rooms.append(
-                    Room(
-                        id=str(r["id"]),
-                        drawingId=UUID(str(r["drawing_id"])),
-                        name=r.get("name"),
-                        type=r.get("type"),
-                        height=height_val,
-                        area=float(r.get("area") or 0.0),
-                        polygon=poly_pts,
-                        source=source_val,
-                        confirmed=confirmed_val,
-                    )
-                )
+                rooms.append(room_from_row(r))
 
         devices_res = (
             supabase.table("devices").select("*").eq("drawing_id", drawing_id).execute()

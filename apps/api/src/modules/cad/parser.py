@@ -1182,3 +1182,15 @@ def parse_dxf_rooms(
 
 
 parse_dxf = parse_dxf_rooms
+
+
+def read_length_scale(file_path: str | Path) -> float:
+    """Read metres per drawing unit using the same reader as room parsing."""
+    return get_length_scale(read_dxf_document(file_path))
+
+
+def parse_dxf_rooms_with_scale(
+    file_path: str | Path, drawing_id: UUID | None = None,
+) -> tuple[list[Room], float]:
+    """Preserve automatic recognition and return the persisted area scale."""
+    return parse_dxf_rooms(file_path, drawing_id), read_length_scale(file_path)
