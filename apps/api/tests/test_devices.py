@@ -75,6 +75,50 @@ class TestDevicesApi(unittest.TestCase):
     def assert_regenerated_once(self) -> None:
         self.regenerate.assert_called_once_with(self.drawing_id, self.supabase)
 
+    def test_retry_export_does_not_replay_device_change(self) -> None:
+        self.regenerate.side_effect = RuntimeError("storage down")
+        response = self.client.patch(
+            f"/api/v1/devices/{self.device_id}",
+            json={"position": {"x": 42, "y": 24}},
+        )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(self.device_row["x"], 42)
+        self.assertEqual(
+            self.drawing_row["error_message"],
+            "Device changes saved; result DXF needs regeneration",
+        )
+        self.regenerate.side_effect = None
+        response = self.client.post(
+            f"/api/v1/drawings/{self.drawing_id}/devices/regenerate"
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertIsNone(self.drawing_row["error_message"])
+        self.assertEqual(len(self.devices_table.updates), 1)
+        self.assertEqual(len(self.devices_table.rows), 1)
+
+    def test_retry_export_checks_drawing_owner(self) -> None:
+        self.drawing_row["owner_id"] = str(uuid4())
+        response = self.client.post(
+            f"/api/v1/drawings/{self.drawing_id}/devices/regenerate"
+        )
+        self.assertEqual(response.status_code, 403)
+        self.regenerate.assert_not_called()
+
+    def test_stale_export_is_not_offered_by_drawing_detail(self) -> None:
+        self.drawing_row.update({
+            "error_message": "Device changes saved; result DXF needs regeneration",
+            "created_at": "2026-11-15T10:00:00Z",
+            "original_file_name": "source.dxf",
+            "storage_path": "source.dxf",
+        })
+        self.supabase.storage.from_.return_value.create_signed_url.return_value = {
+            "signedUrl": "https://storage.example/source.dxf"
+        }
+        response = self.client.get(f"/api/v1/drawings/{self.drawing_id}")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["downloadUrl"])
+        self.assertEqual(len(response.json()["devices"]), 1)
+
     def assert_nothing_written(self) -> None:
         self.assertEqual(self.devices_table.inserts, [])
         self.assertEqual(self.devices_table.updates, [])

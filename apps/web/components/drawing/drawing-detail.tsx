@@ -12,6 +12,8 @@ import { useDrawingDetail } from "@/lib/drawing/use-drawing-detail";
 import { RoomsTable, RoomEditForm } from "@/components/rooms";
 import { mapContractRoomToRoom, getRoomBlockingReasons, type Room } from "@/types/rooms";
 import { useUpdateRoomMutation } from "@/lib/rooms/rooms-api";
+import { usePlanEditor } from "@/lib/drawing/use-plan-editor";
+import { PlanEditorPanel } from "./plan-editor-panel";
 import { cn } from "@/lib/utils";
 
 export type DrawingTab = "plan" | "rooms" | "rules" | "report";
@@ -72,11 +74,21 @@ function DrawingDetailContent({
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [editingRoom, setEditingRoom] = useState<Room | null>(null);
   const [isEditingRoomDirty, setIsEditingRoomDirty] = useState(false);
+  const loadedResult = state.detail.data && isDrawingResult(state.detail.data) ? state.detail.data : null;
+  const editor = usePlanEditor({ drawingId: id, rooms: loadedResult?.rooms ?? [], devices: loadedResult?.devices ?? [], selectRoom: setSelectedRoomId,
+    refresh: async () => {
+      const updated = await state.detail.refetch({ cancelRefetch: false });
+      if (updated.isError) throw updated.error;
+    },
+  });
   const [viewerAttempt, setViewerAttempt] = useState(0);
   const [confirmReprocess, setConfirmReprocess] = useState(false);
+  const navigateTab = (tab: DrawingTab) => {
+    if (!editor.blocked) setActiveTab(tab);
+  };
   const refreshFileLock = useRef(false);
   const refreshFile = async () => {
-    if (refreshFileLock.current) return;
+    if (refreshFileLock.current || editor.blocked || state.busy) return;
     refreshFileLock.current = true;
     try {
       const refreshed = await state.detail.refetch({ cancelRefetch: false });
@@ -107,7 +119,7 @@ function DrawingDetailContent({
     onSettled: () => { downloadLock.current = false; },
   });
   const startDownload = (kind: DownloadKind) => {
-    if (downloadLock.current) return;
+    if (downloadLock.current || kind === "result" && editor.blocked) return;
     downloadLock.current = true;
     download.mutate(kind);
   };
@@ -136,6 +148,7 @@ function DrawingDetailContent({
     result?.rooms?.map((r, i) => mapContractRoomToRoom(r, i)) ?? [];
   const roomBlockingReasons = getRoomBlockingReasons(mappedRooms);
   const editBlockingReasons: string[] = [];
+  if (editor.blocked) editBlockingReasons.push("Збережіть або скасуйте зміни плану перед розміщенням");
   if (updateRoomMutation.isPending) {
     editBlockingReasons.push("Триває збереження даних...");
   } else if (isEditingRoomDirty) {
@@ -148,7 +161,8 @@ function DrawingDetailContent({
 
   return (
     <div className="min-w-0 space-y-5">
-      <Link className={button} href="/upload">Завантажити інше креслення</Link>
+      <Link className={button} href="/upload" aria-disabled={editor.blocked || undefined}
+        onClick={event => { if (editor.blocked) event.preventDefault(); }}>Завантажити інше креслення</Link>
       {demo && <p role="status" className="rounded-lg border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-subtle)] p-3">Демонстраційний режим. Локальний тестовий DXF та ілюстративні дані; реальна обробка не виконується.</p>}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 space-y-2">
@@ -157,7 +171,10 @@ function DrawingDetailContent({
           <p className="text-sm text-[var(--bim-color-text-secondary)]">Одиниці: {!units || units === "from_file" ? "очікується визначення з файла" : units === "mm" ? "міліметри" : "метри"}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button className={primaryButton} onClick={() => reprocessing ? setConfirmReprocess(true) : state.start()} disabled={state.busy || state.detail.isFetching || metadata.status === "pending"}>
+          <button className={primaryButton} onClick={() => {
+            if (state.busy || editor.blocked || state.detail.isFetching) return;
+            if (reprocessing) setConfirmReprocess(true); else state.start();
+          }} disabled={state.busy || editor.blocked || state.detail.isFetching || metadata.status === "pending"}>
             {state.process.isPending ? "Пошук приміщень…" : state.busy ? "Обробка…" : reprocessing ? "Обробити повторно" : "Обробити"}
           </button>
           {api.placeDrawing && (
@@ -185,18 +202,25 @@ function DrawingDetailContent({
             onClick={() => startDownload("source")}>
             {download.isPending ? "Завантаження DXF…" : "Завантажити оригінальний DXF"}
           </button>}
-          <button className={button} disabled={download.isPending || !resultDownloadAvailable || state.busy}
+          <button className={button} disabled={download.isPending || !resultDownloadAvailable || state.busy || editor.blocked}
             aria-describedby={!resultDownloadAvailable ? "result-download-help" : undefined}
             onClick={() => startDownload("result")}>
             {download.isPending && isDrawingResult(data) ? "Завантаження DXF…" : "Завантажити DXF результату"}
           </button>
-          <button className={button} disabled={state.detail.isFetching || state.busy} onClick={() => void state.refresh()}>Оновити стан</button>
+          <button className={button} disabled={state.detail.isFetching || state.busy || editor.blocked} onClick={() => void state.refresh()}>Оновити стан</button>
         </div>
       </div>
       {!resultDownloadAvailable && <p id="result-download-help" className="text-sm text-[var(--bim-color-text-secondary)]">DXF результату недоступний: сервер ще не надав посилання на оброблений файл. Оригінальний DXF є окремим файлом.</p>}
+      {result?.drawing.errorMessage === "Device changes saved; result DXF needs regeneration" && <div role="alert" className={errorMessage}>
+        <p>Зміни приладів збережено, але DXF ще не оновлено. Відновіть експорт без повторного додавання приладів.</p>
+        <button className={button} disabled={editor.blocked || state.busy} onClick={editor.regenerate}>Відновити DXF</button>
+      </div>}
       {confirmReprocess && <div role="group" aria-label="Повторна обробка" className="space-y-3 rounded-lg border p-3">
         <p>Повторна обробка перезапише приміщення цього креслення. Продовжити?</p>
-        <button className={button} disabled={state.busy} onClick={() => { setConfirmReprocess(false); state.start(); }}>Підтвердити повторну обробку</button>{" "}
+        <button className={button} disabled={state.busy || editor.blocked || state.detail.isFetching} onClick={() => {
+          if (state.busy || editor.blocked || state.detail.isFetching) return;
+          setConfirmReprocess(false); state.start();
+        }}>Підтвердити повторну обробку</button>{" "}
         <button className={button} onClick={() => setConfirmReprocess(false)}>Скасувати</button>
       </div>}
       {error && <p role="alert" className={errorMessage}>{drawingErrorMessage(error)}</p>}
@@ -212,10 +236,11 @@ function DrawingDetailContent({
         className="flex border-b border-[var(--bim-color-border-default)] gap-1 pt-2"
       >
         <button
+          disabled={editor.blocked}
           role="tab"
           type="button"
           aria-selected={activeTab === "plan"}
-          onClick={() => setActiveTab("plan")}
+          onClick={() => navigateTab("plan")}
           className={cn(
             "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors cursor-pointer",
             activeTab === "plan"
@@ -226,10 +251,11 @@ function DrawingDetailContent({
           План
         </button>
         <button
+          disabled={editor.blocked}
           role="tab"
           type="button"
           aria-selected={activeTab === "rooms"}
-          onClick={() => setActiveTab("rooms")}
+          onClick={() => navigateTab("rooms")}
           className={cn(
             "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5 cursor-pointer",
             activeTab === "rooms"
@@ -245,10 +271,11 @@ function DrawingDetailContent({
           )}
         </button>
         <button
+          disabled={editor.blocked}
           role="tab"
           type="button"
           aria-selected={activeTab === "rules"}
-          onClick={() => setActiveTab("rules")}
+          onClick={() => navigateTab("rules")}
           className={cn(
             "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors cursor-pointer",
             activeTab === "rules"
@@ -259,10 +286,11 @@ function DrawingDetailContent({
           Правила й норми
         </button>
         <button
+          disabled={editor.blocked}
           role="tab"
           type="button"
           aria-selected={activeTab === "report"}
-          onClick={() => setActiveTab("report")}
+          onClick={() => navigateTab("report")}
           className={cn(
             "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors cursor-pointer",
             activeTab === "report"
@@ -295,18 +323,21 @@ function DrawingDetailContent({
               </div>
               <button
                 type="button"
-                onClick={() => setActiveTab("rooms")}
+                disabled={editor.blocked}
+                onClick={() => navigateTab("rooms")}
                 className="shrink-0 text-xs font-semibold text-amber-900 underline hover:text-amber-950 cursor-pointer"
               >
                 Перейти до приміщень →
               </button>
             </div>
           )}
+          {result && !demo && <PlanEditorPanel editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
+            selectRoom={setSelectedRoomId} devicesEditable={metadata.status === "processed"} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching} />}
           <section aria-label="План креслення" className="min-w-0 space-y-3">
             <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
-              selectedRoomId={selectedRoomId}
+              selectedRoomId={selectedRoomId} editor={demo ? undefined : editor} onSelectRoom={setSelectedRoomId} onSelectDevice={editor.selectDevice}
               onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
-            <button className={button} disabled={state.detail.isFetching || state.busy} onClick={refreshFile}>Оновити файл</button>
+            <button className={button} disabled={state.detail.isFetching || state.busy || editor.blocked} onClick={refreshFile}>Оновити файл</button>
           </section>
           {result ? <section aria-label="Результат обробки" className="space-y-3 rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-4 sm:p-6">
             <h2 className="text-xl font-semibold">Результат обробки</h2>
@@ -368,8 +399,9 @@ function DrawingDetailContent({
               selectedRoomId={selectedRoomId}
               onSelectRoom={(room) => setSelectedRoomId(room.id ?? null)}
               onNavigateToPlan={(room) => {
+                if (editor.blocked) return;
                 setSelectedRoomId(room.id ?? null);
-                setActiveTab("plan");
+                navigateTab("plan");
               }}
               onEditRoom={(room) => setEditingRoom(room)}
               onConfirmRoom={async (room) => {
