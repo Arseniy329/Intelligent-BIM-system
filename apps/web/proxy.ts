@@ -6,6 +6,7 @@ export async function proxy(request: NextRequest) {
   if (process.env.NODE_ENV === "development" && request.nextUrl.pathname === "/drawing-preview") {
     return NextResponse.next();
   }
+
   return updateSession(request);
 }
 
