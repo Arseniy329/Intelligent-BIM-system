@@ -2,17 +2,17 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useErrorToast } from "@/components/ui/error-toast-provider";
 import { createClient } from "@/lib/supabase/client";
 
 export function LogoutButton() {
   const router = useRouter();
+  const { showErrorToast } = useErrorToast();
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState("");
 
   async function handleSignOut() {
     if (isLoading) return;
 
-    setError("");
     setIsLoading(true);
 
     try {
@@ -20,7 +20,7 @@ export function LogoutButton() {
       const { error: signOutError } = await supabase.auth.signOut();
 
       if (signOutError) {
-        setError("Не вдалося вийти з облікового запису. Спробуйте ще раз.");
+        showErrorToast("Не вдалося вийти з облікового запису. Спробуйте ще раз.");
         setIsLoading(false);
         return;
       }
@@ -28,7 +28,7 @@ export function LogoutButton() {
       router.replace("/login");
       router.refresh();
     } catch {
-      setError("Не вдалося вийти з облікового запису. Перевірте з’єднання та спробуйте ще раз.");
+      showErrorToast("Не вдалося вийти з облікового запису. Перевірте з’єднання та спробуйте ще раз.");
       setIsLoading(false);
     }
   }
@@ -43,14 +43,6 @@ export function LogoutButton() {
       >
         {isLoading ? "Виходимо…" : "Вийти"}
       </button>
-      {error && (
-        <p
-          role="alert"
-          className="max-w-xs rounded-lg border border-[var(--bim-color-semantic-error-border)] bg-[var(--bim-color-semantic-error-bg)] p-2 text-sm text-[var(--bim-color-semantic-error)]"
-        >
-          {error}
-        </p>
-      )}
     </div>
   );
 }

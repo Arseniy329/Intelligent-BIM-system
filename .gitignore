@@ -37,6 +37,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
+.venv*/
 venv/
 .pytest_cache/
 .mypy_cache/
@@ -142,3 +143,4 @@ $RECYCLE.BIN/
 *.sublime-workspace
 *.sublime-project
 .zed/
+.zcode/

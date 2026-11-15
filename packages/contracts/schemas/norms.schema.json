@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bim.local/schemas/norms.schema.json",
+  "title": "BimNormsContracts",
+  "description": "Спільні контракти сервісу пошуку пожежних норм України (BIM-163)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "normVerificationStatus": {
+      "$ref": "#/$defs/NormVerificationStatus"
+    },
+    "normLookupRequest": {
+      "$ref": "#/$defs/NormLookupRequest"
+    },
+    "normLookupResult": {
+      "$ref": "#/$defs/NormLookupResult"
+    }
+  },
+  "$defs": {
+    "NormVerificationStatus": {
+      "type": "string",
+      "enum": [
+        "found_in_official_source",
+        "needs_verification"
+      ],
+      "description": "Статус верифікації норми за офіційними джерелами України"
+    },
+    "NormLookupContext": {
+      "title": "NormLookupContext",
+      "type": "object",
+      "description": "Контекст запиту для пошуку норм (геометрія приміщення, тип сповіщувача тощо)",
+      "properties": {
+        "roomHeight": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Висота приміщення в метрах"
+        },
+        "roomArea": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Площа приміщення в кв. метрах"
+        },
+        "detectorType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Тип сповіщувача"
+        },
+        "roomType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Призначення приміщення"
+        },
+        "buildingType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Тип будівлі"
+        }
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "NormLookupRequest": {
+      "title": "NormLookupRequest",
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Пошуковий запит користувача українською мовою"
+        },
+        "context": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/NormLookupContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Опціональний контекст запиту"
+        }
+      }
+    },
+    "NormLookupResult": {
+      "title": "NormLookupResult",
+      "type": "object",
+      "required": [
+        "document",
+        "clause",
+        "value",
+        "sourceUrl",
+        "checkedAt",
+        "status",
+        "summary"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "document": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Офіційна назва/шифр нормативного документа (наприклад, ДБН В.2.5-56:2014)"
+        },
+        "clause": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Пункт, таблиця або розділ норми (наприклад, Таблиця А.1, пункт 6.2.23)"
+        },
+        "value": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Нормативне значення (наприклад, до 85 м²)"
+        },
+        "sourceUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri",
+          "description": "Офіційне URL-посилання, де розміщено текст норми"
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Час перевірки норми за стандартом ISO 8601"
+        },
+        "status": {
+          "$ref": "#/$defs/NormVerificationStatus"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Коротке та чітке роз'яснення вимоги норми українською мовою"
+        },
+        "rawSnippet": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Точна цитата з офіційного тексту норми"
+        }
+      }
+    }
+  }
+}

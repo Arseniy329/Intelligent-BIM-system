@@ -33,6 +33,18 @@ function validateDefinition(definition: string, value: unknown) {
 }
 
 describe("JSON contract examples", () => {
+  it("supports room results before placement with a separate expiring source link", () => {
+    const result = readExample("drawing-result.json");
+    result.drawing.status = "processing";
+    result.devices = [];
+    result.downloadUrl = null;
+    result.downloadUrlExpiresAt = null;
+    result.sourceDownloadUrl = "https://example.invalid/source.dxf";
+    result.sourceDownloadUrlExpiresAt = "2099-01-01T00:00:00Z";
+    expect(validateDefinition("DrawingResult", result)).toBe(true);
+    delete result.sourceDownloadUrlExpiresAt;
+    expect(validateDefinition("DrawingResult", result)).toBe(false);
+  });
   it.each([
     ["create-drawing-request.json", "CreateDrawingRequest"],
     ["create-drawing-response.json", "CreateDrawingResponse"],
@@ -61,5 +73,42 @@ describe("JSON contract examples", () => {
     result.rooms[0].polygon.push(result.rooms[0].polygon[0]);
 
     expect(validateDefinition("DrawingResult", result)).toBe(false);
+  });
+});
+
+const normsSchema = JSON.parse(
+  readFileSync(path.join(packageRoot, "schemas", "norms.schema.json"), "utf8"),
+);
+const normsAjv = new Ajv2020({ allErrors: true, strict: true });
+normsAjv.addFormat("date-time", (value) => !Number.isNaN(Date.parse(value)));
+normsAjv.addFormat("uri", (value) => {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+});
+normsAjv.addSchema(normsSchema);
+
+function validateNormsDefinition(definition: string, value: unknown) {
+  const validate = normsAjv.getSchema(`${normsSchema.$id}#/$defs/${definition}`);
+  expect(validate, `missing schema ${definition}`).toBeTypeOf("function");
+  return validate?.(value) ?? false;
+}
+
+describe("Norms JSON schema examples (BIM-163)", () => {
+  it.each([
+    ["norm-lookup-request.json", "NormLookupRequest"],
+    ["norm-lookup-result.json", "NormLookupResult"],
+    ["norm-lookup-unverified-result.json", "NormLookupResult"],
+  ])("validates %s against norms.schema.json", (fileName, definition) => {
+    expect(validateNormsDefinition(definition, readExample(fileName))).toBe(true);
+  });
+
+  it("rejects unverified result if status is invalid", () => {
+    const result = readExample("norm-lookup-unverified-result.json");
+    result.status = "invalid_status";
+    expect(validateNormsDefinition("NormLookupResult", result)).toBe(false);
   });
 });
