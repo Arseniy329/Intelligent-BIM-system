@@ -59,9 +59,9 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_QzDEiRpdtdNWmx-ASHI-QA_3CQiU3zB
 
    ```bash
    supabase db push
-=======
+   ```
 
-## BIM-62 → BIM-63
+## BIM-62 → BIM-63 / Sprint 3
 
 Після upload сторінка `/drawings/[id]` отримує метадані через
 `GET /api/v1/drawings/{id}`, відкриває оригінальний DXF у DrawingViewer
@@ -69,10 +69,10 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_QzDEiRpdtdNWmx-ASHI-QA_3CQiU3zB
 `NEXT_PUBLIC_API_URL` задає адресу API-сервера. Спільний клієнт використовує
 префікс `/api/v1` рівно один раз, зокрема для конфігурації, що вже містить цей префікс.
 
-`POST /api/v1/drawings/{id}/process` наразі повертає HTTP 200 `accepted`:
-це заглушка, яка не запускає обробку. Jobs endpoint, результат із приміщеннями
-та пристроями й URL згенерованого DXF ще не підключені до цього потоку.
-Клієнт пояснює обмеження, не запускає polling і не підміняє результат оригіналом.
+`POST /api/v1/drawings/{id}/process` запускає повний пайплайн обробки креслення:
+парсинг DXF (шар `FIRE_ROOMS` або геометрія приміщень), визначення масштабу одиниць (`unit_scale_m`),
+автоматичне розміщення сповіщувачів за нормами ДСТУ EN 54-14, збереження приміщень (`rooms`) і приладів (`devices`)
+у базі даних та генерацію результуючого DXF-файлу з блоками приладів, доступного для перегляду й завантаження.
 
 Деморежим, межі перевірки та інструкції тестів описані в
 [README DrawingViewer/BIM-63](apps/web/components/drawing/README.md#bim-63--інтеграція-bim-47bim-62-29102026).
