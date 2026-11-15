@@ -30,6 +30,8 @@ const overlayTheme = {
 } as CSSProperties;
 
 type Props = {
+  onSelectRoom?: (id: string) => void;
+  onSelectDevice?: (id: string) => void;
   controller: DrawingViewportController;
   rooms?: Room[];
   devices?: Device[];
@@ -46,7 +48,7 @@ export function DrawingOverlay({
   showRooms,
   showDevices,
   showRoomLabels = true,
-  selectedRoomId,
+  selectedRoomId, onSelectRoom, onSelectDevice,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const tooltipId = useId();
@@ -115,6 +117,14 @@ export function DrawingOverlay({
           return (
             <polygon
               key={room.id}
+              data-confirmed={room.confirmed ? "true" : "false"}
+              data-source={room.source}
+              style={{ pointerEvents: onSelectRoom ? "all" : undefined, cursor: onSelectRoom ? "pointer" : undefined }}
+              role={onSelectRoom ? "button" : undefined}
+              tabIndex={onSelectRoom ? 0 : undefined}
+              aria-label={onSelectRoom ? `Вибрати: ${room.name || "Без назви"}` : undefined}
+              onClick={() => onSelectRoom?.(room.id)}
+              onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelectRoom?.(room.id); } }}
               data-room-id={room.id}
               data-selected={isSelected ? "true" : undefined}
               className={isSelected ? styles.roomPolygonSelected : undefined}
@@ -137,6 +147,7 @@ export function DrawingOverlay({
         <button key={device.id} type="button" className={styles.deviceMarker} data-device-id={device.id}
           style={{ left: point.x, top: point.y }} aria-label={`${DEVICE_LABELS[device.type]} · ${roomName(device)}`}
           aria-describedby={active?.device.id === device.id ? tooltipId : undefined}
+          onClick={() => onSelectDevice?.(device.id)}
           onPointerEnter={() => { setHovered(device.id); setDismissed(null); }}
           onPointerLeave={() => setHovered(null)}
           onFocus={() => { setFocused(device.id); setDismissed(null); }}

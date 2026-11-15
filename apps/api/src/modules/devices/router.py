@@ -25,6 +25,7 @@ router = APIRouter(tags=["devices"])
 
 DEVICE_LAYER = "SYS_FIRE_SENSORS"
 EDITABLE_DRAWING_STATUS = "processed"
+DXF_STALE_MESSAGE = "Device changes saved; result DXF needs regeneration"
 
 
 def device_from_row(row: dict[str, Any]) -> Device:
@@ -94,13 +95,32 @@ def _check_room_in_drawing(
 
 
 def _regenerate_result(supabase: Client, drawing_id: str) -> None:
+    # Never advertise the old export while generating the updated one.
+    supabase.table("drawings").update({"error_message": DXF_STALE_MESSAGE}).eq(
+        "id", drawing_id
+    ).execute()
     try:
         generate_and_upload_result_dxf(drawing_id, supabase)
+        supabase.table("drawings").update({"error_message": None}).eq(
+            "id", drawing_id
+        ).execute()
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Device change saved, but result DXF regeneration failed",
         ) from exc
+
+
+@router.post("/drawings/{drawing_id}/devices/regenerate", status_code=204)
+async def regenerate_device_result(
+    drawing_id: UUID,
+    supabase: Annotated[Client, Depends(get_supabase_client)],
+    current_user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """Retry export without replaying an already committed device mutation."""
+    _get_editable_drawing(supabase, drawing_id, current_user)
+    _regenerate_result(supabase, str(drawing_id))
+    return Response(status_code=204)
 
 
 @router.post(

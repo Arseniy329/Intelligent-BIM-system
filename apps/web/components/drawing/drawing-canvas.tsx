@@ -5,6 +5,7 @@ import { createDrawingViewerAdapter, type DrawingViewerAdapter } from "@/lib/dra
 import { LOAD_PHASE_LABELS, logDrawingLoadTimings, measureDrawingLoad, type DrawingLoadTimings } from "@/lib/drawing/load-timings";
 import type { DrawingViewerProps } from "./drawing-viewer";
 import { DrawingToolbar } from "./drawing-toolbar";
+import { PlanEditOverlay } from "./plan-edit-overlay";
 import { DrawingOverlay } from "./drawing-overlay";
 import styles from "./drawing-viewer.module.css";
 
@@ -15,7 +16,7 @@ type LoadState =
 
 export default function DrawingCanvas({
   url, onReady, onRetry, retryPending = false, rooms, devices, initialRoomLabelsVisible = true,
-  selectedRoomId,
+  selectedRoomId, editor, onSelectRoom, onSelectDevice,
 }: DrawingViewerProps & { onRetry: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const adapterRef = useRef<DrawingViewerAdapter | null>(null);
@@ -99,10 +100,13 @@ export default function DrawingCanvas({
       <div className={styles.stage} aria-busy={state.status === "loading"}>
         <div ref={hostRef} className={styles.canvas} aria-label="Полотно DXF" />
         {state.status === "ready" && (rooms?.length || devices?.length) ? (
-          <DrawingOverlay controller={state.controller} rooms={rooms} devices={devices}
+          <DrawingOverlay controller={state.controller}
+            rooms={rooms?.filter(room => editor?.draft?.kind !== "room" || editor.draft.id !== room.id)}
+            devices={devices?.filter(device => editor?.draft?.kind !== "device" || editor.draft.id !== device.id)}
             showRooms={showRooms} showDevices={showDevices} showRoomLabels={showRoomLabels}
-            selectedRoomId={selectedRoomId} />
+            selectedRoomId={selectedRoomId} onSelectRoom={editor?.blocked ? undefined : onSelectRoom} onSelectDevice={editor?.blocked ? undefined : onSelectDevice} />
         ) : null}
+        {state.status === "ready" && editor?.draft && <PlanEditOverlay controller={state.controller} editor={editor} />}
         {state.status === "loading" && (
           <div className={styles.message} role="status">Завантаження креслення…</div>
         )}

@@ -513,7 +513,9 @@ async def get_drawing_detail(
                     )
                 )
 
-        if status_raw == "processed":
+        if status_raw == "processed" and drawing_data.get("error_message") != (
+            "Device changes saved; result DXF needs regeneration"
+        ):
             expires_in = 3600
             now = datetime.now(UTC)
             result_path = f"{drawing.ownerId}/{drawing.id}/result.dxf"
