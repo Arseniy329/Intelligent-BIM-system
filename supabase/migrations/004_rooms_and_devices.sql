@@ -79,7 +79,8 @@ alter table public.rooms enable row level security;
 alter table public.devices enable row level security;
 
 -- 4) policies for rooms
-create policy if not exists "rooms_select_own_or_admin"
+drop policy if exists "rooms_select_own_or_admin" on public.rooms;
+create policy "rooms_select_own_or_admin"
 on public.rooms
 for select
 using (
@@ -99,7 +100,8 @@ using (
   )
 );
 
-create policy if not exists "rooms_insert_own_or_admin"
+drop policy if exists "rooms_insert_own_or_admin" on public.rooms;
+create policy "rooms_insert_own_or_admin"
 on public.rooms
 for insert
 with check (
@@ -119,7 +121,8 @@ with check (
   )
 );
 
-create policy if not exists "rooms_update_own_or_admin"
+drop policy if exists "rooms_update_own_or_admin" on public.rooms;
+create policy "rooms_update_own_or_admin"
 on public.rooms
 for update
 using (
@@ -155,7 +158,8 @@ with check (
   )
 );
 
-create policy if not exists "rooms_delete_own_or_admin"
+drop policy if exists "rooms_delete_own_or_admin" on public.rooms;
+create policy "rooms_delete_own_or_admin"
 on public.rooms
 for delete
 using (
@@ -176,7 +180,8 @@ using (
 );
 
 -- 5) policies for devices
-create policy if not exists "devices_select_own_or_admin"
+drop policy if exists "devices_select_own_or_admin" on public.devices;
+create policy "devices_select_own_or_admin"
 on public.devices
 for select
 using (
@@ -196,7 +201,8 @@ using (
   )
 );
 
-create policy if not exists "devices_insert_own_or_admin"
+drop policy if exists "devices_insert_own_or_admin" on public.devices;
+create policy "devices_insert_own_or_admin"
 on public.devices
 for insert
 with check (
@@ -216,7 +222,8 @@ with check (
   )
 );
 
-create policy if not exists "devices_update_own_or_admin"
+drop policy if exists "devices_update_own_or_admin" on public.devices;
+create policy "devices_update_own_or_admin"
 on public.devices
 for update
 using (
@@ -252,7 +259,8 @@ with check (
   )
 );
 
-create policy if not exists "devices_delete_own_or_admin"
+drop policy if exists "devices_delete_own_or_admin" on public.devices;
+create policy "devices_delete_own_or_admin"
 on public.devices
 for delete
 using (

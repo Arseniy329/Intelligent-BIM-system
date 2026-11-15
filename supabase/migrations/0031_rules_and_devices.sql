@@ -12,6 +12,14 @@ create table if not exists public.rules (
   updated_at timestamptz not null default now()
 );
 
+alter table public.rules
+  add column if not exists document text,
+  add column if not exists clause text,
+  add column if not exists conditions jsonb not null default '{}',
+  add column if not exists threshold numeric default 9 check (threshold > 0),
+  add column if not exists status text not null default 'needs_review',
+  add column if not exists updated_at timestamptz not null default now();
+
 create table if not exists public.devices (
   id uuid primary key default uuid_generate_v4(),
   rule_id uuid not null references public.rules(id) on delete cascade,
