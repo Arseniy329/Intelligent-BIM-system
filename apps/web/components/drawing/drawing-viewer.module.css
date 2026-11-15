@@ -50,6 +50,14 @@
   stroke-width: var(--room-stroke-width);
   stroke-dasharray: 4 4;
 }
+.roomPolygons polygon[data-selected="true"],
+.roomPolygonSelected {
+  stroke: var(--viewer-focus, #3b82f6) !important;
+  stroke-width: calc(var(--room-stroke-width, 1.5px) * 2.5) !important;
+  stroke-dasharray: none !important;
+  fill: var(--viewer-focus, #3b82f6) !important;
+  fill-opacity: 0.28 !important;
+}
 .roomLabel {
   position: absolute;
   box-sizing: border-box;

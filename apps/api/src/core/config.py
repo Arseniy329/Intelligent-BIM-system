@@ -23,7 +23,10 @@ class Settings(BaseSettings):
 
     # Norms Search Agent Settings (BIM-163)
     NORMS_SEARCH_API_KEY: str | None = None
-    NORMS_SEARCH_PROVIDER_URL: str | None = None
+    NORMS_SEARCH_PROVIDER_URL: str | None = (
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    )
+    NORMS_SEARCH_MODEL: str = "gemini-2.5-flash"
     NORMS_CACHE_TTL_SECONDS: int = 3600
 
     model_config = SettingsConfigDict(

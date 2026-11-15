@@ -13,6 +13,7 @@ export type DrawingViewerProps = {
   fileName?: string;
   rooms?: Room[];
   devices?: Device[];
+  selectedRoomId?: string | null;
   /** Disable initially for plans with their own room annotations; the toolbar can restore them. */
   initialRoomLabelsVisible?: boolean;
   onReady?: (controller: DrawingViewportController | null) => void;

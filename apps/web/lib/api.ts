@@ -64,7 +64,13 @@ export interface NormalizedCreateDrawingResponse {
 }
 
 function getApiBaseUrl(): URL {
-  const configuredUrl = process.env.NEXT_PUBLIC_API_URL;
+  let configuredUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
+
+  // Resilient fallback for local development: if NEXT_PUBLIC_API_URL is not set,
+  // default to http://localhost:8000 when running in development mode.
+  if (!configuredUrl && process.env.NODE_ENV === "development") {
+    configuredUrl = "http://localhost:8000";
+  }
 
   if (!configuredUrl) {
     throw new ApiConfigurationError();

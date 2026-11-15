@@ -8,6 +8,7 @@ import { isFinitePoint, observeOverlayViewport, projectDevice, projectRoom, room
 import { DEMO_DXF, DEMO_RESULT } from "@/lib/drawing/demo-drawing";
 import { DEVICE_LABELS, DeviceSymbol } from "@/components/drawing/device-symbol";
 import { DrawingToolbar } from "@/components/drawing/drawing-toolbar";
+import { DrawingOverlay } from "@/components/drawing/drawing-overlay";
 
 function makeController() {
   const view = { x: 1000, y: -2000, scale: 0.1, width: 800, height: 600 };
@@ -163,5 +164,21 @@ describe("BIM-60 overlay", () => {
     const labels = renderToStaticMarkup(<DrawingToolbar {...base} roomsLayer={{ visible: true, toggle: vi.fn() }} roomLabels={{ visible: false, toggle: vi.fn() }} />);
     expect(labels).toContain('aria-pressed="false"');
     expect(labels).toContain('Підписи</button>');
+  });
+
+  it("applies data-selected and highlight attributes to the polygon matching selectedRoomId (Issue 2 Regression)", () => {
+    const { controller } = makeController();
+    const room = DEMO_RESULT.rooms[0];
+    const markup = renderToStaticMarkup(
+      <DrawingOverlay
+        controller={controller}
+        rooms={DEMO_RESULT.rooms}
+        devices={[]}
+        showRooms={true}
+        showDevices={false}
+        selectedRoomId={room.id}
+      />
+    );
+    expect(markup).toContain(`data-room-id="${room.id}" data-selected="true"`);
   });
 });

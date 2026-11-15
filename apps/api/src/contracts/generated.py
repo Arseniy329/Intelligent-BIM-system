@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import Enum, StrEnum
 from uuid import UUID
 
 from pydantic import (
@@ -72,7 +72,7 @@ class Drawing(BaseModel):
     createdAt: AwareDatetime
 
 
-class Source(Enum):
+class Source(StrEnum):
     auto = "auto"
     fire_rooms = "fire_rooms"
     manual = "manual"
@@ -138,6 +138,7 @@ class RoomUpdateRequest(BaseModel):
     )
     type: constr(min_length=1) | None = None
     height: confloat(le=100.0, gt=0.0) | None = None
+    is_confirmed: bool | None = None
     polygon: RoomPolygon | None = None
     confirmed: bool | None = None
 

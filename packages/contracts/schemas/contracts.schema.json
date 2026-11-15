@@ -326,6 +326,10 @@
         },
         "confirmed": {
           "type": "boolean"
+        },
+        "is_confirmed": {
+          "type": "boolean",
+          "description": "Аліас для confirmed"
         }
       }
     },
@@ -511,8 +515,12 @@
         "devices"
       ],
       "dependentRequired": {
-        "sourceDownloadUrl": ["sourceDownloadUrlExpiresAt"],
-        "sourceDownloadUrlExpiresAt": ["sourceDownloadUrl"],
+        "sourceDownloadUrl": [
+          "sourceDownloadUrlExpiresAt"
+        ],
+        "sourceDownloadUrlExpiresAt": [
+          "sourceDownloadUrl"
+        ],
         "downloadUrl": [
           "downloadUrlExpiresAt"
         ],
@@ -522,12 +530,18 @@
       },
       "properties": {
         "sourceDownloadUrl": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "uri",
           "description": "Тимчасове посилання на оригінальний DXF для підкладки оверлею"
         },
         "sourceDownloadUrlExpiresAt": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "date-time",
           "description": "Час завершення дії sourceDownloadUrl"
         },

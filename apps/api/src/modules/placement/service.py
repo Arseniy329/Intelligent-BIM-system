@@ -183,16 +183,18 @@ def place_devices_from_rule(
                 )
 
     if not devices:
-        centroid = polygon.centroid
+        fallback_point = polygon.representative_point()
+        if not (polygon.contains(fallback_point) or polygon.covers(fallback_point)):
+            raise ValueError("Unable to place fallback device inside room polygon")
         devices.append(
             DevicePlacement(
-                x=float(centroid.x),
-                y=float(centroid.y),
+                x=float(fallback_point.x),
+                y=float(fallback_point.y),
                 rule_id=rule.id,
             )
         )
 
-    return devices
+    return [device for device in devices if polygon.covers(Point(device.x, device.y))]
 
 
 generate_devices_for_polygon = place_devices_from_rule

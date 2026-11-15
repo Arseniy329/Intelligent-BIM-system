@@ -99,7 +99,7 @@ async def update_room(
         )
     if "type" in changed:
         _check_room_type(payload.type)
-    for field in ("polygon", "confirmed"):
+    for field in ("polygon", "confirmed", "is_confirmed"):
         if field in changed and getattr(payload, field) is None:
             raise _unprocessable(f"{field} cannot be null")
 
@@ -121,6 +121,8 @@ async def update_room(
         values["polygon"] = _polygon_json(points)
     if "confirmed" in changed:
         values["confirmed"] = payload.confirmed
+    elif "is_confirmed" in changed:
+        values["confirmed"] = payload.is_confirmed
 
     updated = first_row(
         supabase.table("rooms").update(values).eq("id", str(room_id)).execute()

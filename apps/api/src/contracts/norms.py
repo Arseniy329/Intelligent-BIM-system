@@ -206,9 +206,7 @@ class NormLookupResult(BaseModel):
                 )
 
             if not self.clause or not self.clause.strip():
-                raise ValueError(
-                    "Verified norm result must specify a clause or table"
-                )
+                raise ValueError("Verified norm result must specify a clause or table")
 
             if not self.sourceUrl or not self.sourceUrl.strip():
                 raise ValueError(

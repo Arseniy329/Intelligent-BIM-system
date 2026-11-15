@@ -36,9 +36,18 @@ type Props = {
   showRooms: boolean;
   showDevices: boolean;
   showRoomLabels?: boolean;
+  selectedRoomId?: string | null;
 };
 
-export function DrawingOverlay({ controller, rooms = NO_ROOMS, devices = NO_DEVICES, showRooms, showDevices, showRoomLabels = true }: Props) {
+export function DrawingOverlay({
+  controller,
+  rooms = NO_ROOMS,
+  devices = NO_DEVICES,
+  showRooms,
+  showDevices,
+  showRoomLabels = true,
+  selectedRoomId,
+}: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const tooltipId = useId();
   const [viewport, setViewport] = useState({ width: 0, height: 0, revision: 0 });
@@ -53,20 +62,36 @@ export function DrawingOverlay({ controller, rooms = NO_ROOMS, devices = NO_DEVI
 
   // Geometry depends only on data and the camera. Visibility only controls rendering.
   const projectedRooms = useMemo(() => {
-    if (!viewport.width || !viewport.height) return [];
     return rooms.flatMap((room) => {
       const points = projectRoom(room, controller);
-      return points ? [{ room, points, label: roomLabelPlacement(points, viewport) }] : [];
+      return points
+        ? [
+            {
+              room,
+              points,
+              label:
+                viewport.width && viewport.height
+                  ? roomLabelPlacement(points, viewport)
+                  : undefined,
+            },
+          ]
+        : [];
     });
   }, [controller, rooms, viewport]);
 
   const projectedDevices = useMemo(() => {
-    if (!viewport.width || !viewport.height) return [];
     return devices.flatMap((device) => {
       const point = projectDevice(device, controller);
-      // Offscreen markers must not leave invisible keyboard targets.
-      return point && point.x >= 0 && point.x <= viewport.width && point.y >= 0 && point.y <= viewport.height
-        ? [{ device, point }] : [];
+      // Offscreen markers must not leave invisible keyboard targets when viewport is known.
+      const isVisible =
+        point &&
+        (!viewport.width ||
+          !viewport.height ||
+          (point.x >= 0 &&
+            point.x <= viewport.width &&
+            point.y >= 0 &&
+            point.y <= viewport.height));
+      return isVisible && point ? [{ device, point }] : [];
     });
   }, [controller, devices, viewport]);
   const projected = {
@@ -85,10 +110,21 @@ export function DrawingOverlay({ controller, rooms = NO_ROOMS, devices = NO_DEVI
   return (
     <div ref={rootRef} className={styles.overlay} style={overlayTheme} data-drawing-overlay="">
       <svg className={styles.roomPolygons} aria-label="Контури приміщень">
-        {projected.rooms.map(({ room, points }) => (
-          <polygon key={room.id} data-room-id={room.id} points={points.map(({ x, y }) => `${x},${y}`).join(" ")}
-            vectorEffect="non-scaling-stroke"><title>{room.name?.trim() || "Приміщення без назви"}</title></polygon>
-        ))}
+        {projected.rooms.map(({ room, points }) => {
+          const isSelected = Boolean(selectedRoomId && selectedRoomId === room.id);
+          return (
+            <polygon
+              key={room.id}
+              data-room-id={room.id}
+              data-selected={isSelected ? "true" : undefined}
+              className={isSelected ? styles.roomPolygonSelected : undefined}
+              points={points.map(({ x, y }) => `${x},${y}`).join(" ")}
+              vectorEffect="non-scaling-stroke"
+            >
+              <title>{room.name?.trim() || "Приміщення без назви"}</title>
+            </polygon>
+          );
+        })}
       </svg>
       {showRoomLabels && projected.rooms.map(({ room, label }) => label && (
         <div key={room.id} data-room-label={room.id} className={styles.roomLabel}

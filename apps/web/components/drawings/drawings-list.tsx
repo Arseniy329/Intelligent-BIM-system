@@ -1,328 +1,423 @@
 "use client";
 
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
-import {
-  AlertCircle,
-  CheckCircle2,
-  Clock,
-  FileText,
-  Loader2,
-} from "lucide-react";
-import type { DrawingUiStatus, NormalizedDrawingRecord } from "@/lib/api";
-import { listDrawings } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import type { MouseEvent, ReactNode } from "react";
+import { useDrawings } from "@/hooks/useDrawings";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+
+type BadgeVariant =
+  | "default"
+  | "secondary"
+  | "success"
+  | "muted"
+  | "destructive";
+
+interface DrawingLike {
+  id: string;
+  filename: string;
+  uploaded_at?: string | null;
+  createdAt?: string | null;
+  status: string;
+  error_message?: string | null;
+  has_result?: boolean;
+}
+
+export interface DrawingsListProps {
+  drawings?: DrawingLike[];
+  isLoading?: boolean;
+  error?: string | null;
+  onRefresh?: () => void;
+  onOpen?: (id: string) => void;
+}
 
 interface StatusConfig {
   label: string;
-  className: string;
-  icon: React.ComponentType<{
-    className?: string;
-    "aria-hidden"?: boolean | "true" | "false";
-  }>;
+  variant: BadgeVariant;
+  className?: string;
 }
 
-const STATUS_CONFIGS: Record<DrawingUiStatus, StatusConfig> = {
-  pending: {
-    label: "Очікує",
-    className:
-      "border-[var(--bim-color-border-default)] bg-[var(--bim-color-badge-neutral-bg)] text-[var(--bim-color-badge-neutral-text)]",
-    icon: Clock,
-  },
+const STATUS_CONFIG: Record<string, StatusConfig> = {
   uploaded: {
     label: "Завантажено",
-    className:
-      "border-[var(--bim-color-semantic-info-border)] bg-[var(--bim-color-badge-info-bg)] text-[var(--bim-color-badge-info-text)]",
-    icon: CheckCircle2,
+    variant: "secondary",
   },
   processing: {
-    label: "В обробці",
+    label: "Обробка",
+    variant: "secondary",
     className:
-      "border-[var(--bim-color-semantic-warning-border)] bg-[var(--bim-color-badge-warning-bg)] text-[var(--bim-color-badge-warning-text)]",
-    icon: Loader2,
+      "border-[var(--bim-color-border-default)] bg-transparent text-[var(--bim-color-text-secondary)]",
   },
   processed: {
-    label: "Оброблено",
-    className:
-      "border-[var(--bim-color-semantic-success-border)] bg-[var(--bim-color-badge-success-bg)] text-[var(--bim-color-badge-success-text)]",
-    icon: CheckCircle2,
+    label: "Готово",
+    variant: "success",
   },
   failed: {
-    label: "Помилка",
-    className:
-      "border-[var(--bim-color-semantic-error-border)] bg-[var(--bim-color-badge-error-bg)] text-[var(--bim-color-badge-error-text)]",
-    icon: AlertCircle,
+    label: "Помилка обробки",
+    variant: "destructive",
+  },
+  pending: {
+    label: "Очікує",
+    variant: "secondary",
+  },
+  done: {
+    label: "Готово",
+    variant: "success",
   },
   error: {
-    label: "Помилка",
-    className:
-      "border-[var(--bim-color-semantic-error-border)] bg-[var(--bim-color-badge-error-bg)] text-[var(--bim-color-badge-error-text)]",
-    icon: AlertCircle,
+    label: "Помилка обробки",
+    variant: "destructive",
   },
 };
 
-export function DrawingStatusBadge({ status }: { status: DrawingUiStatus }) {
-  const config = STATUS_CONFIGS[status] ?? {
-    label: String(status),
-    className:
-      "border-[var(--bim-color-border-default)] bg-[var(--bim-color-badge-neutral-bg)] text-[var(--bim-color-badge-neutral-text)]",
-    icon: FileText,
-  };
-  const Icon = config.icon;
-  const isSpinning = status === "processing";
+const DEFAULT_STATUS: StatusConfig = {
+  label: "Завантажено",
+  variant: "secondary",
+};
+
+export function DrawingStatusBadge({ status }: { status: string }) {
+  const config = STATUS_CONFIG[status] ?? DEFAULT_STATUS;
 
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-[var(--bim-radius-full)] border px-2.5 py-0.5 text-xs font-medium ${config.className}`}
-    >
-      <Icon
-        className={`size-3.5 shrink-0 ${isSpinning ? "animate-spin" : ""}`}
-        aria-hidden="true"
-      />
-      <span>{config.label}</span>
-    </span>
+    <Badge variant={config.variant} className={config.className}>
+      {config.label}
+    </Badge>
   );
 }
 
-export function formatUkrainianDate(isoString: string): string {
-  try {
-    const date = new Date(isoString);
-    if (Number.isNaN(date.getTime())) {
-      return isoString;
-    }
-    return new Intl.DateTimeFormat("uk-UA", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(date);
-  } catch {
-    return isoString;
+export function formatUkrainianDate(value?: string | null): string {
+  if (!value) {
+    return "—";
   }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("uk-UA", { dateStyle: "medium" }).format(
+    date,
+  );
 }
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    if (
-      error.message.includes("401") ||
-      error.message.includes("403") ||
-      error.name === "ApiAuthenticationError"
-    ) {
-      return "Сеанс завершився або немає доступу. Будь ласка, увійдіть у систему знову.";
-    }
-    if (
-      error.message.includes("Failed to fetch") ||
-      error.name === "TypeError"
-    ) {
-      return "Помилка мережі під час звернення до сервера. Перевірте підключення до інтернету.";
-    }
-    if (error.message) {
-      return error.message;
-    }
-  }
-  return "Не вдалося отримати список ваших креслень. Спробуйте оновити сторінку або скористайтеся кнопкою повтору.";
+interface DrawingRow {
+  id: string;
+  filename: string;
+  uploadedAt: string;
+  status: string;
+  errorMessage: string | null;
+  hasResult: boolean | undefined;
+}
+
+function toRow(drawing: DrawingLike): DrawingRow {
+  return {
+    id: drawing.id,
+    filename: drawing.filename,
+    uploadedAt: drawing.uploaded_at ?? drawing.createdAt ?? "",
+    status: drawing.status,
+    errorMessage: drawing.error_message ?? null,
+    hasResult: drawing.has_result,
+  };
+}
+
+function sortNewestFirst(rows: DrawingRow[]): DrawingRow[] {
+  return rows
+    .map((row, index) => ({
+      row,
+      index,
+      time: Date.parse(row.uploadedAt),
+    }))
+    .sort((a, b) => {
+      const aValid = Number.isFinite(a.time);
+      const bValid = Number.isFinite(b.time);
+
+      if (aValid && bValid && a.time !== b.time) {
+        return b.time - a.time;
+      }
+      if (aValid !== bValid) {
+        return aValid ? -1 : 1;
+      }
+      return a.index - b.index;
+    })
+    .map(({ row }) => row);
+}
+
+function isActionDisabled(row: DrawingRow): boolean {
+  return (
+    row.status === "processing" ||
+    (row.status === "processing" && row.hasResult === false)
+  );
+}
+
+function TableShell({ children }: { children: ReactNode }) {
+  return (
+    <div className="overflow-hidden rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] shadow-[var(--bim-shadow-sm)]">
+      {children}
+    </div>
+  );
 }
 
 function DrawingsLoadingSkeleton() {
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      aria-busy="true"
-      className="space-y-[var(--bim-spacing-4)]"
-    >
+    <div role="status" aria-live="polite" aria-busy="true">
       <span className="sr-only">Завантаження списку креслень…</span>
-      <div className="rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-[var(--bim-spacing-6)] shadow-[var(--bim-shadow-sm)]">
-        <div className="space-y-4 animate-pulse">
-          <div className="h-5 w-48 rounded-[var(--bim-radius-sm)] bg-[var(--bim-color-surface-subtle)]" />
-          <div className="h-10 w-full rounded-[var(--bim-radius-md)] bg-[var(--bim-color-surface-subtle)]" />
-          <div className="h-10 w-full rounded-[var(--bim-radius-md)] bg-[var(--bim-color-surface-subtle)]" />
-          <div className="h-10 w-full rounded-[var(--bim-radius-md)] bg-[var(--bim-color-surface-subtle)]" />
-        </div>
-      </div>
+      <TableShell>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Файл</TableHead>
+              <TableHead>Завантажено</TableHead>
+              <TableHead>Статус</TableHead>
+              <TableHead className="text-right">Дія</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {[0, 1, 2].map((index) => (
+              <TableRow key={index}>
+                <TableCell>
+                  <Skeleton className="h-4 w-48" />
+                </TableCell>
+                <TableCell>
+                  <Skeleton className="h-4 w-28" />
+                </TableCell>
+                <TableCell>
+                  <Skeleton className="h-5 w-24 rounded-[var(--bim-radius-full)]" />
+                </TableCell>
+                <TableCell>
+                  <div className="flex justify-end">
+                    <Skeleton className="h-9 w-24" />
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableShell>
     </div>
   );
 }
 
 function DrawingsErrorAlert({
   error,
-  onRetry,
-  isRetrying,
+  onRefresh,
 }: {
-  error: unknown;
-  onRetry: () => void;
-  isRetrying: boolean;
+  error: string;
+  onRefresh?: () => void;
 }) {
   return (
     <div
       role="alert"
-      className="rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-semantic-error-border)] bg-[var(--bim-color-semantic-error-bg)] p-[var(--bim-spacing-6)] text-[var(--bim-color-semantic-error)] shadow-[var(--bim-shadow-sm)]"
+      className="rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-semantic-error-border)] bg-[var(--bim-color-semantic-error-bg)] p-[var(--bim-spacing-6)] shadow-[var(--bim-shadow-sm)]"
     >
-      <div className="flex items-start gap-[var(--bim-spacing-3)]">
-        <AlertCircle className="size-5 shrink-0 mt-0.5" aria-hidden="true" />
-        <div className="flex-1 min-w-0">
-          <h2 className="text-base font-semibold">
-            Не вдалося завантажити список креслень
-          </h2>
-          <p className="mt-1 text-sm text-[var(--bim-color-text-secondary)]">
-            {getErrorMessage(error)}
-          </p>
-          <button
-            type="button"
-            onClick={onRetry}
-            disabled={isRetrying}
-            className="mt-[var(--bim-spacing-4)] inline-flex min-h-[var(--bim-size-control-md)] items-center justify-center rounded-[var(--bim-radius-md)] border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-[var(--bim-spacing-4)] text-sm font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] active:bg-[var(--bim-color-button-secondary-pressed-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] transition-colors disabled:opacity-50"
-          >
-            {isRetrying ? "Оновлення…" : "Спробувати знову"}
-          </button>
-        </div>
-      </div>
+      <h2 className="text-base font-semibold text-[var(--bim-color-text-primary)]">
+        Не вдалося завантажити список креслень
+      </h2>
+      <p className="mt-[var(--bim-spacing-2)] text-sm text-[var(--bim-color-text-secondary)]">
+        {error}
+      </p>
+      <Button
+        type="button"
+        variant="outline"
+        onClick={onRefresh}
+        className="mt-[var(--bim-spacing-4)]"
+      >
+        Спробувати ще раз
+      </Button>
     </div>
   );
 }
 
-export function DrawingsList() {
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery<
-    NormalizedDrawingRecord[]
-  >({
-    queryKey: ["drawings"],
-    queryFn: ({ signal }) => listDrawings(signal),
-  });
+function DrawingsListView({
+  drawings,
+  isLoading,
+  error,
+  onRefresh,
+  onOpen,
+}: {
+  drawings: DrawingLike[];
+  isLoading: boolean;
+  error: string | null;
+  onRefresh?: () => void;
+  onOpen?: (id: string) => void;
+}) {
+  const router = useRouter();
 
   if (isLoading) {
     return <DrawingsLoadingSkeleton />;
   }
 
-  if (isError) {
-    return (
-      <DrawingsErrorAlert
-        error={error}
-        onRetry={() => refetch()}
-        isRetrying={isFetching}
-      />
-    );
+  if (error) {
+    return <DrawingsErrorAlert error={error} onRefresh={onRefresh} />;
   }
 
-  const drawings = data ?? [];
+  const rows = sortNewestFirst(drawings.map(toRow));
 
-  if (drawings.length === 0) {
+  if (rows.length === 0) {
     return (
       <EmptyState
         title="У вас ще немає креслень"
-        description="Поки що немає збережених DXF-креслень. Завантажте перше креслення для розпізнавання приміщень та розстановки пожежних пристроїв."
+        description="Завантажте перше DXF-креслення, щоб почати розпізнавання приміщень та розстановку пожежних пристроїв."
         action={
-          <Link
-            href="/upload"
-            className="inline-flex min-h-[var(--bim-size-control-md)] items-center justify-center rounded-[var(--bim-radius-md)] bg-[var(--bim-color-brand-primary)] px-[var(--bim-spacing-4)] text-sm font-medium text-[var(--bim-color-brand-on-primary)] hover:bg-[var(--bim-color-brand-primary-hover)] active:bg-[var(--bim-color-brand-primary-pressed)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] transition-colors"
-          >
-            Завантажити креслення
-          </Link>
+          <Button asChild>
+            <Link href="/upload">Завантажити DXF</Link>
+          </Button>
         }
       />
     );
   }
 
+  const handleRowClick = (
+    event: MouseEvent<HTMLTableRowElement>,
+    row: DrawingRow,
+  ) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("a, button")) {
+      return;
+    }
+
+    if (onOpen) {
+      onOpen(row.id);
+      return;
+    }
+
+    router.push(`/drawings/${row.id}`);
+  };
+
   return (
-    <div className="space-y-[var(--bim-spacing-4)]">
-      {/* Mobile Card Layout (prevents horizontal overflow at 375px) */}
-      <div
-        className="flex flex-col gap-[var(--bim-spacing-3)] md:hidden"
-        aria-label="Список креслень"
-      >
-        {drawings.map((drawing) => (
-          <article
-            key={drawing.id}
-            className="rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-[var(--bim-spacing-4)] shadow-[var(--bim-shadow-sm)] flex flex-col gap-[var(--bim-spacing-3)]"
-          >
-            <div className="flex items-start gap-2.5 min-w-0">
-              <FileText
-                className="size-5 shrink-0 text-[var(--bim-color-brand-primary)] mt-0.5"
-                aria-hidden="true"
-              />
-              <div className="min-w-0 flex-1">
-                <p className="font-semibold text-sm text-[var(--bim-color-text-primary)] break-all">
-                  {drawing.originalFileName}
-                </p>
-                <time
-                  dateTime={drawing.createdAt}
-                  className="mt-1 block text-xs text-[var(--bim-color-text-secondary)]"
-                >
-                  {formatUkrainianDate(drawing.createdAt)}
-                </time>
-              </div>
-            </div>
+    <TableShell>
+      <Table aria-label="Список креслень">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Файл</TableHead>
+            <TableHead>Завантажено</TableHead>
+            <TableHead>Статус</TableHead>
+            <TableHead className="text-right">Дія</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row) => {
+            const actionDisabled = isActionDisabled(row);
 
-            <div className="flex items-center justify-between gap-2 pt-2 border-t border-[var(--bim-color-table-divider)]">
-              <DrawingStatusBadge status={drawing.status} />
-              <Link
-                href={`/drawings/${drawing.id}`}
-                className="inline-flex min-h-[var(--bim-size-control-md)] items-center justify-center rounded-[var(--bim-radius-md)] border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-[var(--bim-spacing-4)] text-sm font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] active:bg-[var(--bim-color-button-secondary-pressed-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] transition-colors"
+            return (
+              <TableRow
+                key={row.id}
+                data-testid="drawing-row"
+                data-status={row.status}
+                onClick={(event) => handleRowClick(event, row)}
+                className="cursor-pointer"
               >
-                Відкрити
-              </Link>
-            </div>
-          </article>
-        ))}
-      </div>
-
-      {/* Desktop Table Layout */}
-      <div className="hidden md:block overflow-hidden rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] shadow-[var(--bim-shadow-sm)]">
-        <table className="w-full text-left text-sm" aria-label="Список креслень">
-          <thead className="border-b border-[var(--bim-color-table-divider)] bg-[var(--bim-color-table-header-bg)] text-xs font-semibold text-[var(--bim-color-table-header-text)]">
-            <tr>
-              <th scope="col" className="px-6 py-3.5">
-                Назва файлу
-              </th>
-              <th scope="col" className="px-6 py-3.5">
-                Дата створення
-              </th>
-              <th scope="col" className="px-6 py-3.5">
-                Статус
-              </th>
-              <th scope="col" className="px-6 py-3.5 text-right">
-                Дія
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[var(--bim-color-table-divider)] bg-[var(--bim-color-table-row-bg)]">
-            {drawings.map((drawing) => (
-              <tr
-                key={drawing.id}
-                className="hover:bg-[var(--bim-color-table-row-hover-bg)] transition-colors"
-              >
-                <td className="px-6 py-4 font-medium text-[var(--bim-color-text-primary)]">
-                  <div className="flex items-center gap-2.5">
-                    <FileText
-                      className="size-4 shrink-0 text-[var(--bim-color-brand-primary)]"
-                      aria-hidden="true"
-                    />
-                    <span className="break-all">
-                      {drawing.originalFileName}
-                    </span>
-                  </div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-[var(--bim-color-text-secondary)]">
-                  <time dateTime={drawing.createdAt}>
-                    {formatUkrainianDate(drawing.createdAt)}
-                  </time>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <DrawingStatusBadge status={drawing.status} />
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-right">
+                <TableCell className="max-w-[22rem]">
                   <Link
-                    href={`/drawings/${drawing.id}`}
-                    className="inline-flex min-h-[var(--bim-size-control-md)] items-center justify-center rounded-[var(--bim-radius-md)] border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-[var(--bim-spacing-4)] text-sm font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] active:bg-[var(--bim-color-button-secondary-pressed-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] transition-colors"
+                    href={`/drawings/${row.id}`}
+                    onClick={(event) => event.stopPropagation()}
+                    className="block break-all font-medium text-[var(--bim-color-text-primary)] hover:underline"
                   >
-                    Відкрити
+                    {row.filename}
                   </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+                </TableCell>
+                <TableCell>
+                  <time
+                    dateTime={row.uploadedAt}
+                    className="text-sm text-[var(--bim-color-text-secondary)]"
+                  >
+                    {formatUkrainianDate(row.uploadedAt)}
+                  </time>
+                </TableCell>
+                <TableCell>
+                  <DrawingStatusBadge status={row.status} />
+                  {row.status === "failed" && row.errorMessage ? (
+                    <span
+                      className="mt-1 block text-xs text-[var(--bim-color-text-secondary)]"
+                      title={row.errorMessage}
+                    >
+                      {row.errorMessage}
+                    </span>
+                  ) : null}
+                </TableCell>
+                <TableCell className="text-right">
+                  {actionDisabled ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled
+                      title="Результат ще не готовий"
+                    >
+                      Відкрити
+                      <span className="sr-only"> Результат ще не готовий</span>
+                    </Button>
+                  ) : (
+                    <Button asChild variant="outline" size="sm">
+                      <Link
+                        href={`/drawings/${row.id}`}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        Відкрити
+                      </Link>
+                    </Button>
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TableShell>
   );
 }
+
+function ConnectedDrawingsList({
+  onOpen,
+}: {
+  onOpen?: (id: string) => void;
+}) {
+  const { drawings, isLoading, error, refresh } = useDrawings();
+
+  return (
+    <DrawingsListView
+      drawings={drawings}
+      isLoading={isLoading}
+      error={error}
+      onRefresh={refresh}
+      onOpen={onOpen}
+    />
+  );
+}
+
+export function DrawingsList({
+  drawings,
+  isLoading,
+  error,
+  onRefresh,
+  onOpen,
+}: DrawingsListProps = {}) {
+  const hasProvidedData =
+    drawings !== undefined || isLoading !== undefined || error !== undefined;
+
+  if (hasProvidedData) {
+    return (
+      <DrawingsListView
+        drawings={drawings ?? []}
+        isLoading={isLoading ?? false}
+        error={error ?? null}
+        onRefresh={onRefresh}
+        onOpen={onOpen}
+      />
+    );
+  }
+
+  return <ConnectedDrawingsList onOpen={onOpen} />;
+}
+
+export default DrawingsList;

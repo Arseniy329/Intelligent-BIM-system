@@ -112,6 +112,10 @@ export interface RoomUpdateRequest {
   height?: number | null;
   polygon?: RoomPolygon;
   confirmed?: boolean;
+  /**
+   * Аліас для confirmed
+   */
+  is_confirmed?: boolean;
 }
 /**
  * Тіло POST /drawings/{id}/rooms — приміщення, накреслене вручну (source=manual, confirmed=true). Якщо type не задано, API пропонує його за name.

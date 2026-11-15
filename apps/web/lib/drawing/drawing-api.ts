@@ -1,10 +1,10 @@
-import type { DrawingDetailResponse, DrawingResult, DrawingStatus, ProcessingJob, RequestedDrawingUnits } from "@bim/contracts";
+import type { DrawingDetailResponse, DrawingResult, DrawingStatus as ContractDrawingStatus, ProcessingJob, RequestedDrawingUnits } from "@bim/contracts";
 import { apiFetch, ApiAuthenticationError, ApiConfigurationError, ApiHttpError, DRAWINGS_API_PATH } from "@/lib/api";
 import { isDrawingDemoEnabled } from "./demo-mode";
 
 // FastAPI preserves requested units until parsing; shared DrawingDetailResponse
 // currently allows only resolved mm/m. Keep this wire adaptation local to the client.
-export type DrawingDetail = Omit<DrawingDetailResponse, "units" | "status"> & { units: RequestedDrawingUnits; status: DrawingDetailResponse["status"] | DrawingStatus };
+export type DrawingDetail = Omit<DrawingDetailResponse, "units" | "status"> & { units: RequestedDrawingUnits; status: DrawingDetailResponse["status"] | ContractDrawingStatus };
 export type DrawingResponse = DrawingDetail | DrawingResult;
 // The synchronous POST endpoints return snake_case acknowledgements, not jobs.
 export type DrawingOperation = { drawingId: string; status: "processing" | "processed" };
@@ -15,6 +15,52 @@ export interface DrawingApi {
   placeDrawing?(id: string, signal?: AbortSignal): Promise<DrawingOperation | DrawingResult>;
   // Only adapters with an actual job endpoint (currently the explicit demo) poll.
   getJob?(id: string, signal?: AbortSignal): Promise<ProcessingJob>;
+}
+
+export type DrawingStatus = "pending" | "processing" | "done" | "error";
+
+export interface DrawingListItem {
+  id: string;
+  filename: string;
+  createdAt: string;
+  status: DrawingStatus;
+}
+
+const drawingListStatuses: readonly DrawingStatus[] = ["pending", "processing", "done", "error"];
+
+function normalizeDrawingListStatus(value: unknown): DrawingStatus {
+  return typeof value === "string" && drawingListStatuses.includes(value as DrawingStatus)
+    ? value as DrawingStatus
+    : "processing";
+}
+
+function normalizeDrawingListItem(value: unknown): DrawingListItem | null {
+  if (!record(value) || typeof value.id !== "string" || !value.id ||
+    typeof value.filename !== "string" || typeof value.created_at !== "string")
+    return null;
+  return {
+    id: value.id,
+    filename: value.filename,
+    createdAt: value.created_at,
+    status: normalizeDrawingListStatus(value.status),
+  };
+}
+
+export async function listDrawings(signal?: AbortSignal): Promise<DrawingListItem[]> {
+  const response = await apiFetch(DRAWINGS_API_PATH, { method: "GET", signal, cache: "no-store" });
+  if (!response.ok) {
+    const body: unknown = await response.json().catch(() => null);
+    const detail = record(body)
+      ? [body.detail, body.message, body.error].find(value => typeof value === "string" && value)
+      : undefined;
+    throw new ApiHttpError(response.status, typeof detail === "string" ? detail : undefined);
+  }
+  const payload: unknown = await response.json();
+  const items = Array.isArray(payload) ? payload : record(payload) && Array.isArray(payload.items) ? payload.items : [];
+  return items.flatMap(item => {
+    const normalized = normalizeDrawingListItem(item);
+    return normalized ? [normalized] : [];
+  });
 }
 
 const publicErrors: Record<string, string> = {
