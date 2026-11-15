@@ -1,0 +1,10 @@
+{
+  "query": "яку площу контролює точковий димовий сповіщувач при висоті 3.5 м",
+  "context": {
+    "roomHeight": 3.5,
+    "roomArea": 75.0,
+    "detectorType": "smoke_detector",
+    "roomType": "office"
+  }
+}
+

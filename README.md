@@ -11,7 +11,7 @@
 ```text
 apps/
   web/                 Next.js інтерфейс
-  api/                 місце для FastAPI (BIM-53)
+  api/                 FastAPI: креслення, CAD-парсер і розміщення пристроїв
 packages/
   contracts/           JSON Schema, TypeScript-типи та приклади JSON
 docs/                   архітектурні й процесні документи
@@ -44,3 +44,36 @@ npm run build
 ## Деплой
 
 Інструкція підготовлена в [docs/deployment.md](docs/deployment.md). У цьому локальному варіанті жодного зовнішнього деплою не виконано.
+
+## Фрагмент коду
+
+NEXT_PUBLIC_SUPABASE_URL=[https://qgkxerxiyzpbeczkpbpj.supabase.co](https://qgkxerxiyzpbeczkpbpj.supabase.co)
+NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_QzDEiRpdtdNWmx-ASHI-QA_3CQiU3zB
+
+## Supabase setup
+
+1. Create a Supabase project and enable Email + password authentication.
+2. Create a private Storage bucket named `drawings` with a 50 MB file size limit.
+3. Set its name in `SUPABASE_STORAGE_BUCKET` in your local/server environment.
+4. Run migrations:
+
+   ```bash
+   supabase db push
+   ```
+
+## BIM-62 → BIM-63 / Sprint 3
+
+Після upload сторінка `/drawings/[id]` отримує метадані через
+`GET /api/v1/drawings/{id}`, відкриває оригінальний DXF у DrawingViewer
+і дозволяє скачати його після повторного GET для актуального signed URL.
+`NEXT_PUBLIC_API_URL` задає адресу API-сервера. Спільний клієнт використовує
+префікс `/api/v1` рівно один раз, зокрема для конфігурації, що вже містить цей префікс.
+
+`POST /api/v1/drawings/{id}/process` запускає повний пайплайн обробки креслення:
+парсинг DXF (шар `FIRE_ROOMS` або геометрія приміщень), визначення масштабу одиниць (`unit_scale_m`),
+автоматичне розміщення сповіщувачів за нормами ДСТУ EN 54-14, збереження приміщень (`rooms`) і приладів (`devices`)
+у базі даних та генерацію результуючого DXF-файлу з блоками приладів, доступного для перегляду й завантаження.
+
+Деморежим, межі перевірки та інструкції тестів описані в
+[README DrawingViewer/BIM-63](apps/web/components/drawing/README.md#bim-63--інтеграція-bim-47bim-62-29102026).
+

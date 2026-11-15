@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "@/components/providers";
+import { bimThemeVariables } from "@/lib/design-tokens";
 
 export const metadata: Metadata = {
   title: "Інтелектуальна BIM-система",
@@ -9,7 +10,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="uk">
+    <html lang="uk" style={bimThemeVariables}>
       <body>
         <Providers>{children}</Providers>
       </body>

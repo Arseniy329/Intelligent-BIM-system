@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import Enum, StrEnum
 from uuid import UUID
 
 from pydantic import (
@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PositiveFloat,
+    RootModel,
     confloat,
     conint,
     constr,
@@ -20,13 +21,27 @@ from pydantic import (
 
 
 class DrawingStatus(Enum):
+    pending = "pending"
     uploaded = "uploaded"
     processing = "processing"
     processed = "processed"
     error = "error"
 
 
+class DrawingDetailStatus(Enum):
+    pending = "pending"
+    uploaded = "uploaded"
+    processing = "processing"
+    processed = "processed"
+    failed = "failed"
+
+
 class DrawingUnits(Enum):
+    mm = "mm"
+    m = "m"
+
+
+class RequestedDrawingUnits(Enum):
     mm = "mm"
     m = "m"
     from_file = "from_file"
@@ -48,11 +63,19 @@ class Drawing(BaseModel):
     ownerId: UUID
     originalFileName: constr(min_length=1)
     storagePath: constr(min_length=1)
-    resultStoragePath: str | None = None
-    units: DrawingUnits
+    resolvedUnits: DrawingUnits | None = Field(
+        ...,
+        description="Фактичні одиниці координат. null, доки API не прочитає DXF. Якщо одиниці визначити неможливо, status стає error, а errorMessage пояснює причину.",
+    )
     status: DrawingStatus
     errorMessage: str | None = None
     createdAt: AwareDatetime
+
+
+class Source(StrEnum):
+    auto = "auto"
+    fire_rooms = "fire_rooms"
+    manual = "manual"
 
 
 class Room(BaseModel):
@@ -63,15 +86,68 @@ class Room(BaseModel):
     drawingId: UUID
     name: str | None
     type: str | None
-    height: PositiveFloat | None
-    area: confloat(ge=0.0)
-    polygon: list[Point] = Field(..., min_length=3)
+    height: PositiveFloat | None = Field(
+        ..., description="Висота приміщення в метрах або null, якщо її не визначено"
+    )
+    area: confloat(ge=0.0) = Field(
+        ..., description="Площа приміщення у квадратних метрах"
+    )
+    polygon: list[Point] = Field(
+        ...,
+        description="Вершини контуру в координатах DXF. Полігон логічно замкнений; перша точка наприкінці масиву не повторюється.",
+        min_length=3,
+    )
+    source: Source | None = None
+    confirmed: bool | None = None
+
+
+class RoomPolygon(RootModel[list[Point]]):
+    root: list[Point] = Field(
+        ...,
+        description="Новий контур у координатах DXF. Перша точка наприкінці масиву не повторюється; полігон має бути коректним (без самоперетинів). Площу перераховує API.",
+        min_length=3,
+        title="RoomPolygon",
+    )
+
+
+class RoomCreateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    name: str | None = None
+    type: constr(min_length=1) | None = None
+    height: confloat(le=100.0, gt=0.0) | None = None
+    polygon: RoomPolygon
+
+
+class RoomType(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    code: constr(min_length=1)
+    name: constr(min_length=1)
+    examples: list[constr(min_length=1)] = Field(
+        ...,
+        description="Приклади назв приміщень на кресленні, за якими пропонується тип",
+    )
+
+
+class RoomUpdateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    type: constr(min_length=1) | None = None
+    height: confloat(le=100.0, gt=0.0) | None = None
+    is_confirmed: bool | None = None
+    polygon: RoomPolygon | None = None
+    confirmed: bool | None = None
 
 
 class Type(Enum):
     smoke_detector = "smoke_detector"
     heat_detector = "heat_detector"
     sounder = "sounder"
+    manual_call_point = "manual_call_point"
 
 
 class Device(BaseModel):
@@ -80,10 +156,31 @@ class Device(BaseModel):
     )
     id: constr(min_length=1)
     drawingId: UUID
-    roomId: constr(min_length=1)
+    roomId: constr(min_length=1) | None = Field(
+        ...,
+        description="Ідентифікатор кімнати або null для коридорів і нерозпізнаних зон",
+    )
     type: Type
     position: Point
     layer: constr(min_length=1)
+
+
+class DeviceCreateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    type: Type
+    position: Point
+    roomId: UUID | None = None
+
+
+class DeviceUpdateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    type: Type | None = None
+    position: Point | None = None
+    roomId: UUID | None = None
 
 
 class CreateDrawingRequest(BaseModel):
@@ -92,7 +189,7 @@ class CreateDrawingRequest(BaseModel):
     )
     fileName: constr(pattern=r"\.[dD][xX][fF]$")
     fileSizeBytes: conint(ge=1, le=52428800)
-    units: DrawingUnits
+    units: RequestedDrawingUnits
 
 
 class SignedUpload(BaseModel):
@@ -116,9 +213,96 @@ class DrawingResult(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
+    sourceDownloadUrl: AnyUrl | None = Field(
+        None,
+        description="Тимчасове посилання на оригінальний DXF для підкладки оверлею",
+    )
+    sourceDownloadUrlExpiresAt: AwareDatetime | None = Field(
+        None, description="Час завершення дії sourceDownloadUrl"
+    )
     drawing: Drawing
     rooms: list[Room]
     devices: list[Device]
+    downloadUrl: AnyUrl | None = Field(
+        None,
+        description="Тимчасове підписане посилання на результат; null, доки результат не готовий",
+    )
+    downloadUrlExpiresAt: AwareDatetime | None = Field(
+        None, description="Час завершення дії downloadUrl"
+    )
+
+
+class DrawingDetailResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    id: UUID
+    ownerId: UUID
+    originalFileName: constr(min_length=1)
+    storagePath: constr(min_length=1)
+    units: DrawingUnits
+    status: DrawingDetailStatus
+    createdAt: AwareDatetime
+    sourceDownloadUrl: AnyUrl | None = None
+    sourceDownloadUrlExpiresAt: AwareDatetime | None = None
+
+
+class ProcessingJobStatus(Enum):
+    queued = "queued"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+
+
+class ProcessingJob(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    id: UUID
+    drawingId: UUID
+    status: ProcessingJobStatus
+    errorMessage: str | None
+
+
+class DeviceType(Enum):
+    smoke_detector = "smoke_detector"
+    heat_detector = "heat_detector"
+    sounder = "sounder"
+    manual_call_point = "manual_call_point"
+
+
+class ValueKind(Enum):
+    max_grid_spacing_m = "max_grid_spacing_m"
+    max_protected_area_m2 = "max_protected_area_m2"
+    max_wall_distance_m = "max_wall_distance_m"
+    min_wall_clearance_m = "min_wall_clearance_m"
+    min_sound_level_dba = "min_sound_level_dba"
+
+
+class VerificationStatus(Enum):
+    verified = "verified"
+    needs_review = "needs_review"
+
+
+class Rule(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    id: UUID = Field(..., description="Збігається з Finding.ruleId.")
+    ruleId: constr(min_length=1)
+    name: constr(min_length=1)
+    deviceType: DeviceType
+    roomTypes: list[str]
+    minHeightM: PositiveFloat | None
+    maxHeightM: PositiveFloat | None
+    value: PositiveFloat
+    valueKind: ValueKind
+    document: str | None
+    clause: str | None = Field(
+        ..., description="Не вигадувати пункт, якщо його не звірено."
+    )
+    sourceUrl: AnyUrl | None
+    verificationStatus: VerificationStatus
 
 
 class BimContracts(BaseModel):
@@ -126,8 +310,16 @@ class BimContracts(BaseModel):
         extra="forbid",
     )
     drawing: Drawing | None = None
+    drawingDetailResponse: DrawingDetailResponse | None = None
     room: Room | None = None
+    roomType: RoomType | None = None
+    roomUpdateRequest: RoomUpdateRequest | None = None
+    roomCreateRequest: RoomCreateRequest | None = None
     device: Device | None = None
+    deviceCreateRequest: DeviceCreateRequest | None = None
+    deviceUpdateRequest: DeviceUpdateRequest | None = None
     createDrawingRequest: CreateDrawingRequest | None = None
     createDrawingResponse: CreateDrawingResponse | None = None
     drawingResult: DrawingResult | None = None
+    processingJob: ProcessingJob | None = None
+    rule: Rule | None = None

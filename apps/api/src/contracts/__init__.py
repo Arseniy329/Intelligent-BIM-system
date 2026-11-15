@@ -14,6 +14,14 @@ from src.contracts.generated import (
     SignedUpload,
     Type,
 )
+from src.contracts.norms import (
+    NormLookupContext,
+    NormLookupRequest,
+    NormLookupResult,
+    NormVerificationStatus,
+    is_disallowed_document,
+    is_official_domain,
+)
 
 __all__ = [
     "BimContracts",
@@ -28,4 +36,10 @@ __all__ = [
     "Room",
     "SignedUpload",
     "Type",
+    "NormLookupContext",
+    "NormLookupRequest",
+    "NormLookupResult",
+    "NormVerificationStatus",
+    "is_disallowed_document",
+    "is_official_domain",
 ]
