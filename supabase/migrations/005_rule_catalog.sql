@@ -17,12 +17,19 @@ set rule_id = 'LEGACY-' || id::text
 where rule_id is null;
 
 update public.rules
+set threshold = coalesce(threshold, 9)
+where threshold is null;
+
+update public.rules
 set value = threshold
 where value is null;
 
 alter table public.rules
   alter column rule_id set not null,
   alter column value set not null;
+
+alter table public.rules
+  alter column threshold drop default;
 
 create unique index if not exists rules_rule_id_uidx
   on public.rules (rule_id);
