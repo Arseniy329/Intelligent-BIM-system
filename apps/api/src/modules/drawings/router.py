@@ -33,8 +33,13 @@ from src.modules.drawings.schemas import (
 from src.modules.drawings.service import (
     generate_and_upload_result_dxf,
     list_drawings_for_user,
+    stored_unit_scale_m,
 )
-from src.modules.placement.service import RuleRecord, place_devices_from_rule
+from src.modules.placement.service import (
+    build_placement_targets,
+    describe_outcome,
+    place_targets,
+)
 from src.modules.rooms.service import room_from_row, row_points
 
 router = APIRouter(prefix="/drawings", tags=["drawings"])
@@ -289,73 +294,55 @@ async def place_drawing_devices(
                 detail="No rooms found for this drawing",
             )
 
-        rules_response = supabase.table("rules").select("*").limit(1).execute()
-        if (
-            not rules_response.data
-            or not isinstance(rules_response.data, list)
-            or len(rules_response.data) == 0
-        ):
+        rules_response = supabase.table("rules").select("*").execute()
+        rule_rows = (
+            [row for row in rules_response.data if isinstance(row, dict)]
+            if isinstance(rules_response.data, list)
+            else []
+        )
+        if not rule_rows:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No fire safety rules available",
             )
 
-        rule_data = rules_response.data[0]
-        if (
-            not isinstance(rule_data, dict)
-            or "id" not in rule_data
-            or "threshold" not in rule_data
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid rule record format",
-            )
-
-        try:
-            threshold_val = float(rule_data["threshold"])
-        except (ValueError, TypeError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid rule threshold",
-            ) from exc
-
-        rule = RuleRecord(
-            id=str(rule_data["id"]),
-            threshold=threshold_val,
-            status=str(rule_data.get("status") or "needs_review"),
+        zones_response = (
+            supabase.table("room_zones")
+            .select("*")
+            .eq("drawing_id", drawing_id)
+            .execute()
+        )
+        zone_rows = (
+            [row for row in zones_response.data if isinstance(row, dict)]
+            if isinstance(zones_response.data, list)
+            else []
         )
 
-        new_device_rows: list[dict[str, Any]] = []
-        for room in rooms_data:
-            if not isinstance(room, dict):
-                continue
-            poly_data = room.get("polygon")
-            if not isinstance(poly_data, list) or len(poly_data) < 3:
-                continue
-            coords: list[tuple[float, float]] = []
-            for pt in poly_data:
-                if isinstance(pt, dict) and "x" in pt and "y" in pt:
-                    coords.append((float(pt["x"]), float(pt["y"])))
-                elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                    coords.append((float(pt[0]), float(pt[1])))
-            if len(coords) < 3:
-                continue
+        # BIM-73: правило береться за висотою приміщення або його зони. Немає
+        # висоти чи правила — приладів немає, статус «недостатньо даних».
+        outcomes = place_targets(
+            build_placement_targets(
+                [room for room in rooms_data if isinstance(room, dict)], zone_rows
+            ),
+            rule_rows,
+            device_type="smoke_detector",
+            unit_scale_m=stored_unit_scale_m(drawing_data),
+        )
 
-            room_id = str(room["id"]) if room.get("id") else None
-            placed_devices = place_devices_from_rule(coords, rule)
-            for d in placed_devices:
-                new_device_rows.append(
-                    {
-                        "id": str(uuid4()),
-                        "drawing_id": drawing_id,
-                        "room_id": room_id,
-                        "rule_id": str(rule.id),
-                        "type": "smoke_detector",
-                        "layer": "SYS_FIRE_SENSORS",
-                        "x": float(d.x),
-                        "y": float(d.y),
-                    }
-                )
+        new_device_rows: list[dict[str, Any]] = [
+            {
+                "id": str(uuid4()),
+                "drawing_id": drawing_id,
+                "room_id": outcome.target.room_id,
+                "rule_id": str(placed.rule_id),
+                "type": "smoke_detector",
+                "layer": "SYS_FIRE_SENSORS",
+                "x": float(placed.x),
+                "y": float(placed.y),
+            }
+            for outcome in outcomes
+            for placed in outcome.devices
+        ]
 
         supabase.table("devices").delete().eq("drawing_id", drawing_id).execute()
 
@@ -372,6 +359,7 @@ async def place_drawing_devices(
             "drawing_id": drawing_id,
             "status": "processed",
             "result_path": result_storage_path,
+            "placements": [describe_outcome(outcome) for outcome in outcomes],
         }
     except Exception as exc:
         try:
