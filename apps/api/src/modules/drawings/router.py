@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
@@ -22,7 +23,9 @@ from src.core.config import get_settings
 from src.core.exceptions import BIMException
 from src.infrastructure.storage import cleanup_file, download_dxf_to_tmp
 from src.infrastructure.supabase import get_supabase_client
-from src.modules.cad.parser import parse_dxf_rooms_with_scale
+from src.modules.cad.exits import find_exit_points
+from src.modules.cad.parser import parse_dxf_rooms_with_scale, read_dxf_document
+from src.modules.cad.writer import MCP_LAYER_NAME
 from src.modules.drawings.schemas import (
     CreateDrawingRequest,
     CreateDrawingResponse,
@@ -33,11 +36,24 @@ from src.modules.drawings.schemas import (
 from src.modules.drawings.service import (
     generate_and_upload_result_dxf,
     list_drawings_for_user,
+    stored_unit_scale_m,
 )
-from src.modules.placement.service import RuleRecord, place_devices_from_rule
+from src.modules.placement.manual_call_points import (
+    describe_call_point_outcome,
+    exits_from_rows,
+    place_manual_call_points,
+    room_id_near_exit,
+    rooms_from_rows,
+)
+from src.modules.placement.service import (
+    build_placement_targets,
+    describe_outcome,
+    place_targets,
+)
 from src.modules.rooms.service import room_from_row, row_points
 
 router = APIRouter(prefix="/drawings", tags=["drawings"])
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -157,6 +173,66 @@ async def list_drawings(
     return await list_drawings_for_user(current_user.id, supabase)
 
 
+def _save_dxf_exits(
+    supabase: Client,
+    drawing_id: str,
+    dxf_path: Path,
+    unit_scale_m: float,
+    room_rows: list[dict[str, Any]],
+) -> None:
+    """BIM-75: зберегти виходи, позначені в DXF (шар EXITS або підпис «Вихід»).
+
+    Виходи з source = dxf замінюються, позначені вручну лишаються (їх зв'язок із
+    приміщенням оновлюється, бо приміщення при обробці створюються заново). Пошук
+    виходів не обов'язковий для обробки: збій тут не повинен ламати розпізнавання
+    приміщень, тому він лише логується.
+    """
+    try:
+        document = read_dxf_document(dxf_path)
+        detected = find_exit_points(document.modelspace(), unit_scale_m)
+        rooms = rooms_from_rows(room_rows)
+
+        supabase.table("exits").delete().eq("drawing_id", drawing_id).eq(
+            "source", "dxf"
+        ).execute()
+        exit_rows = [
+            {
+                "id": str(uuid4()),
+                "drawing_id": drawing_id,
+                "room_id": room_id_near_exit((item.x, item.y), rooms, unit_scale_m),
+                "name": item.name,
+                "x": item.x,
+                "y": item.y,
+                "source": "dxf",
+            }
+            for item in detected
+        ]
+        if exit_rows:
+            supabase.table("exits").insert(exit_rows).execute()
+
+        manual = (
+            supabase.table("exits")
+            .select("*")
+            .eq("drawing_id", drawing_id)
+            .eq("source", "manual")
+            .execute()
+        )
+        for row in manual.data if isinstance(manual.data, list) else []:
+            if not isinstance(row, dict):
+                continue
+            room_id = room_id_near_exit(
+                (float(row["x"]), float(row["y"])), rooms, unit_scale_m
+            )
+            if room_id != row.get("room_id"):
+                supabase.table("exits").update({"room_id": room_id}).eq(
+                    "id", str(row["id"])
+                ).execute()
+    except Exception:
+        logger.warning(
+            "Exit detection failed for drawing %s", drawing_id, exc_info=True
+        )
+
+
 @router.post("/{drawing_id}/process")
 async def process_drawing(
     drawing_id: str,
@@ -224,6 +300,8 @@ async def process_drawing(
         if room_rows:
             supabase.table("rooms").insert(room_rows).execute()
 
+        _save_dxf_exits(supabase, drawing_id, input_tmp_path, unit_scale_m, room_rows)
+
         # unit_scale_m (migration 007) lets manual room edits compute areas
         # even after every parsed room has been deleted.
         supabase.table("drawings").update(
@@ -289,73 +367,86 @@ async def place_drawing_devices(
                 detail="No rooms found for this drawing",
             )
 
-        rules_response = supabase.table("rules").select("*").limit(1).execute()
-        if (
-            not rules_response.data
-            or not isinstance(rules_response.data, list)
-            or len(rules_response.data) == 0
-        ):
+        rules_response = supabase.table("rules").select("*").execute()
+        rule_rows = (
+            [row for row in rules_response.data if isinstance(row, dict)]
+            if isinstance(rules_response.data, list)
+            else []
+        )
+        if not rule_rows:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No fire safety rules available",
             )
 
-        rule_data = rules_response.data[0]
-        if (
-            not isinstance(rule_data, dict)
-            or "id" not in rule_data
-            or "threshold" not in rule_data
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid rule record format",
-            )
-
-        try:
-            threshold_val = float(rule_data["threshold"])
-        except (ValueError, TypeError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid rule threshold",
-            ) from exc
-
-        rule = RuleRecord(
-            id=str(rule_data["id"]),
-            threshold=threshold_val,
-            status=str(rule_data.get("status") or "needs_review"),
+        zones_response = (
+            supabase.table("room_zones")
+            .select("*")
+            .eq("drawing_id", drawing_id)
+            .execute()
+        )
+        zone_rows = (
+            [row for row in zones_response.data if isinstance(row, dict)]
+            if isinstance(zones_response.data, list)
+            else []
         )
 
-        new_device_rows: list[dict[str, Any]] = []
-        for room in rooms_data:
-            if not isinstance(room, dict):
-                continue
-            poly_data = room.get("polygon")
-            if not isinstance(poly_data, list) or len(poly_data) < 3:
-                continue
-            coords: list[tuple[float, float]] = []
-            for pt in poly_data:
-                if isinstance(pt, dict) and "x" in pt and "y" in pt:
-                    coords.append((float(pt["x"]), float(pt["y"])))
-                elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                    coords.append((float(pt[0]), float(pt[1])))
-            if len(coords) < 3:
-                continue
+        # BIM-73: правило береться за висотою приміщення або його зони. Немає
+        # висоти чи правила — приладів немає, статус «недостатньо даних».
+        outcomes = place_targets(
+            build_placement_targets(
+                [room for room in rooms_data if isinstance(room, dict)], zone_rows
+            ),
+            rule_rows,
+            device_type="smoke_detector",
+            unit_scale_m=stored_unit_scale_m(drawing_data),
+        )
 
-            room_id = str(room["id"]) if room.get("id") else None
-            placed_devices = place_devices_from_rule(coords, rule)
-            for d in placed_devices:
-                new_device_rows.append(
-                    {
-                        "id": str(uuid4()),
-                        "drawing_id": drawing_id,
-                        "room_id": room_id,
-                        "rule_id": str(rule.id),
-                        "type": "smoke_detector",
-                        "layer": "SYS_FIRE_SENSORS",
-                        "x": float(d.x),
-                        "y": float(d.y),
-                    }
-                )
+        new_device_rows: list[dict[str, Any]] = [
+            {
+                "id": str(uuid4()),
+                "drawing_id": drawing_id,
+                "room_id": outcome.target.room_id,
+                "rule_id": str(placed.rule_id),
+                "type": "smoke_detector",
+                "layer": "SYS_FIRE_SENSORS",
+                "x": float(placed.x),
+                "y": float(placed.y),
+            }
+            for outcome in outcomes
+            for placed in outcome.devices
+        ]
+
+        # BIM-75: ручні сповіщувачі біля евакуаційних виходів і на шляхах евакуації.
+        # Немає виходів — їх не розміщуємо й повертаємо «Позначте евакуаційні виходи».
+        exits_response = (
+            supabase.table("exits").select("*").eq("drawing_id", drawing_id).execute()
+        )
+        exit_rows = (
+            [row for row in exits_response.data if isinstance(row, dict)]
+            if isinstance(exits_response.data, list)
+            else []
+        )
+        call_points = place_manual_call_points(
+            rooms=rooms_from_rows([r for r in rooms_data if isinstance(r, dict)]),
+            exits=exits_from_rows(exit_rows),
+            rule_rows=rule_rows,
+            unit_scale_m=stored_unit_scale_m(drawing_data),
+        )
+        if call_points.rule is not None:
+            new_device_rows.extend(
+                {
+                    "id": str(uuid4()),
+                    "drawing_id": drawing_id,
+                    "room_id": placed.room_id,
+                    "rule_id": call_points.rule.id,
+                    "type": "manual_call_point",
+                    "layer": MCP_LAYER_NAME,
+                    "x": float(placed.x),
+                    "y": float(placed.y),
+                }
+                for placed in call_points.devices
+            )
 
         supabase.table("devices").delete().eq("drawing_id", drawing_id).execute()
 
@@ -372,6 +463,8 @@ async def place_drawing_devices(
             "drawing_id": drawing_id,
             "status": "processed",
             "result_path": result_storage_path,
+            "placements": [describe_outcome(outcome) for outcome in outcomes],
+            "manual_call_points": describe_call_point_outcome(call_points),
         }
     except Exception as exc:
         try:

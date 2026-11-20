@@ -437,6 +437,7 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             "original_file_name": "01_simple_rooms_mm.dxf",
             "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
             "units": "mm",
+            "unit_scale_m": 0.001,
             "status": "processing",
             "created_at": "2026-10-31T12:00:00Z",
         }
@@ -458,7 +459,24 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             }
         ]
 
-        rules_data = [{"id": str(uuid4()), "threshold": 2000.0, "status": "approved"}]
+        # Правило з каталогу: крок 2 м (креслення в мм, масштаб 0.001),
+        # без обмеження висоти.
+        db_rule_id = str(uuid4())
+        rules_data = [
+            {
+                "id": db_rule_id,
+                "rule_id": "TEST_GRID",
+                "name": "Test grid",
+                "device_type": "smoke_detector",
+                "value_kind": "max_grid_spacing_m",
+                "value": 2.0,
+                "min_height_m": None,
+                "max_height_m": None,
+                "room_types": [],
+                "conditions": {},
+                "verification_status": "verified",
+            }
+        ]
 
         mock_drawings_query = MagicMock()
         mock_drawings_query.select.return_value = mock_drawings_query
@@ -474,7 +492,6 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
 
         mock_rules_query = MagicMock()
         mock_rules_query.select.return_value = mock_rules_query
-        mock_rules_query.limit.return_value = mock_rules_query
         mock_rules_query.execute.return_value = MagicMock(data=rules_data)
 
         inserted_devices: list[dict] = []
@@ -546,6 +563,20 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertEqual(data["status"], "processed")
         self.assertEqual(data["result_path"], expected_storage_path)
 
+        # BIM-73: результат розміщення по приміщенню (кімната висотою 3 м).
+        self.assertEqual(len(data["placements"]), 1)
+        placement = data["placements"][0]
+        self.assertEqual(placement["room_id"], room_id)
+        self.assertIsNone(placement["zone_id"])
+        self.assertEqual(placement["status"], "placed")
+        self.assertEqual(placement["rule"]["rule_id"], "TEST_GRID")
+
+        # BIM-75: виходів немає — ручні сповіщувачі не розміщуються, є повідомлення.
+        call_points = data["manual_call_points"]
+        self.assertEqual(call_points["status"], "insufficient_data")
+        self.assertEqual(call_points["reason"], "Позначте евакуаційні виходи")
+        self.assertEqual(call_points["device_count"], 0)
+
         # Verify old devices deleted
         mock_devices_table.delete.assert_called_once()
         mock_devices_delete.eq.assert_called_with("drawing_id", drawing_id)
@@ -555,6 +586,7 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         for dev in inserted_devices:
             self.assertEqual(dev["drawing_id"], drawing_id)
             self.assertEqual(dev["room_id"], room_id)
+            self.assertEqual(dev["rule_id"], db_rule_id)
             self.assertIn("x", dev)
             self.assertIn("y", dev)
             self.assertEqual(dev["type"], "smoke_detector")
@@ -658,7 +690,6 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
 
         mock_rules_query = MagicMock()
         mock_rules_query.select.return_value = mock_rules_query
-        mock_rules_query.limit.return_value = mock_rules_query
         mock_rules_query.execute.return_value = MagicMock(data=[])
 
         def table_side_effect(table_name: str) -> MagicMock:
@@ -910,7 +941,21 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             ],
             "rooms": [],
             "devices": [],
-            "rules": [{"id": str(uuid4()), "threshold": 2000.0, "status": "approved"}],
+            "rules": [
+                {
+                    "id": str(uuid4()),
+                    "rule_id": "TEST_GRID",
+                    "name": "Test grid",
+                    "device_type": "smoke_detector",
+                    "value_kind": "max_grid_spacing_m",
+                    "value": 2.0,  # метри; креслення в мм, масштаб зберігає /process
+                    "min_height_m": None,
+                    "max_height_m": None,
+                    "room_types": [],
+                    "conditions": {},
+                    "verification_status": "verified",
+                }
+            ],
         }
 
         def mock_table(table_name: str) -> MagicMock:
@@ -1049,6 +1094,11 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertIsNone(mid_data["downloadUrl"])
         self.assertTrue(mid_data["sourceDownloadUrl"].endswith("/source.dxf"))
         self.assertIsNotNone(mid_data["sourceDownloadUrlExpiresAt"])
+
+        # BIM-73: без висоти сповіщувачі не розміщуються, тож інженер вводить її
+        # (PATCH /rooms/{id}) до розміщення.
+        for room_row in db["rooms"]:
+            room_row["height"] = 3.0
 
         # Step 2: POST /drawings/{id}/place
         place_resp = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
