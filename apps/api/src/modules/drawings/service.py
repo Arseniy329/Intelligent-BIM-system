@@ -177,6 +177,20 @@ def get_unit_scale_m(drawing: dict[str, Any], supabase: Client) -> float:
     return scale
 
 
+def _rule_codes(supabase: Client) -> dict[str, str]:
+    """rules.id -> rules.rule_id: код правила, який потрапляє в DXF (BIM-75)."""
+    try:
+        response = supabase.table("rules").select("id, rule_id").execute()
+    except Exception:
+        return {}
+    rows = response.data if isinstance(response.data, list) else []
+    return {
+        str(row["id"]): str(row["rule_id"])
+        for row in rows
+        if isinstance(row, dict) and row.get("id") and row.get("rule_id")
+    }
+
+
 def generate_and_upload_result_dxf(drawing_id: str, supabase: Client) -> str:
     """Generate result DXF with placed device blocks and upload to Supabase storage.
 
@@ -222,13 +236,15 @@ def generate_and_upload_result_dxf(drawing_id: str, supabase: Client) -> str:
         devices_response.data if isinstance(devices_response.data, list) else []
     )
 
-    devices: list[tuple[float, float, str]] = []
+    rule_codes = _rule_codes(supabase)
+    devices: list[tuple[float, float, str, str | None]] = []
     for dev in devices_data:
         if not isinstance(dev, dict):
             continue
         device_type = str(dev.get("type") or DEFAULT_DEVICE_TYPE)
+        rule_code = rule_codes.get(str(dev["rule_id"])) if dev.get("rule_id") else None
         if "x" in dev and "y" in dev and dev["x"] is not None and dev["y"] is not None:
-            devices.append((float(dev["x"]), float(dev["y"]), device_type))
+            devices.append((float(dev["x"]), float(dev["y"]), device_type, rule_code))
         elif "position" in dev and isinstance(dev["position"], dict):
             pos = dev["position"]
             if (
@@ -237,7 +253,9 @@ def generate_and_upload_result_dxf(drawing_id: str, supabase: Client) -> str:
                 and pos["x"] is not None
                 and pos["y"] is not None
             ):
-                devices.append((float(pos["x"]), float(pos["y"]), device_type))
+                devices.append(
+                    (float(pos["x"]), float(pos["y"]), device_type, rule_code)
+                )
 
     input_tmp_path: Path | None = None
     output_tmp_path: Path | None = None

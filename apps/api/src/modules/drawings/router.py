@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
@@ -22,7 +23,9 @@ from src.core.config import get_settings
 from src.core.exceptions import BIMException
 from src.infrastructure.storage import cleanup_file, download_dxf_to_tmp
 from src.infrastructure.supabase import get_supabase_client
-from src.modules.cad.parser import parse_dxf_rooms_with_scale
+from src.modules.cad.exits import find_exit_points
+from src.modules.cad.parser import parse_dxf_rooms_with_scale, read_dxf_document
+from src.modules.cad.writer import MCP_LAYER_NAME
 from src.modules.drawings.schemas import (
     CreateDrawingRequest,
     CreateDrawingResponse,
@@ -35,6 +38,13 @@ from src.modules.drawings.service import (
     list_drawings_for_user,
     stored_unit_scale_m,
 )
+from src.modules.placement.manual_call_points import (
+    describe_call_point_outcome,
+    exits_from_rows,
+    place_manual_call_points,
+    room_id_near_exit,
+    rooms_from_rows,
+)
 from src.modules.placement.service import (
     build_placement_targets,
     describe_outcome,
@@ -43,6 +53,7 @@ from src.modules.placement.service import (
 from src.modules.rooms.service import room_from_row, row_points
 
 router = APIRouter(prefix="/drawings", tags=["drawings"])
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -162,6 +173,66 @@ async def list_drawings(
     return await list_drawings_for_user(current_user.id, supabase)
 
 
+def _save_dxf_exits(
+    supabase: Client,
+    drawing_id: str,
+    dxf_path: Path,
+    unit_scale_m: float,
+    room_rows: list[dict[str, Any]],
+) -> None:
+    """BIM-75: зберегти виходи, позначені в DXF (шар EXITS або підпис «Вихід»).
+
+    Виходи з source = dxf замінюються, позначені вручну лишаються (їх зв'язок із
+    приміщенням оновлюється, бо приміщення при обробці створюються заново). Пошук
+    виходів не обов'язковий для обробки: збій тут не повинен ламати розпізнавання
+    приміщень, тому він лише логується.
+    """
+    try:
+        document = read_dxf_document(dxf_path)
+        detected = find_exit_points(document.modelspace(), unit_scale_m)
+        rooms = rooms_from_rows(room_rows)
+
+        supabase.table("exits").delete().eq("drawing_id", drawing_id).eq(
+            "source", "dxf"
+        ).execute()
+        exit_rows = [
+            {
+                "id": str(uuid4()),
+                "drawing_id": drawing_id,
+                "room_id": room_id_near_exit((item.x, item.y), rooms, unit_scale_m),
+                "name": item.name,
+                "x": item.x,
+                "y": item.y,
+                "source": "dxf",
+            }
+            for item in detected
+        ]
+        if exit_rows:
+            supabase.table("exits").insert(exit_rows).execute()
+
+        manual = (
+            supabase.table("exits")
+            .select("*")
+            .eq("drawing_id", drawing_id)
+            .eq("source", "manual")
+            .execute()
+        )
+        for row in manual.data if isinstance(manual.data, list) else []:
+            if not isinstance(row, dict):
+                continue
+            room_id = room_id_near_exit(
+                (float(row["x"]), float(row["y"])), rooms, unit_scale_m
+            )
+            if room_id != row.get("room_id"):
+                supabase.table("exits").update({"room_id": room_id}).eq(
+                    "id", str(row["id"])
+                ).execute()
+    except Exception:
+        logger.warning(
+            "Exit detection failed for drawing %s", drawing_id, exc_info=True
+        )
+
+
 @router.post("/{drawing_id}/process")
 async def process_drawing(
     drawing_id: str,
@@ -228,6 +299,8 @@ async def process_drawing(
         ]
         if room_rows:
             supabase.table("rooms").insert(room_rows).execute()
+
+        _save_dxf_exits(supabase, drawing_id, input_tmp_path, unit_scale_m, room_rows)
 
         # unit_scale_m (migration 007) lets manual room edits compute areas
         # even after every parsed room has been deleted.
@@ -344,6 +417,37 @@ async def place_drawing_devices(
             for placed in outcome.devices
         ]
 
+        # BIM-75: ручні сповіщувачі біля евакуаційних виходів і на шляхах евакуації.
+        # Немає виходів — їх не розміщуємо й повертаємо «Позначте евакуаційні виходи».
+        exits_response = (
+            supabase.table("exits").select("*").eq("drawing_id", drawing_id).execute()
+        )
+        exit_rows = (
+            [row for row in exits_response.data if isinstance(row, dict)]
+            if isinstance(exits_response.data, list)
+            else []
+        )
+        call_points = place_manual_call_points(
+            rooms=rooms_from_rows([r for r in rooms_data if isinstance(r, dict)]),
+            exits=exits_from_rows(exit_rows),
+            rule_rows=rule_rows,
+            unit_scale_m=stored_unit_scale_m(drawing_data),
+        )
+        if call_points.rule is not None:
+            new_device_rows.extend(
+                {
+                    "id": str(uuid4()),
+                    "drawing_id": drawing_id,
+                    "room_id": placed.room_id,
+                    "rule_id": call_points.rule.id,
+                    "type": "manual_call_point",
+                    "layer": MCP_LAYER_NAME,
+                    "x": float(placed.x),
+                    "y": float(placed.y),
+                }
+                for placed in call_points.devices
+            )
+
         supabase.table("devices").delete().eq("drawing_id", drawing_id).execute()
 
         if new_device_rows:
@@ -360,6 +464,7 @@ async def place_drawing_devices(
             "status": "processed",
             "result_path": result_storage_path,
             "placements": [describe_outcome(outcome) for outcome in outcomes],
+            "manual_call_points": describe_call_point_outcome(call_points),
         }
     except Exception as exc:
         try:

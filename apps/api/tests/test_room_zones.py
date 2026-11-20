@@ -82,6 +82,7 @@ class RoomZonesTestCase(unittest.TestCase):
             ]
         )
         self.devices_table = FakeTable([])
+        self.exits_table = FakeTable([])
         self.rules_table = FakeTable(
             [
                 smoke_rule("SMOKE_GRID_HEIGHT_3_5", None, 3.5, 9.0, 80),
@@ -92,6 +93,7 @@ class RoomZonesTestCase(unittest.TestCase):
             {
                 "rooms": self.rooms_table,
                 "room_zones": self.zones_table,
+                "exits": self.exits_table,
                 "drawings": self.drawings_table,
                 "devices": self.devices_table,
                 "rules": self.rules_table,

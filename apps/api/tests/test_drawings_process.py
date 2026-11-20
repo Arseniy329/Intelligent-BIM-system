@@ -571,6 +571,12 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertEqual(placement["status"], "placed")
         self.assertEqual(placement["rule"]["rule_id"], "TEST_GRID")
 
+        # BIM-75: виходів немає — ручні сповіщувачі не розміщуються, є повідомлення.
+        call_points = data["manual_call_points"]
+        self.assertEqual(call_points["status"], "insufficient_data")
+        self.assertEqual(call_points["reason"], "Позначте евакуаційні виходи")
+        self.assertEqual(call_points["device_count"], 0)
+
         # Verify old devices deleted
         mock_devices_table.delete.assert_called_once()
         mock_devices_delete.eq.assert_called_with("drawing_id", drawing_id)
