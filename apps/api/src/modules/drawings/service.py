@@ -237,7 +237,7 @@ def generate_and_upload_result_dxf(drawing_id: str, supabase: Client) -> str:
     )
 
     rule_codes = _rule_codes(supabase)
-    devices: list[tuple[float, float, str, str | None]] = []
+    devices: list[tuple[float, float, str] | tuple[float, float, str, str | None]] = []
     for dev in devices_data:
         if not isinstance(dev, dict):
             continue
