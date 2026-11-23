@@ -39,6 +39,7 @@ from src.modules.placement.service import (
     build_placement_targets,
     describe_outcome,
     place_targets,
+    summarize_outcomes,
 )
 from src.modules.rooms.service import room_from_row, row_points
 
@@ -360,6 +361,10 @@ async def place_drawing_devices(
             "status": "processed",
             "result_path": result_storage_path,
             "placements": [describe_outcome(outcome) for outcome in outcomes],
+            # `status: processed` лише каже, що крок розміщення завершено. Чи
+            # оброблено все креслення, показує placement_status; пропущені
+            # приміщення/зони з причинами — у skipped.
+            **summarize_outcomes(outcomes),
         }
     except Exception as exc:
         try:

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DrawingDetailResponse } from "@bim/contracts";
 import { ApiAuthenticationError, ApiHttpError, createDrawing } from "@/lib/api";
-import { drawingApi, drawingErrorMessage, downloadLink, fetchDrawingDownload, listDrawings, normalizeDrawingDetail, parseDrawing, parseJob, parseDrawingOperation, processingErrorMessage } from "@/lib/drawing/drawing-api";
+import { drawingApi, drawingErrorMessage, downloadLink, fetchDrawingDownload, listDrawings, normalizeDrawingDetail, parseDrawing, parseJob, parseDrawingOperation, parsePlacementReport, placementReport, processingErrorMessage } from "@/lib/drawing/drawing-api";
 import { DEMO_RESULT } from "@/lib/drawing/demo-drawing";
 import { createDemoDrawingApi } from "@/lib/drawing/demo-api";
 import { isDrawingDemoEnabled } from "@/lib/drawing/demo-mode";
@@ -67,6 +67,37 @@ it.each(["process", "place"] as const)("POSTs the synchronous %s endpoint withou
   expect(fetchMock).toHaveBeenCalledOnce();
   expect(() => parseDrawingOperation({ ...response, drawing_id: "other" }, id, status)).toThrow();
   expect(() => parseDrawingOperation({ drawing_id: id, status: "accepted" }, id, status)).toThrow();
+});
+it("keeps the placement report of POST /place: partial result with skipped zones and reasons", () => {
+  const operation = parseDrawingOperation({
+    drawing_id: id, status: "processed", placement_status: "partial", device_count: 6,
+    placements: [{ status: "placed" }],
+    skipped: [
+      { room_id: "r1", zone_id: null, name: "Hall", zone_name: "Решта приміщення", scope: "remainder",
+        reason: "Частину приміщення (≈40 м², 50 %) не віднесено до жодної зони: додайте зону з висотою для решти приміщення" },
+      { room_id: "r2", zone_id: null, name: "Office", zone_name: null, scope: "room", reason: "Не введено висоту" },
+    ],
+  }, id, "processed");
+  expect(operation).toMatchObject({ drawingId: id, status: "processed", placementStatus: "partial", deviceCount: 6 });
+  expect(placementReport(operation)?.placementIssues).toEqual([
+    { title: "Hall — Решта приміщення", reason: expect.stringContaining("не віднесено до жодної зони") },
+    { title: "Office", reason: "Не введено висоту" },
+  ]);
+});
+it("reports no devices because of missing height as insufficient data, not as a plain success", () => {
+  const operation = parseDrawingOperation({
+    drawing_id: id, status: "processed", placement_status: "insufficient_data", device_count: 0,
+    skipped: [{ name: "Hall", zone_name: null, reason: "Не введено висоту" }],
+  }, id, "processed");
+  expect(placementReport(operation)).toMatchObject({ placementStatus: "insufficient_data", deviceCount: 0 });
+  expect(placementReport(operation)?.placementIssues).toEqual([{ title: "Hall", reason: "Не введено висоту" }]);
+});
+it("ignores malformed placement report parts and responses without a report", () => {
+  expect(parsePlacementReport({ placement_status: "invented", device_count: "3", skipped: [null, { reason: "" }, { name: "A" }] }))
+    .toEqual({ placementIssues: [] });
+  expect(placementReport(parseDrawingOperation({ drawing_id: id, status: "processed" }, id, "processed"))).toBeNull();
+  expect(placementReport(DEMO_RESULT)).toBeNull();
+  expect(placementReport(undefined)).toBeNull();
 });
 it("rejects mismatched IDs, absent data and invalid jobs", async () => {
   expect(() => parseDrawing(null, id)).toThrow();

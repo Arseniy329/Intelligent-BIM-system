@@ -6,7 +6,7 @@ import { useMutation } from "@tanstack/react-query";
 import type { DrawingStatus, DrawingDetailStatus } from "@bim/contracts";
 import { DrawingViewer, type DrawingViewerProps } from "./drawing-viewer";
 import { EmptyState } from "@/components/ui/empty-state";
-import { drawingApi, drawingErrorMessage, drawingMetadata, downloadLink, fetchDrawingDownload, isDrawingResult, processingErrorMessage,
+import { drawingApi, drawingErrorMessage, drawingMetadata, downloadLink, fetchDrawingDownload, isDrawingResult, placementReport, processingErrorMessage,
   type DownloadKind, type DrawingApi, type DrawingResponse } from "@/lib/drawing/drawing-api";
 import { useDrawingDetail } from "@/lib/drawing/use-drawing-detail";
 import { RoomsTable, RoomEditForm } from "@/components/rooms";
@@ -142,6 +142,8 @@ function DrawingDetailContent({
   const resultDownloadAvailable = metadata.status === "processed" && !!result?.downloadUrl;
   const error = state.detail.error || state.process.error || state.place.error || state.jobError;
   const processingFailed = state.currentJob?.status === "failed";
+  // `processed` only means the placement step finished; skipped rooms/zones come with reasons.
+  const placement = placementReport(state.place.data);
   const units = isDrawingResult(data) ? data.drawing.resolvedUnits : data.units;
   const reprocessing = !!result?.rooms.length || metadata.status === "processed";
   const mappedRooms =
@@ -326,6 +328,36 @@ function DrawingDetailContent({
                 disabled={editor.blocked}
                 onClick={() => navigateTab("rooms")}
                 className="shrink-0 text-xs font-semibold text-amber-900 underline hover:text-amber-950 cursor-pointer"
+              >
+                Перейти до приміщень →
+              </button>
+            </div>
+          )}
+          {placement && placement.placementStatus !== "complete" && (
+            <div
+              role="alert"
+              data-slot="placement-incomplete-banner"
+              className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-900 shadow-xs"
+            >
+              <p className="font-semibold">
+                {placement.placementStatus === "insufficient_data"
+                  ? "Прилади не розміщено: бракує даних."
+                  : "Розміщення неповне: частину приміщень пропущено."}
+              </p>
+              {!!placement.placementIssues?.length && (
+                <ul className="list-disc space-y-1 pl-5">
+                  {placement.placementIssues.map((issue, index) => (
+                    <li key={`${issue.title}-${index}`}>
+                      <span className="font-medium">{issue.title}:</span> {issue.reason}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <button
+                type="button"
+                disabled={editor.blocked}
+                onClick={() => navigateTab("rooms")}
+                className="cursor-pointer text-xs font-semibold text-amber-900 underline hover:text-amber-950"
               >
                 Перейти до приміщень →
               </button>

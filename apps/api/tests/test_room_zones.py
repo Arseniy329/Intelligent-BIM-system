@@ -377,6 +377,62 @@ class TestPlaceUsesRoomAndZoneHeight(RoomZonesTestCase):
         self.assertEqual(len(rule_ids), 2)
         self.assertTrue(all(row["x"] <= 7_000 for row in self.devices_table.inserts))
 
+    # ── Інваріант: ніщо не зникає мовчки, клієнт бачить неповний результат ──
+
+    def test_missing_height_is_visible_in_placement_status(self) -> None:
+        response = self.place()
+
+        body = response.json()
+        self.assertEqual(response.status_code, 200, response.text)
+        # Крок розміщення завершився, але приладів немає — це не успіх.
+        self.assertEqual(body["status"], "processed")
+        self.assertEqual(body["placement_status"], "insufficient_data")
+        self.assertEqual(body["device_count"], 0)
+        (skipped,) = body["skipped"]
+        self.assertEqual(skipped["room_id"], self.room_id)
+        self.assertEqual(skipped["name"], "Hall")
+        self.assertEqual(skipped["scope"], "room")
+        self.assertEqual(skipped["reason"], "Не введено висоту")
+
+    def test_partial_zone_does_not_drop_the_rest_of_the_room(self) -> None:
+        zone = self.add_zone(rect_mm(0, 0, 5_000, 8_000), 3.0, "Ліва половина")
+
+        response = self.place()
+
+        body = response.json()
+        self.assertEqual(response.status_code, 200, response.text)
+        by_scope = {item["scope"]: item for item in body["placements"]}
+        self.assertEqual(by_scope["zone"]["zone_id"], zone["id"])
+        self.assertEqual(by_scope["zone"]["status"], "placed")
+        remainder = by_scope["remainder"]
+        self.assertEqual(remainder["room_id"], self.room_id)
+        self.assertIsNone(remainder["zone_id"])
+        self.assertEqual(remainder["status"], "insufficient_data")
+        self.assertEqual(remainder["device_count"], 0)
+        self.assertEqual(remainder["area_m2"], 40.0)
+        self.assertIn("не віднесено до жодної зони", remainder["reason"])
+
+        self.assertEqual(body["placement_status"], "partial")
+        self.assertEqual([item["scope"] for item in body["skipped"]], ["remainder"])
+        self.assertEqual(body["skipped"][0]["reason"], remainder["reason"])
+        # Прилади — тільки в межах зони.
+        self.assertGreater(len(self.devices_table.inserts), 0)
+        self.assertTrue(all(row["x"] <= 5_000 for row in self.devices_table.inserts))
+
+    def test_full_split_by_adjacent_zones_is_complete(self) -> None:
+        self.add_zone(rect_mm(0, 0, 5_000, 8_000), 3.0, "Ліва")
+        self.add_zone(rect_mm(5_000, 0, 10_000, 8_000), 8.0, "Права")
+
+        response = self.place()
+
+        body = response.json()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            sorted(item["scope"] for item in body["placements"]), ["zone", "zone"]
+        )
+        self.assertEqual(body["placement_status"], "complete")
+        self.assertEqual(body["skipped"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
