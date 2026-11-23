@@ -125,8 +125,9 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             self.assertEqual(room["confirmed"], False)
 
         # Verify drawings table status updated to 'processing'
+        # Приміщення створено заново, тож збережений звіт розміщення скидається.
         mock_drawings_query.update.assert_called_with(
-            {"status": "processing", "unit_scale_m": 0.001}
+            {"status": "processing", "unit_scale_m": 0.001, "placement_report": None}
         )
 
         # Verify /tmp cleanup
@@ -437,6 +438,7 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             "original_file_name": "01_simple_rooms_mm.dxf",
             "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
             "units": "mm",
+            "unit_scale_m": 0.001,
             "status": "processing",
             "created_at": "2026-10-31T12:00:00Z",
         }
@@ -458,7 +460,24 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             }
         ]
 
-        rules_data = [{"id": str(uuid4()), "threshold": 2000.0, "status": "approved"}]
+        # Правило з каталогу: крок 2 м (креслення в мм, масштаб 0.001),
+        # без обмеження висоти.
+        db_rule_id = str(uuid4())
+        rules_data = [
+            {
+                "id": db_rule_id,
+                "rule_id": "TEST_GRID",
+                "name": "Test grid",
+                "device_type": "smoke_detector",
+                "value_kind": "max_grid_spacing_m",
+                "value": 2.0,
+                "min_height_m": None,
+                "max_height_m": None,
+                "room_types": [],
+                "conditions": {},
+                "verification_status": "verified",
+            }
+        ]
 
         mock_drawings_query = MagicMock()
         mock_drawings_query.select.return_value = mock_drawings_query
@@ -474,7 +493,6 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
 
         mock_rules_query = MagicMock()
         mock_rules_query.select.return_value = mock_rules_query
-        mock_rules_query.limit.return_value = mock_rules_query
         mock_rules_query.execute.return_value = MagicMock(data=rules_data)
 
         inserted_devices: list[dict] = []
@@ -546,6 +564,14 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertEqual(data["status"], "processed")
         self.assertEqual(data["result_path"], expected_storage_path)
 
+        # BIM-73: результат розміщення по приміщенню (кімната висотою 3 м).
+        self.assertEqual(len(data["placements"]), 1)
+        placement = data["placements"][0]
+        self.assertEqual(placement["room_id"], room_id)
+        self.assertIsNone(placement["zone_id"])
+        self.assertEqual(placement["status"], "placed")
+        self.assertEqual(placement["rule"]["rule_id"], "TEST_GRID")
+
         # Verify old devices deleted
         mock_devices_table.delete.assert_called_once()
         mock_devices_delete.eq.assert_called_with("drawing_id", drawing_id)
@@ -555,13 +581,24 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         for dev in inserted_devices:
             self.assertEqual(dev["drawing_id"], drawing_id)
             self.assertEqual(dev["room_id"], room_id)
+            self.assertEqual(dev["rule_id"], db_rule_id)
             self.assertIn("x", dev)
             self.assertIn("y", dev)
             self.assertEqual(dev["type"], "smoke_detector")
             self.assertEqual(dev["layer"], "SYS_FIRE_SENSORS")
 
         # Verify drawing status updated to 'processed'
-        mock_drawings_query.update.assert_called_with({"status": "processed"})
+        # Звіт розміщення пишеться тим самим UPDATE, що й статус (GET його повертає).
+        mock_drawings_query.update.assert_called_with(
+            {
+                "status": "processed",
+                "placement_report": {
+                    "placement_status": "complete",
+                    "device_count": len(inserted_devices),
+                    "skipped": [],
+                },
+            }
+        )
 
         # Verify DXF uploaded
         self.assertEqual(len(uploaded_payloads), 1)
@@ -658,7 +695,6 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
 
         mock_rules_query = MagicMock()
         mock_rules_query.select.return_value = mock_rules_query
-        mock_rules_query.limit.return_value = mock_rules_query
         mock_rules_query.execute.return_value = MagicMock(data=[])
 
         def table_side_effect(table_name: str) -> MagicMock:
@@ -910,7 +946,21 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             ],
             "rooms": [],
             "devices": [],
-            "rules": [{"id": str(uuid4()), "threshold": 2000.0, "status": "approved"}],
+            "rules": [
+                {
+                    "id": str(uuid4()),
+                    "rule_id": "TEST_GRID",
+                    "name": "Test grid",
+                    "device_type": "smoke_detector",
+                    "value_kind": "max_grid_spacing_m",
+                    "value": 2.0,  # метри; креслення в мм, масштаб зберігає /process
+                    "min_height_m": None,
+                    "max_height_m": None,
+                    "room_types": [],
+                    "conditions": {},
+                    "verification_status": "verified",
+                }
+            ],
         }
 
         def mock_table(table_name: str) -> MagicMock:
@@ -1050,6 +1100,11 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertTrue(mid_data["sourceDownloadUrl"].endswith("/source.dxf"))
         self.assertIsNotNone(mid_data["sourceDownloadUrlExpiresAt"])
 
+        # BIM-73: без висоти сповіщувачі не розміщуються, тож інженер вводить її
+        # (PATCH /rooms/{id}) до розміщення.
+        for room_row in db["rooms"]:
+            room_row["height"] = 3.0
+
         # Step 2: POST /drawings/{id}/place
         place_resp = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
         self.assertEqual(place_resp.status_code, 200)
@@ -1063,7 +1118,13 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         get_resp = self.client.get(f"/api/v1/drawings/{drawing_id}")
         self.assertEqual(get_resp.status_code, 200)
 
-        result = DrawingResult.model_validate(get_resp.json())
+        # GET повертає збережений звіт розміщення поруч із контрактом (DrawingResult
+        # не допускає зайвих полів): контракт перевіряється без нього, а звіт — окремо.
+        body = get_resp.json()
+        stored_report = body.pop("placementReport")
+        self.assertEqual(stored_report, db["drawings"][0]["placement_report"])
+        self.assertEqual(stored_report["device_count"], len(db["devices"]))
+        result = DrawingResult.model_validate(body)
         self.assertEqual(str(result.drawing.id), drawing_id)
         self.assertEqual(result.drawing.status.value, "processed")
         self.assertEqual(len(result.rooms), len(db["rooms"]))

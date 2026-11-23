@@ -29,12 +29,19 @@ from src.modules.drawings.schemas import (
     DrawingDetailResponse,
     DrawingListItem,
     DrawingRecord,
+    DrawingResultWithReport,
 )
 from src.modules.drawings.service import (
     generate_and_upload_result_dxf,
     list_drawings_for_user,
+    stored_unit_scale_m,
 )
-from src.modules.placement.service import RuleRecord, place_devices_from_rule
+from src.modules.placement.service import (
+    build_placement_targets,
+    describe_outcome,
+    place_targets,
+    summarize_outcomes,
+)
 from src.modules.rooms.service import room_from_row, row_points
 
 router = APIRouter(prefix="/drawings", tags=["drawings"])
@@ -226,8 +233,14 @@ async def process_drawing(
 
         # unit_scale_m (migration 007) lets manual room edits compute areas
         # even after every parsed room has been deleted.
+        # Приміщення створено заново, тож звіт попереднього розміщення втратив
+        # чинність: після повторної обробки його не слід показувати.
         supabase.table("drawings").update(
-            {"status": "processing", "unit_scale_m": unit_scale_m}
+            {
+                "status": "processing",
+                "unit_scale_m": unit_scale_m,
+                "placement_report": None,
+            }
         ).eq("id", drawing_id).execute()
 
         return {
@@ -289,82 +302,69 @@ async def place_drawing_devices(
                 detail="No rooms found for this drawing",
             )
 
-        rules_response = supabase.table("rules").select("*").limit(1).execute()
-        if (
-            not rules_response.data
-            or not isinstance(rules_response.data, list)
-            or len(rules_response.data) == 0
-        ):
+        rules_response = supabase.table("rules").select("*").execute()
+        rule_rows = (
+            [row for row in rules_response.data if isinstance(row, dict)]
+            if isinstance(rules_response.data, list)
+            else []
+        )
+        if not rule_rows:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No fire safety rules available",
             )
 
-        rule_data = rules_response.data[0]
-        if (
-            not isinstance(rule_data, dict)
-            or "id" not in rule_data
-            or "threshold" not in rule_data
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid rule record format",
-            )
-
-        try:
-            threshold_val = float(rule_data["threshold"])
-        except (ValueError, TypeError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid rule threshold",
-            ) from exc
-
-        rule = RuleRecord(
-            id=str(rule_data["id"]),
-            threshold=threshold_val,
-            status=str(rule_data.get("status") or "needs_review"),
+        zones_response = (
+            supabase.table("room_zones")
+            .select("*")
+            .eq("drawing_id", drawing_id)
+            .execute()
+        )
+        zone_rows = (
+            [row for row in zones_response.data if isinstance(row, dict)]
+            if isinstance(zones_response.data, list)
+            else []
         )
 
-        new_device_rows: list[dict[str, Any]] = []
-        for room in rooms_data:
-            if not isinstance(room, dict):
-                continue
-            poly_data = room.get("polygon")
-            if not isinstance(poly_data, list) or len(poly_data) < 3:
-                continue
-            coords: list[tuple[float, float]] = []
-            for pt in poly_data:
-                if isinstance(pt, dict) and "x" in pt and "y" in pt:
-                    coords.append((float(pt["x"]), float(pt["y"])))
-                elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                    coords.append((float(pt[0]), float(pt[1])))
-            if len(coords) < 3:
-                continue
+        # BIM-73: правило береться за висотою приміщення або його зони. Немає
+        # висоти чи правила — приладів немає, статус «недостатньо даних».
+        outcomes = place_targets(
+            build_placement_targets(
+                [room for room in rooms_data if isinstance(room, dict)], zone_rows
+            ),
+            rule_rows,
+            device_type="smoke_detector",
+            unit_scale_m=stored_unit_scale_m(drawing_data),
+        )
 
-            room_id = str(room["id"]) if room.get("id") else None
-            placed_devices = place_devices_from_rule(coords, rule)
-            for d in placed_devices:
-                new_device_rows.append(
-                    {
-                        "id": str(uuid4()),
-                        "drawing_id": drawing_id,
-                        "room_id": room_id,
-                        "rule_id": str(rule.id),
-                        "type": "smoke_detector",
-                        "layer": "SYS_FIRE_SENSORS",
-                        "x": float(d.x),
-                        "y": float(d.y),
-                    }
-                )
+        new_device_rows: list[dict[str, Any]] = [
+            {
+                "id": str(uuid4()),
+                "drawing_id": drawing_id,
+                "room_id": outcome.target.room_id,
+                "rule_id": str(placed.rule_id),
+                "type": "smoke_detector",
+                "layer": "SYS_FIRE_SENSORS",
+                "x": float(placed.x),
+                "y": float(placed.y),
+            }
+            for outcome in outcomes
+            for placed in outcome.devices
+        ]
 
         supabase.table("devices").delete().eq("drawing_id", drawing_id).execute()
 
         if new_device_rows:
             supabase.table("devices").insert(new_device_rows).execute()
 
-        supabase.table("drawings").update({"status": "processed"}).eq(
-            "id", drawing_id
-        ).execute()
+        # `status: processed` лише каже, що крок розміщення завершено. Чи оброблено
+        # все креслення, показує placement_status; пропущені приміщення/зони з
+        # причинами — у skipped. Звіт пишеться тим самим UPDATE, що й статус, і
+        # повертається в GET: після перезавантаження він не зникає.
+        placement_summary = summarize_outcomes(outcomes)
+        supabase.table("drawings").update(
+            {"status": "processed", "placement_report": placement_summary}
+        ).eq("id", drawing_id).execute()
 
         result_storage_path = generate_and_upload_result_dxf(drawing_id, supabase)
 
@@ -372,6 +372,8 @@ async def place_drawing_devices(
             "drawing_id": drawing_id,
             "status": "processed",
             "result_path": result_storage_path,
+            "placements": [describe_outcome(outcome) for outcome in outcomes],
+            **placement_summary,
         }
     except Exception as exc:
         try:
@@ -391,13 +393,13 @@ async def place_drawing_devices(
 
 @router.get(
     "/{drawing_id}",
-    response_model=DrawingResult | DrawingDetailResponse,
+    response_model=DrawingResultWithReport | DrawingResult | DrawingDetailResponse,
 )
 async def get_drawing_detail(
     drawing_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     supabase: Annotated[Client | None, Depends(get_supabase_client)] = None,
-) -> DrawingResult | DrawingDetailResponse:
+) -> DrawingResultWithReport | DrawingResult | DrawingDetailResponse:
     if supabase is None:
         supabase = get_supabase_client(settings)
 
@@ -545,16 +547,32 @@ async def get_drawing_detail(
                 download_url = None
                 download_url_expires_at = None
 
-        return DrawingResult(
-            sourceDownloadUrl=AnyUrl(source_download_url)
+        # Звіт останнього розміщення належить лише готовому результату (processed)
+        # або проміжному стану після /process; після помилки він застарів.
+        stored_report = drawing_data.get("placement_report")
+        placement_report = (
+            stored_report
+            if isinstance(stored_report, dict)
+            and status_raw in {"processing", "processed"}
+            else None
+        )
+
+        result_fields: dict[str, Any] = {
+            "sourceDownloadUrl": AnyUrl(source_download_url)
             if source_download_url
             else None,
-            sourceDownloadUrlExpiresAt=source_download_url_expires_at,
-            drawing=drawing,
-            rooms=rooms,
-            devices=devices,
-            downloadUrl=download_url,
-            downloadUrlExpiresAt=download_url_expires_at,
+            "sourceDownloadUrlExpiresAt": source_download_url_expires_at,
+            "drawing": drawing,
+            "rooms": rooms,
+            "devices": devices,
+            "downloadUrl": download_url,
+            "downloadUrlExpiresAt": download_url_expires_at,
+        }
+        if placement_report is None:
+            # Без звіту відповідь байт-у-байт збігається з контрактом DrawingResult.
+            return DrawingResult(**result_fields)
+        return DrawingResultWithReport(
+            **result_fields, placementReport=placement_report
         )
 
     # Flat DrawingDetailResponse format for unprocessed drawings
