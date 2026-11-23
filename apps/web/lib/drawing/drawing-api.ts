@@ -7,7 +7,23 @@ import { isDrawingDemoEnabled } from "./demo-mode";
 export type DrawingDetail = Omit<DrawingDetailResponse, "units" | "status"> & { units: RequestedDrawingUnits; status: DrawingDetailResponse["status"] | ContractDrawingStatus };
 export type DrawingResponse = DrawingDetail | DrawingResult;
 // The synchronous POST endpoints return snake_case acknowledgements, not jobs.
-export type DrawingOperation = { drawingId: string; status: "processing" | "processed" };
+// `status: "processed"` only says the placement step finished. Whether every room
+// and zone was handled is in `placementStatus`; what was skipped and why is in
+// `placementIssues`.
+export type PlacementStatus = "complete" | "partial" | "insufficient_data";
+export interface PlacementIssue {
+  /** Room, optionally with the zone, the issue belongs to. */
+  title: string;
+  reason: string;
+}
+export type PlacementReport = {
+  placementStatus?: PlacementStatus;
+  deviceCount?: number;
+  placementIssues?: PlacementIssue[];
+  /** Warnings of the step that do not fail it, e.g. exits not saved or an unconfirmed evacuation route. */
+  warnings?: string[];
+};
+export type DrawingOperation = { drawingId: string; status: "processing" | "processed" } & PlacementReport;
 export type ProcessingResponse = DrawingOperation | DrawingResult | ProcessingJob;
 export interface DrawingApi {
   getDrawing(id: string, signal?: AbortSignal): Promise<DrawingResponse>;
@@ -142,7 +158,55 @@ export function parseDrawingOperation(value: unknown, id: string, status: Drawin
   }
   if (!record(value) || value.drawing_id !== id || value.status !== status)
     throw new Error("Invalid drawing operation response.");
-  return { drawingId: id, status };
+  return { drawingId: id, status, ...parsePlacementReport(value) };
+}
+
+const placementStatuses: readonly PlacementStatus[] = ["complete", "partial", "insufficient_data"];
+
+/** Reads the optional placement report of POST /place. Missing or malformed parts are left out. */
+export function parsePlacementReport(value: Record<string, unknown>): PlacementReport {
+  const report: PlacementReport = {};
+  if (typeof value.placement_status === "string" && placementStatuses.includes(value.placement_status as PlacementStatus))
+    report.placementStatus = value.placement_status as PlacementStatus;
+  if (typeof value.device_count === "number" && Number.isFinite(value.device_count))
+    report.deviceCount = value.device_count;
+  if (Array.isArray(value.skipped)) {
+    report.placementIssues = value.skipped.flatMap((item): PlacementIssue[] => {
+      if (!record(item) || typeof item.reason !== "string" || !item.reason) return [];
+      const room = typeof item.name === "string" && item.name ? item.name : "Приміщення";
+      const zone = typeof item.zone_name === "string" && item.zone_name ? ` — ${item.zone_name}` : "";
+      return [{ title: `${room}${zone}`, reason: item.reason }];
+    });
+  }
+  const warnings = operationWarnings(value);
+  if (warnings.length) report.warnings = warnings;
+  return report;
+}
+
+/**
+ * Step warnings of POST /process (`exit_detection`) and POST /place (`manual_call_points`):
+ * the step itself succeeded, but the engineer must know about the gap.
+ */
+function operationWarnings(value: Record<string, unknown>): string[] {
+  const warnings: string[] = [];
+  const text = (candidate: unknown) => typeof candidate === "string" && candidate ? candidate : null;
+  if (record(value.exit_detection)) {
+    const warning = text(value.exit_detection.warning);
+    if (warning) warnings.push(warning);
+  }
+  if (record(value.manual_call_points)) {
+    const mcp = value.manual_call_points;
+    const reason = mcp.status === "insufficient_data" ? text(mcp.reason) : null;
+    for (const message of [reason, text(mcp.route_warning), text(mcp.warning)])
+      if (message) warnings.push(`Ручні сповіщувачі: ${message}`);
+  }
+  return warnings;
+}
+
+/** The placement report of a finished POST call, or null when the response has none. */
+export function placementReport(operation: DrawingOperation | DrawingResult | undefined): PlacementReport | null {
+  if (!operation || "drawing" in operation) return null;
+  return operation.placementStatus || operation.warnings?.length ? operation : null;
 }
 
 export function parseDrawing(value: unknown, id: string): DrawingResponse {

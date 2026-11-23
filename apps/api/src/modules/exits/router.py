@@ -1,8 +1,11 @@
-"""BIM-75: евакуаційні виходи — перегляд і позначка інженером на плані (BIM-182).
+"""BIM-75: евакуаційні виходи й проходи — перегляд і позначка на плані (BIM-182).
 
 Виходи з креслення (шар EXITS або підпис «Вихід») потрапляють сюди під час обробки
 креслення (source = dxf); інженер додає або прибирає виходи на плані (source = manual).
 Ручні сповіщувачі розміщуються біля цих виходів (POST /drawings/{id}/place).
+
+Проходи — двері між приміщеннями (з креслення або підтверджені інженером). Без проходу
+маршрут евакуації з одного приміщення в інше не будується, навіть якщо контури близькі.
 """
 
 from datetime import UTC, datetime
@@ -17,7 +20,13 @@ from src.core.auth import CurrentUser, get_current_user
 from src.infrastructure.supabase import get_supabase_client
 from src.modules.drawings.access import all_rows, first_row, get_drawing_for_user
 from src.modules.drawings.service import stored_unit_scale_m
-from src.modules.exits.schemas import Exit, ExitCreateRequest, ExitSource
+from src.modules.exits.schemas import (
+    Exit,
+    ExitCreateRequest,
+    ExitSource,
+    Passage,
+    PassageCreateRequest,
+)
 from src.modules.placement.manual_call_points import (
     room_id_near_exit,
     rooms_from_rows,
@@ -111,4 +120,88 @@ async def delete_exit(
     get_drawing_for_user(supabase, str(exit_row["drawing_id"]), current_user)
 
     supabase.table("exits").delete().eq("id", str(exit_id)).execute()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def passage_from_row(row: dict[str, Any]) -> Passage:
+    """Map a ``public.passages`` row to the Passage model."""
+    try:
+        source = ExitSource(str(row.get("source")))
+    except ValueError:
+        source = ExitSource.manual
+    return Passage(
+        id=str(row["id"]),
+        drawingId=UUID(str(row["drawing_id"])),
+        name=row.get("name"),
+        position=Point(x=float(row["x"]), y=float(row["y"])),
+        source=source,
+    )
+
+
+@router.get("/drawings/{drawing_id}/passages", response_model=list[Passage])
+async def list_passages(
+    drawing_id: UUID,
+    supabase: Annotated[Client, Depends(get_supabase_client)],
+    current_user: CurrentUser = Depends(get_current_user),
+) -> list[Passage]:
+    """Усі проходи креслення: двері з DXF і підтверджені інженером."""
+    get_drawing_for_user(supabase, drawing_id, current_user)
+    rows = all_rows(
+        supabase.table("passages")
+        .select("*")
+        .eq("drawing_id", str(drawing_id))
+        .execute()
+    )
+    rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))))
+    return [passage_from_row(row) for row in rows]
+
+
+@router.post(
+    "/drawings/{drawing_id}/passages",
+    response_model=Passage,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_passage(
+    drawing_id: UUID,
+    payload: PassageCreateRequest,
+    supabase: Annotated[Client, Depends(get_supabase_client)],
+    current_user: CurrentUser = Depends(get_current_user),
+) -> Passage:
+    """Інженер підтверджує прохід (двері або отвір) між приміщеннями на плані."""
+    get_drawing_for_user(supabase, drawing_id, current_user)
+
+    values: dict[str, Any] = {
+        "id": str(uuid4()),
+        "drawing_id": str(drawing_id),
+        "name": payload.name or None,
+        "x": payload.position.x,
+        "y": payload.position.y,
+        "source": ExitSource.manual.value,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    inserted = first_row(supabase.table("passages").insert(values).execute())
+    return passage_from_row(inserted if inserted is not None else values)
+
+
+@router.delete("/passages/{passage_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_passage(
+    passage_id: UUID,
+    supabase: Annotated[Client, Depends(get_supabase_client)],
+    current_user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """Прибрати прохід (знайдений у DXF або підтверджений вручну)."""
+    row = first_row(
+        supabase.table("passages")
+        .select("*")
+        .eq("id", str(passage_id))
+        .limit(1)
+        .execute()
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Passage not found"
+        )
+    get_drawing_for_user(supabase, str(row["drawing_id"]), current_user)
+
+    supabase.table("passages").delete().eq("id", str(passage_id)).execute()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -23,7 +23,7 @@ from src.core.config import get_settings
 from src.core.exceptions import BIMException
 from src.infrastructure.storage import cleanup_file, download_dxf_to_tmp
 from src.infrastructure.supabase import get_supabase_client
-from src.modules.cad.exits import find_exit_points
+from src.modules.cad.exits import find_door_points, find_exit_points
 from src.modules.cad.parser import parse_dxf_rooms_with_scale, read_dxf_document
 from src.modules.cad.writer import MCP_LAYER_NAME
 from src.modules.drawings.schemas import (
@@ -41,6 +41,7 @@ from src.modules.drawings.service import (
 from src.modules.placement.manual_call_points import (
     describe_call_point_outcome,
     exits_from_rows,
+    passages_from_rows,
     place_manual_call_points,
     room_id_near_exit,
     rooms_from_rows,
@@ -49,6 +50,7 @@ from src.modules.placement.service import (
     build_placement_targets,
     describe_outcome,
     place_targets,
+    summarize_outcomes,
 )
 from src.modules.rooms.service import room_from_row, row_points
 
@@ -173,42 +175,53 @@ async def list_drawings(
     return await list_drawings_for_user(current_user.id, supabase)
 
 
-def _save_dxf_exits(
+EXIT_DETECTION_OK = "ok"
+EXIT_DETECTION_FAILED = "failed"
+WARNING_EXIT_DETECTION_FAILED = (
+    "Не вдалося оновити евакуаційні виходи й проходи з креслення. Раніше збережені "
+    "виходи й проходи лишено без змін; обробіть креслення ще раз"
+)
+
+
+def _save_dxf_layout(
     supabase: Client,
     drawing_id: str,
     dxf_path: Path,
     unit_scale_m: float,
     room_rows: list[dict[str, Any]],
-) -> None:
-    """BIM-75: зберегти виходи, позначені в DXF (шар EXITS або підпис «Вихід»).
+) -> dict[str, Any]:
+    """BIM-75: зберегти виходи й проходи (двері), знайдені в DXF.
 
-    Виходи з source = dxf замінюються, позначені вручну лишаються (їх зв'язок із
-    приміщенням оновлюється, бо приміщення при обробці створюються заново). Пошук
-    виходів не обов'язковий для обробки: збій тут не повинен ламати розпізнавання
-    приміщень, тому він лише логується.
+    Виходи й проходи з source = dxf замінюються ОДНИМ викликом функції БД
+    ``replace_dxf_layout`` (одна транзакція): або замінено все, або при будь-якій
+    помилці лишається попередній набір. Позначені вручну лишаються; оновлюється
+    лише їхній зв'язок із приміщенням, бо приміщення при обробці створюються заново.
+
+    Пошук виходів не повинен ламати розпізнавання приміщень, тому збій не
+    піднімається, а повертається станом кроку (``exit_detection`` у відповіді
+    /process) із попередженням, а не лише в логах.
     """
     try:
         document = read_dxf_document(dxf_path)
-        detected = find_exit_points(document.modelspace(), unit_scale_m)
+        modelspace = document.modelspace()
+        detected = find_exit_points(modelspace, unit_scale_m)
+        doors = find_door_points(modelspace, unit_scale_m, detected)
         rooms = rooms_from_rows(room_rows)
 
-        supabase.table("exits").delete().eq("drawing_id", drawing_id).eq(
-            "source", "dxf"
-        ).execute()
         exit_rows = [
             {
                 "id": str(uuid4()),
-                "drawing_id": drawing_id,
                 "room_id": room_id_near_exit((item.x, item.y), rooms, unit_scale_m),
                 "name": item.name,
                 "x": item.x,
                 "y": item.y,
-                "source": "dxf",
             }
             for item in detected
         ]
-        if exit_rows:
-            supabase.table("exits").insert(exit_rows).execute()
+        passage_rows = [
+            {"id": str(uuid4()), "name": None, "x": door.x, "y": door.y}
+            for door in doors
+        ]
 
         manual = (
             supabase.table("exits")
@@ -217,6 +230,7 @@ def _save_dxf_exits(
             .eq("source", "manual")
             .execute()
         )
+        manual_links: list[dict[str, Any]] = []
         for row in manual.data if isinstance(manual.data, list) else []:
             if not isinstance(row, dict):
                 continue
@@ -224,13 +238,33 @@ def _save_dxf_exits(
                 (float(row["x"]), float(row["y"])), rooms, unit_scale_m
             )
             if room_id != row.get("room_id"):
-                supabase.table("exits").update({"room_id": room_id}).eq(
-                    "id", str(row["id"])
-                ).execute()
+                manual_links.append({"id": str(row["id"]), "room_id": room_id})
+
+        supabase.rpc(
+            "replace_dxf_layout",
+            {
+                "p_drawing_id": drawing_id,
+                "p_exits": exit_rows,
+                "p_passages": passage_rows,
+                "p_manual_exit_rooms": manual_links,
+            },
+        ).execute()
     except Exception:
         logger.warning(
             "Exit detection failed for drawing %s", drawing_id, exc_info=True
         )
+        return {
+            "status": EXIT_DETECTION_FAILED,
+            "exits": None,
+            "passages": None,
+            "warning": WARNING_EXIT_DETECTION_FAILED,
+        }
+    return {
+        "status": EXIT_DETECTION_OK,
+        "exits": len(exit_rows),
+        "passages": len(passage_rows),
+        "warning": None,
+    }
 
 
 @router.post("/{drawing_id}/process")
@@ -300,7 +334,9 @@ async def process_drawing(
         if room_rows:
             supabase.table("rooms").insert(room_rows).execute()
 
-        _save_dxf_exits(supabase, drawing_id, input_tmp_path, unit_scale_m, room_rows)
+        exit_detection = _save_dxf_layout(
+            supabase, drawing_id, input_tmp_path, unit_scale_m, room_rows
+        )
 
         # unit_scale_m (migration 007) lets manual room edits compute areas
         # even after every parsed room has been deleted.
@@ -311,6 +347,9 @@ async def process_drawing(
         return {
             "drawing_id": drawing_id,
             "status": "processing",
+            # Окремий стан кроку «виходи й проходи»: збій тут не ламає розпізнавання
+            # приміщень, але не лишається непомітним.
+            "exit_detection": exit_detection,
         }
     except Exception as exc:
         try:
@@ -427,11 +466,25 @@ async def place_drawing_devices(
             if isinstance(exits_response.data, list)
             else []
         )
+        # Проходи (двері з DXF і підтверджені інженером) — єдине, що з'єднує
+        # приміщення в маршруті евакуації: близькі контури проходу не доводять.
+        passages_response = (
+            supabase.table("passages")
+            .select("*")
+            .eq("drawing_id", drawing_id)
+            .execute()
+        )
+        passage_rows = (
+            [row for row in passages_response.data if isinstance(row, dict)]
+            if isinstance(passages_response.data, list)
+            else []
+        )
         call_points = place_manual_call_points(
             rooms=rooms_from_rows([r for r in rooms_data if isinstance(r, dict)]),
             exits=exits_from_rows(exit_rows),
             rule_rows=rule_rows,
             unit_scale_m=stored_unit_scale_m(drawing_data),
+            passages=passages_from_rows(passage_rows),
         )
         if call_points.rule is not None:
             new_device_rows.extend(
@@ -464,6 +517,10 @@ async def place_drawing_devices(
             "status": "processed",
             "result_path": result_storage_path,
             "placements": [describe_outcome(outcome) for outcome in outcomes],
+            # `status: processed` лише каже, що крок розміщення завершено. Чи
+            # оброблено все креслення, показує placement_status; пропущені
+            # приміщення/зони з причинами — у skipped.
+            **summarize_outcomes(outcomes),
             "manual_call_points": describe_call_point_outcome(call_points),
         }
     except Exception as exc:

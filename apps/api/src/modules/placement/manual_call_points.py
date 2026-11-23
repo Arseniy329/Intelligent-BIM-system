@@ -9,8 +9,11 @@
 
 Шлях евакуації — найкоротший прохід між двома виходами через приміщення типу
 «коридор» (див. каталог типів: «Коридор, шлях евакуації») і приміщення, до яких
-виходи належать. Двері між приміщеннями окремо не розпізнаються: сусідні
-приміщення вважаються з'єднаними через розрив ``WALL_GAP_M`` (товщина стіни).
+виходи належать. Рухатись можна лише всередині приміщення; з одного приміщення в
+інше — лише через ПРОХІД (двері з креслення або прохід, підтверджений інженером).
+Близькі чи навіть однакові контури проходу не доводять: між ними може бути суцільна
+стіна. Якщо проходу між приміщеннями виходів немає, сповіщувачі лишаються біля
+виходів, а ``route_coverage`` = ``unconfirmed`` з попередженням.
 
 Модуль не залежить від shapely, fastapi і БД: працює зі списками координат, тому
 повністю перевіряється юніт-тестами.
@@ -35,6 +38,16 @@ REASON_NO_SCALE = "Невідомий масштаб креслення"
 REASON_NO_ROOMS = "У кресленні немає приміщень"
 REASON_EXITS_OUTSIDE = "Жоден вихід не знаходиться біля приміщення"
 WARNING_UNVERIFIED = "Розміщено за неперевіреним правилом"
+WARNING_ROUTE_UNCONFIRMED = (
+    "Шлях евакуації між виходами не підтверджено: немає дверей або позначеного "
+    "проходу між приміщеннями. Сповіщувачі стоять лише біля виходів; позначте "
+    "прохід на плані"
+)
+
+# Покриття шляхів евакуації між виходами (окремо від статусу розміщення).
+ROUTE_CONFIRMED = "confirmed"  # усі виходи з'єднані проходами; точки на шляхах є
+ROUTE_UNCONFIRMED = "unconfirmed"  # частина виходів не з'єднана з рештою
+ROUTE_NOT_APPLICABLE = "not_applicable"  # вихід один: шляху між виходами немає
 
 # Приміщення, якими проходять шляхи евакуації (тип з room_types.json).
 EVACUATION_ROUTE_ROOM_TYPES = frozenset({"corridor"})
@@ -42,8 +55,8 @@ EVACUATION_ROUTE_ROOM_TYPES = frozenset({"corridor"})
 # Технічні параметри алгоритму, у метрах. Це не норми.
 DEFAULT_EXIT_OFFSET_M = 1.0  # відступ від виходу, якщо його немає в правилі
 EXIT_ROOM_TOLERANCE_M = 0.5  # двері лежать у стіні: до приміщення не далі за це
-WALL_GAP_M = 0.5  # розрив між сусідніми приміщеннями (стіна), який можна пройти
-SAMPLE_STEP_M = 0.3  # крок перевірки «шлях іде всередині приміщень»
+PASSAGE_ROOM_TOLERANCE_M = 0.8  # прохід (двері) у стіні: до приміщення не далі за це
+PASSAGE_INWARD_M = 0.5  # на скільки вглиб приміщення відступити від проходу
 INWARD_NUDGE_M = 0.15  # на скільки зсунути точку всередину приміщення
 DEDUPE_M = 0.3  # два сповіщувачі ближче за це — це один
 MAX_WAYPOINTS = 120
@@ -62,6 +75,16 @@ class CallPointRoom:
 
 @dataclass(frozen=True)
 class CallPointExit:
+    id: str
+    x: float
+    y: float
+    name: str | None = None
+
+
+@dataclass(frozen=True)
+class CallPointPassage:
+    """Прохід між приміщеннями: двері з DXF або прохід, підтверджений інженером."""
+
     id: str
     x: float
     y: float
@@ -99,6 +122,13 @@ class CallPointOutcome:
     devices: list[PlacedCallPoint] = field(default_factory=list)
     used_exit_ids: list[str] = field(default_factory=list)
     skipped_exit_ids: list[str] = field(default_factory=list)
+    # Шляхи між виходами: окремий від status стан. Сповіщувачі біля виходів
+    # розміщуються завжди, а проміжні — лише там, де прохід підтверджено.
+    route_coverage: str = ROUTE_NOT_APPLICABLE
+    route_warning: str | None = None
+    unconnected_exit_ids: list[str] = field(default_factory=list)
+    unconnected_room_names: list[str] = field(default_factory=list)
+    used_passage_ids: list[str] = field(default_factory=list)
 
 
 # ── Приміщення й виходи з рядків БД ─────────────────────────────────────────
@@ -141,6 +171,19 @@ def exits_from_rows(rows: list[dict[str, Any]]) -> list[CallPointExit]:
             CallPointExit(id=str(row.get("id")), x=x, y=y, name=row.get("name"))
         )
     return exits
+
+
+def passages_from_rows(rows: list[dict[str, Any]]) -> list[CallPointPassage]:
+    """Проходи з рядків ``passages``; рядки без координат пропускаємо."""
+    passages: list[CallPointPassage] = []
+    for row in rows:
+        x, y = _as_float(row.get("x")), _as_float(row.get("y"))
+        if x is None or y is None:
+            continue
+        passages.append(
+            CallPointPassage(id=str(row.get("id")), x=x, y=y, name=row.get("name"))
+        )
+    return passages
 
 
 def room_id_near_exit(
@@ -241,6 +284,35 @@ def _signed_area(ring: tuple[Point, ...]) -> float:
     return total / 2.0
 
 
+def _segment_params(a: Point, b: Point, p: Point, q: Point) -> list[float]:
+    """Параметри t ∈ (0, 1) уздовж a→b, де відрізок торкається або перетинає p–q."""
+    rx, ry = b[0] - a[0], b[1] - a[1]
+    sx, sy = q[0] - p[0], q[1] - p[1]
+    qpx, qpy = p[0] - a[0], p[1] - a[1]
+    length = math.hypot(rx, ry)
+    if length == 0:
+        return []
+    denom = rx * sy - ry * sx
+    if abs(denom) <= 1e-12 * length * math.hypot(sx, sy):
+        # Паралельні: важливий лише збіг по одній прямій (рух уздовж стіни).
+        if abs(qpx * ry - qpy * rx) / length > 1e-6:
+            return []
+        rr = length * length
+        return [
+            t
+            for t in (
+                (qpx * rx + qpy * ry) / rr,
+                ((q[0] - a[0]) * rx + (q[1] - a[1]) * ry) / rr,
+            )
+            if 0.0 < t < 1.0
+        ]
+    t = (qpx * sy - qpy * sx) / denom
+    u = (qpx * ry - qpy * rx) / denom
+    if -1e-9 <= t <= 1.0 + 1e-9 and -1e-9 <= u <= 1.0 + 1e-9:
+        return [min(max(t, 0.0), 1.0)]
+    return []
+
+
 class _Room:
     """Приміщення з кешованими межами для швидких перевірок."""
 
@@ -274,6 +346,30 @@ class _Room:
             if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
                 inside = not inside
         return inside or self.boundary_distance(p) < 1e-9
+
+    def covers_segment(self, a: Point, b: Point) -> bool:
+        """Відрізок a–b цілком лежить у приміщенні (межа вважається «всередині»).
+
+        Точна перевірка без дискретизації: відрізок ділиться точками перетину з
+        контуром, і середина кожної частини має лежати всередині.
+        """
+        if not (self._inside(a) and self._inside(b)):
+            return False
+        params = {0.0, 1.0}
+        ring = self.ring
+        for i in range(len(ring)):
+            params.update(_segment_params(a, b, ring[i], ring[(i + 1) % len(ring)]))
+        ordered = sorted(params)
+        for t0, t1 in zip(ordered, ordered[1:], strict=False):
+            if t1 - t0 < 1e-9:
+                continue
+            tm = (t0 + t1) / 2.0
+            if not self._inside((a[0] + tm * (b[0] - a[0]), a[1] + tm * (b[1] - a[1]))):
+                return False
+        return True
+
+    def _inside(self, p: Point) -> bool:
+        return self.contains(p) or self.boundary_distance(p) <= 1e-6
 
     def near(self, p: Point, tolerance: float) -> bool:
         min_x, min_y, max_x, max_y = self.bbox
@@ -382,25 +478,49 @@ def _point_near_exit(point: Point, room: _Room, offset: float) -> Point:
     return room.interior_point()
 
 
-class _Walkable:
-    """Простір, яким можна йти: приміщення шляху евакуації плюс приміщення виходів."""
+@dataclass
+class _Node:
+    point: Point
+    room_id: str
 
-    def __init__(self, rooms: list[_Room], gap: float, step: float) -> None:
+
+class _Network:
+    """Граф руху: вузли лежать у приміщеннях, ребра — лише всередині одного приміщення.
+
+    Між приміщеннями є тільки ребра-проходи (``links``): без підтвердженого проходу
+    жодна відстань між контурами не робить два приміщення з'єднаними.
+    """
+
+    def __init__(self, rooms: list[_Room]) -> None:
         self.rooms = rooms
-        self.gap = gap
-        self.step = step
+        self.by_id = {room.room.id: room for room in rooms}
+        self.nodes: list[_Node] = []
+        self.links: list[tuple[int, int]] = []
 
-    def contains(self, p: Point) -> bool:
-        return any(room.near(p, self.gap) for room in self.rooms)
+    def add_node(self, point: Point, room_id: str) -> int:
+        self.nodes.append(_Node(point, room_id))
+        return len(self.nodes) - 1
 
-    def visible(self, a: Point, b: Point) -> bool:
-        distance = _dist(a, b)
-        samples = max(1, math.ceil(distance / self.step))
-        for i in range(samples + 1):
-            t = i / samples
-            if not self.contains((a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))):
-                return False
-        return True
+    def add_link(self, a: int, b: int) -> None:
+        self.links.append((a, b))
+
+    def adjacency(self) -> list[list[tuple[int, float]]]:
+        adjacency: list[list[tuple[int, float]]] = [[] for _ in self.nodes]
+        for i, first in enumerate(self.nodes):
+            room = self.by_id[first.room_id]
+            for j in range(i + 1, len(self.nodes)):
+                second = self.nodes[j]
+                if second.room_id != first.room_id:
+                    continue
+                if room.covers_segment(first.point, second.point):
+                    weight = _dist(first.point, second.point)
+                    adjacency[i].append((j, weight))
+                    adjacency[j].append((i, weight))
+        for i, j in self.links:
+            weight = _dist(self.nodes[i].point, self.nodes[j].point)
+            adjacency[i].append((j, weight))
+            adjacency[j].append((i, weight))
+        return adjacency
 
     def snap_into_room(self, p: Point, nudge: float) -> Point:
         """Точка в розриві між приміщеннями переноситься всередину найближчого."""
@@ -430,18 +550,10 @@ class _Walkable:
 
 
 def _shortest_paths(
-    nodes: list[Point], walkable: _Walkable, sources: list[int]
+    network: _Network, sources: list[int]
 ) -> dict[int, tuple[dict[int, float], dict[int, int]]]:
-    """Дейкстра по графу видимості між вузлами. Повертає відстані й попередників."""
-    count = len(nodes)
-    adjacency: list[list[tuple[int, float]]] = [[] for _ in range(count)]
-    for i in range(count):
-        for j in range(i + 1, count):
-            if walkable.visible(nodes[i], nodes[j]):
-                weight = _dist(nodes[i], nodes[j])
-                adjacency[i].append((j, weight))
-                adjacency[j].append((i, weight))
-
+    """Дейкстра по графу руху. Повертає відстані й попередників для кожного джерела."""
+    adjacency = network.adjacency()
     result: dict[int, tuple[dict[int, float], dict[int, int]]] = {}
     for source in sources:
         distance: dict[int, float] = {source: 0.0}
@@ -521,17 +633,43 @@ def _minimum_spanning_pairs(
 # ── Основна функція ──────────────────────────────────────────────────────────
 
 
+def _groups(count: int, connected: dict[int, dict[int, float]]) -> list[list[int]]:
+    """Групи виходів, між якими існує шлях (індекси 0..count-1)."""
+    parent = list(range(count))
+
+    def find(node: int) -> int:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for a in range(count):
+        for b in connected.get(a, {}):
+            if b < count:
+                parent[find(a)] = find(b)
+    grouped: dict[int, list[int]] = {}
+    for node in range(count):
+        grouped.setdefault(find(node), []).append(node)
+    return list(grouped.values())
+
+
 def place_manual_call_points(
     *,
     rooms: list[CallPointRoom],
     exits: list[CallPointExit],
     rule_rows: list[dict[str, Any]],
     unit_scale_m: float | None,
+    passages: list[CallPointPassage] | None = None,
 ) -> CallPointOutcome:
     """Розмістити ручні сповіщувачі біля виходів і вздовж шляхів евакуації.
 
     Нічого не розміщується (status = insufficient_data), якщо немає виходів, правила,
     масштабу або приміщень; причина — у ``reason``.
+
+    Сповіщувачі біля виходів ставляться завжди. Проміжні точки на шляхах між
+    виходами — лише там, де шлях доведено: у межах одного приміщення або через
+    ``passages`` (двері / прохід, підтверджений інженером). Решту повідомляє
+    ``route_coverage`` = ``unconfirmed`` і ``route_warning``.
     """
     if not exits:
         return CallPointOutcome(INSUFFICIENT_DATA, reason=REASON_NO_EXITS)
@@ -586,8 +724,12 @@ def place_manual_call_points(
     for exit_point, room, position in exit_devices:
         add_device(position, room.room.id, exit_point.id)
         outcome.used_exit_ids.append(exit_point.id)
+    outcome.devices = devices  # той самий список: далі в нього додаються точки шляхів
+    outcome.status = PLACED
+    if rule.status != "verified":
+        outcome.warning = WARNING_UNVERIFIED
 
-    # 2. Сповіщувачі на шляхах евакуації між виходами.
+    # 2. Шляхи евакуації між виходами: лише всередині приміщень і через проходи.
     exit_rooms = {room.room.id: room for _, room, _ in exit_devices}
     route_rooms = [
         room for room in indexed if room.room.type in EVACUATION_ROUTE_ROOM_TYPES
@@ -595,42 +737,82 @@ def place_manual_call_points(
     walk_rooms = list(exit_rooms.values()) + [
         room for room in route_rooms if room.room.id not in exit_rooms
     ]
-    walkable = _Walkable(walk_rooms, units(WALL_GAP_M), units(SAMPLE_STEP_M))
-
-    nodes: list[Point] = [position for _, _, position in exit_devices]
-    exit_node_ids = list(range(len(nodes)))
+    network = _Network(walk_rooms)
     nudge = units(INWARD_NUDGE_M)
-    waypoints: list[Point] = []
+
+    for _, room, position in exit_devices:
+        network.add_node(position, room.room.id)
+    exit_node_ids = list(range(len(exit_devices)))
+
+    waypoint_count = 0
     for room in walk_rooms:
-        waypoints.append(room.interior_point())
-        waypoints.extend(room.inward_reflex_points(nudge))
-    nodes.extend(waypoints[:MAX_WAYPOINTS])
+        for waypoint in (room.interior_point(), *room.inward_reflex_points(nudge)):
+            if waypoint_count >= MAX_WAYPOINTS:
+                break
+            network.add_node(waypoint, room.room.id)
+            waypoint_count += 1
 
-    if len(exit_node_ids) > 1:
-        paths = _shortest_paths(nodes, walkable, exit_node_ids)
-        distances = {source: paths[source][0] for source in exit_node_ids}
-        max_gap = units(rule.max_spacing_m)
-        for a, b in _minimum_spanning_pairs(exit_node_ids, distances):
-            polyline = [nodes[i] for i in _path(paths[a][1], a, b)]
-            route_points = [
-                walkable.snap_into_room(p, nudge)
-                for p in _points_along(polyline, max_gap)
-            ]
-            chain = [nodes[a], *route_points, nodes[b]]
-            chain = _fill_long_gaps(chain, max_gap, walkable, nudge)
-            for point in chain[1:-1]:
-                room = walkable.room_at(point)
-                add_device(point, room.room.id if room else None, None)
+    # Прохід з'єднує приміщення, до яких він прилягає (двері лежать у стіні між ними).
+    passage_tolerance = units(PASSAGE_ROOM_TOLERANCE_M)
+    passage_inward = units(PASSAGE_INWARD_M)
+    for passage in passages or []:
+        point = (passage.x, passage.y)
+        adjoining = [room for room in walk_rooms if room.near(point, passage_tolerance)]
+        if len(adjoining) < 2:
+            continue
+        sides = [
+            network.add_node(
+                _point_near_exit(point, room, passage_inward), room.room.id
+            )
+            for room in adjoining
+        ]
+        for index, first in enumerate(sides):
+            for second in sides[index + 1 :]:
+                network.add_link(first, second)
+        outcome.used_passage_ids.append(passage.id)
 
-    outcome.devices = devices
-    outcome.status = PLACED
-    if rule.status != "verified":
-        outcome.warning = WARNING_UNVERIFIED
+    if len(exit_node_ids) < 2:
+        outcome.route_coverage = ROUTE_NOT_APPLICABLE
+        return outcome
+
+    paths = _shortest_paths(network, exit_node_ids)
+    distances = {source: paths[source][0] for source in exit_node_ids}
+    max_gap = units(rule.max_spacing_m)
+    for a, b in _minimum_spanning_pairs(exit_node_ids, distances):
+        polyline = [network.nodes[i].point for i in _path(paths[a][1], a, b)]
+        route_points = [
+            network.snap_into_room(p, nudge) for p in _points_along(polyline, max_gap)
+        ]
+        chain = [network.nodes[a].point, *route_points, network.nodes[b].point]
+        chain = _fill_long_gaps(chain, max_gap, network, nudge)
+        for point in chain[1:-1]:
+            room = network.room_at(point)
+            add_device(point, room.room.id if room else None, None)
+
+    # Покриття шляхів: виходи, між якими немає доведеного шляху, повідомляємо окремо.
+    groups = _groups(len(exit_node_ids), distances)
+    if len(groups) <= 1:
+        outcome.route_coverage = ROUTE_CONFIRMED
+        return outcome
+
+    groups.sort(key=lambda members: (-len(members), min(members)))
+    detached = [node for group in groups[1:] for node in sorted(group)]
+    outcome.route_coverage = ROUTE_UNCONFIRMED
+    outcome.unconnected_exit_ids = [exit_devices[node][0].id for node in detached]
+    names: list[str] = []
+    for node in detached:
+        name = exit_devices[node][1].room.name or exit_devices[node][1].room.id
+        if name not in names:
+            names.append(name)
+    outcome.unconnected_room_names = names
+    outcome.route_warning = (
+        f"{WARNING_ROUTE_UNCONFIRMED}. Приміщення: {'; '.join(names)}"
+    )
     return outcome
 
 
 def _fill_long_gaps(
-    chain: list[Point], max_gap: float, walkable: _Walkable, nudge: float
+    chain: list[Point], max_gap: float, network: _Network, nudge: float
 ) -> list[Point]:
     """Додає проміжні точки, якщо після зсуву сусіди розійшлись далі за max_gap."""
     for _ in range(6):
@@ -638,7 +820,7 @@ def _fill_long_gaps(
         changed = False
         for previous, current in zip(chain, chain[1:], strict=False):
             if _dist(previous, current) > max_gap + 1e-6:
-                middle = walkable.snap_into_room(
+                middle = network.snap_into_room(
                     ((previous[0] + current[0]) / 2, (previous[1] + current[1]) / 2),
                     nudge,
                 )
@@ -677,6 +859,13 @@ def describe_call_point_outcome(outcome: CallPointOutcome) -> dict[str, Any]:
         "device_count": len(outcome.devices),
         "exit_ids": list(outcome.used_exit_ids),
         "skipped_exit_ids": list(outcome.skipped_exit_ids),
+        # Шляхи між виходами — окремий від status стан: сповіщувачі біля виходів
+        # стоять, а чи доведено шлях між ними, показує route_coverage.
+        "route_coverage": outcome.route_coverage,
+        "route_warning": outcome.route_warning,
+        "unconnected_exit_ids": list(outcome.unconnected_exit_ids),
+        "unconnected_rooms": list(outcome.unconnected_room_names),
+        "passage_ids": list(outcome.used_passage_ids),
         "rule": _describe_rule(outcome.rule) if outcome.rule else None,
         "alternative_rules": [
             _describe_rule(rule) for rule in outcome.alternative_rules

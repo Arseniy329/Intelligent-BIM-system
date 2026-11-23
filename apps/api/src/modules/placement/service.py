@@ -13,6 +13,23 @@ INSUFFICIENT_DATA = "insufficient_data"
 
 REASON_NO_HEIGHT = "Не введено висоту"
 REASON_BAD_OUTLINE = "Некоректний контур"
+REASON_PLACEMENT_FAILED = (
+    "Не вдалося розмістити прилади: контур некоректний або сітка надто щільна"
+)
+
+# Що саме розміщується: усе приміщення, його зона або частина приміщення,
+# яку не покрито жодною зоною (див. build_placement_targets).
+SCOPE_ROOM = "room"
+SCOPE_ZONE = "zone"
+SCOPE_REMAINDER = "remainder"
+
+# Підсумок розміщення для клієнта (див. summarize_outcomes).
+PLACEMENT_COMPLETE = "complete"
+PLACEMENT_PARTIAL = "partial"
+PLACEMENT_INSUFFICIENT_DATA = "insufficient_data"
+
+# Частина площі приміщення, яку можна не покривати зонами (похибка накреслення).
+UNCOVERED_TOLERANCE_RATIO = 0.01
 
 # Для цих видів значень «суворіше» означає «більше» (мінімальні вимоги).
 # Для решти (максимальні крок/площа/відстань) суворіше — менше значення.
@@ -309,6 +326,12 @@ class PlacementTarget:
     room_type: str | None
     height_m: float | None
     coords: list[tuple[float, float]]
+    scope: str = SCOPE_ROOM
+    # Якщо задано, розміщення для цього об'єкта не виконується, а причина
+    # показується користувачу (наприклад, частина приміщення без зони).
+    skip_reason: str | None = None
+    # Площа об'єкта, м². Відома лише для залишку приміщення.
+    area_m2: float | None = None
 
 
 @dataclass
@@ -345,6 +368,68 @@ def row_height_m(row: Mapping[str, Any]) -> float | None:
     return value if value > 0 else None
 
 
+def _shoelace_area(coords: Sequence[tuple[float, float]]) -> float:
+    """Площа багатокутника в одиницях креслення² (формула шнурівки)."""
+    if len(coords) < 3:
+        return 0.0
+    total = 0.0
+    for index, (x1, y1) in enumerate(coords):
+        x2, y2 = coords[(index + 1) % len(coords)]
+        total += x1 * y2 - x2 * y1
+    return abs(total) / 2.0
+
+
+def _uncovered_target(
+    room: Mapping[str, Any],
+    *,
+    room_id: str | None,
+    room_name: str,
+    room_type: str | None,
+    room_coords: list[tuple[float, float]],
+    zone_rows: Sequence[Mapping[str, Any]],
+) -> PlacementTarget | None:
+    """Цільова «решта приміщення», якщо зони не покривають його повністю.
+
+    Зони перевіряються при створенні: лежать усередині приміщення і не
+    перекриваються (допуск 1 %), тож непокрита частка дорівнює
+    1 − Σ площ зон / площа приміщення. Окремого контуру залишку не будуємо:
+    для нього немає висоти, тож приладів він не отримує, але причина
+    показується користувачу, а не губиться мовчки.
+    """
+    room_area = _shoelace_area(room_coords)
+    if room_area <= 0:
+        return None
+
+    covered = sum(_shoelace_area(row_coords(zone)) for zone in zone_rows)
+    uncovered_ratio = 1.0 - min(covered / room_area, 1.0)
+    if uncovered_ratio <= UNCOVERED_TOLERANCE_RATIO:
+        return None
+
+    raw_area = room.get("area")
+    area_m2: float | None = None
+    if isinstance(raw_area, (int, float)) and raw_area > 0:
+        area_m2 = round(float(raw_area) * uncovered_ratio, 2)
+
+    size = f"{uncovered_ratio * 100:.0f} %"
+    if area_m2 is not None:
+        size = f"≈{area_m2:g} м², {size}"
+    return PlacementTarget(
+        room_id=room_id,
+        zone_id=None,
+        room_name=room_name,
+        zone_name="Решта приміщення",
+        room_type=room_type,
+        height_m=None,
+        coords=room_coords,
+        scope=SCOPE_REMAINDER,
+        skip_reason=(
+            f"Частину приміщення ({size}) не віднесено до жодної зони: "
+            "додайте зону з висотою для решти приміщення"
+        ),
+        area_m2=area_m2,
+    )
+
+
 def build_placement_targets(
     room_rows: Sequence[Mapping[str, Any]],
     zone_rows: Sequence[Mapping[str, Any]],
@@ -354,6 +439,13 @@ def build_placement_targets(
     Приміщення з зонами розміщується окремо по кожній зоні за висотою зони
     (висота самого приміщення тоді не використовується). Приміщення без зон —
     за своєю висотою.
+
+    Інваріант: кожна частина приміщення або обробляється, або має видиму причину
+    пропуску. Тому:
+    * якщо зони не покривають приміщення повністю, додається ціль «Решта
+      приміщення» зі статусом «недостатньо даних» і поясненням;
+    * приміщення без придатного контуру не відкидається мовчки, а потрапляє
+      в результат із причиною «Некоректний контур».
     """
     zones_by_room: dict[str, list[Mapping[str, Any]]] = {}
     for zone in zone_rows:
@@ -364,6 +456,7 @@ def build_placement_targets(
         room_id = str(room["id"]) if room.get("id") else None
         room_name = str(room.get("name") or "").strip() or (room_id or "")
         room_type = str(room["type"]) if room.get("type") else None
+        room_coords = row_coords(room)
 
         zones = zones_by_room.get(room_id or "", [])
         if zones:
@@ -378,13 +471,21 @@ def build_placement_targets(
                         room_type=room_type,
                         height_m=row_height_m(zone),
                         coords=row_coords(zone),
+                        scope=SCOPE_ZONE,
                     )
                 )
+            remainder = _uncovered_target(
+                room,
+                room_id=room_id,
+                room_name=room_name,
+                room_type=room_type,
+                room_coords=room_coords,
+                zone_rows=zones,
+            )
+            if remainder is not None:
+                targets.append(remainder)
             continue
 
-        coords = row_coords(room)
-        if len(coords) < 3:
-            continue
         targets.append(
             PlacementTarget(
                 room_id=room_id,
@@ -393,7 +494,7 @@ def build_placement_targets(
                 zone_name=None,
                 room_type=room_type,
                 height_m=row_height_m(room),
-                coords=coords,
+                coords=room_coords,
             )
         )
     return targets
@@ -408,11 +509,18 @@ def place_targets(
 ) -> list[PlacementOutcome]:
     """Розмістити сповіщувачі для кожного об'єкта за правилом для його висоти.
 
-    Об'єкт без висоти або без правила для висоти не отримує приладів і має
-    статус «недостатньо даних» з причиною; на решту це не впливає.
+    Об'єкт без висоти, без правила для висоти, із некоректним контуром або
+    частина приміщення без зони не отримує приладів і має статус «недостатньо
+    даних» з причиною; на решту це не впливає.
     """
     outcomes: list[PlacementOutcome] = []
     for target in targets:
+        if target.skip_reason is not None:
+            outcomes.append(
+                PlacementOutcome(target, INSUFFICIENT_DATA, target.skip_reason)
+            )
+            continue
+
         if len(target.coords) < 3:
             outcomes.append(
                 PlacementOutcome(target, INSUFFICIENT_DATA, REASON_BAD_OUTLINE)
@@ -431,9 +539,22 @@ def place_targets(
             )
             continue
 
-        devices = place_devices_from_rule(
-            target.coords, decision.rule, unit_scale_m=unit_scale_m
-        )
+        try:
+            devices = place_devices_from_rule(
+                target.coords, decision.rule, unit_scale_m=unit_scale_m
+            )
+        except ValueError:
+            # Один зіпсований контур не повинен скасовувати розміщення в інших
+            # приміщеннях: частина лишається видимою з причиною.
+            outcomes.append(
+                PlacementOutcome(
+                    target,
+                    INSUFFICIENT_DATA,
+                    REASON_PLACEMENT_FAILED,
+                    rule=decision.rule,
+                )
+            )
+            continue
         outcomes.append(
             PlacementOutcome(target, PLACED, rule=decision.rule, devices=list(devices))
         )
@@ -449,7 +570,9 @@ def describe_outcome(outcome: PlacementOutcome) -> dict[str, Any]:
         "zone_id": target.zone_id,
         "name": target.room_name,
         "zone_name": target.zone_name,
+        "scope": target.scope,
         "height_m": target.height_m,
+        "area_m2": target.area_m2,
         "status": outcome.status,
         "reason": outcome.reason,
         "device_count": len(outcome.devices),
@@ -466,4 +589,35 @@ def describe_outcome(outcome: PlacementOutcome) -> dict[str, Any]:
             "clause": rule.clause,
             "verification_status": rule.status,
         },
+    }
+
+
+def summarize_outcomes(outcomes: Sequence[PlacementOutcome]) -> dict[str, Any]:
+    """Підсумок для клієнта: чи оброблено все і що саме пропущено та чому.
+
+    ``placement_status``: ``complete`` — усе оброблено; ``partial`` — частину
+    пропущено; ``insufficient_data`` — не розміщено жодного приладу.
+    """
+    skipped = [
+        {
+            "room_id": outcome.target.room_id,
+            "zone_id": outcome.target.zone_id,
+            "name": outcome.target.room_name,
+            "zone_name": outcome.target.zone_name,
+            "scope": outcome.target.scope,
+            "reason": outcome.reason,
+        }
+        for outcome in outcomes
+        if outcome.status != PLACED
+    ]
+    if not skipped:
+        placement_status = PLACEMENT_COMPLETE
+    elif not any(outcome.devices for outcome in outcomes):
+        placement_status = PLACEMENT_INSUFFICIENT_DATA
+    else:
+        placement_status = PLACEMENT_PARTIAL
+    return {
+        "placement_status": placement_status,
+        "device_count": sum(len(outcome.devices) for outcome in outcomes),
+        "skipped": skipped,
     }

@@ -133,6 +133,102 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         files_after = set(tmp_dir.glob("*.dxf"))
         self.assertEqual(len(files_after - files_before), 0)
 
+    def _process_with_rpc(self, rpc_failure: Exception | None) -> dict:
+        """POST /process; ``rpc_failure`` ломає запис виходів і проходів у БД."""
+        drawing_id = str(uuid4())
+        fixture_path = FIXTURES_DIR / "01_simple_rooms_mm.dxf"
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "01_simple_rooms_mm.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "status": "uploaded",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+
+        drawings_query = MagicMock()
+        for name in ("select", "eq", "single", "update"):
+            getattr(drawings_query, name).return_value = drawings_query
+        drawings_query.execute.return_value = MagicMock(data=drawing_record)
+
+        rooms_table = MagicMock()
+        rooms_table.delete.return_value.eq.return_value.execute.return_value = (
+            MagicMock(data=[])
+        )
+        inserted_rooms: list[dict] = []
+
+        def insert_rooms(rows: list[dict]) -> MagicMock:
+            inserted_rooms.extend(rows)
+            return MagicMock(execute=MagicMock(return_value=MagicMock(data=rows)))
+
+        rooms_table.insert.side_effect = insert_rooms
+
+        exits_table = MagicMock()
+        exits_query = MagicMock()
+        exits_query.select.return_value = exits_query
+        exits_query.eq.return_value = exits_query
+        exits_query.execute.return_value = MagicMock(data=[])
+        exits_table.select.return_value = exits_query
+
+        tables = {
+            "drawings": drawings_query,
+            "rooms": rooms_table,
+            "exits": exits_table,
+        }
+        self.mock_supabase.table.side_effect = lambda name: tables.get(
+            name, MagicMock()
+        )
+        if rpc_failure is not None:
+            self.mock_supabase.rpc.side_effect = rpc_failure
+        storage_bucket = MagicMock()
+        storage_bucket.download.return_value = fixture_path.read_bytes()
+        self.mock_supabase.storage.from_.return_value = storage_bucket
+
+        response = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
+
+        return {
+            "response": response,
+            "rooms": inserted_rooms,
+            "exits_table": exits_table,
+            "drawings_query": drawings_query,
+            "drawing_id": drawing_id,
+        }
+
+    def test_process_reports_exit_detection_step_state(self) -> None:
+        result = self._process_with_rpc(None)
+
+        self.assertEqual(result["response"].status_code, 200)
+        data = result["response"].json()
+        self.assertEqual(data["status"], "processing")
+        self.assertEqual(data["exit_detection"]["status"], "ok")
+        self.assertIsNone(data["exit_detection"]["warning"])
+        # Виходи й проходи замінюються однією функцією БД, а не delete + insert.
+        self.mock_supabase.rpc.assert_called_once()
+        name, params = self.mock_supabase.rpc.call_args.args
+        self.assertEqual(name, "replace_dxf_layout")
+        self.assertEqual(params["p_drawing_id"], result["drawing_id"])
+        result["exits_table"].delete.assert_not_called()
+        result["exits_table"].insert.assert_not_called()
+
+    def test_process_shows_a_warning_when_exit_replacement_fails(self) -> None:
+        """Збій запису виходів не ламає обробку і не лишається непомітним."""
+        result = self._process_with_rpc(RuntimeError("simulated write failure"))
+
+        self.assertEqual(result["response"].status_code, 200)
+        data = result["response"].json()
+        self.assertEqual(data["status"], "processing")
+        self.assertEqual(data["exit_detection"]["status"], "failed")
+        self.assertIn("лишено без змін", data["exit_detection"]["warning"])
+        # Приміщення розпізнано і збережено, статус креслення оновлено.
+        self.assertGreater(len(result["rooms"]), 0)
+        result["drawings_query"].update.assert_called_with(
+            {"status": "processing", "unit_scale_m": 0.001}
+        )
+        # Старі виходи не видалялись окремим запитом.
+        result["exits_table"].delete.assert_not_called()
+        result["exits_table"].insert.assert_not_called()
+
     def test_process_drawing_fallback_auto_sets_source_and_confirmed(self) -> None:
         """Verify POST /process fallback sets source='auto' and confirmed=False."""
         drawing_id = str(uuid4())

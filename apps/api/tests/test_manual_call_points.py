@@ -17,11 +17,18 @@ from src.modules.placement.manual_call_points import (
     REASON_NO_EXITS,
     REASON_NO_RULE,
     REASON_NO_SCALE,
+    ROUTE_CONFIRMED,
+    ROUTE_NOT_APPLICABLE,
+    ROUTE_UNCONFIRMED,
+    WARNING_ROUTE_UNCONFIRMED,
     WARNING_UNVERIFIED,
     CallPointExit,
+    CallPointPassage,
     CallPointRoom,
     PlacedCallPoint,
+    _Room,
     describe_call_point_outcome,
+    passages_from_rows,
     place_manual_call_points,
     select_call_point_rule,
 )
@@ -421,6 +428,262 @@ class RuleStatusTests(unittest.TestCase):
         self.assertEqual(described["reason"], "Позначте евакуаційні виходи")
         self.assertEqual(described["device_count"], 0)
         self.assertIsNone(described["rule"])
+
+
+def passage_at(passage_id: str, x: float, y: float) -> CallPointPassage:
+    return CallPointPassage(id=passage_id, x=x, y=y)
+
+
+def two_corridors_behind_a_wall() -> tuple[list[CallPointRoom], list[CallPointExit]]:
+    """Два коридори з контурами на відстані 0,3 м (суцільна стіна), вихід у кожному."""
+    return (
+        [
+            room("west", "corridor", rect(0, 0, 20_000, 3_000)),
+            room("east", "corridor", rect(20_300, 0, 40_300, 3_000)),
+        ],
+        [exit_at("e_west", 0, 1_500), exit_at("e_east", 40_300, 1_500)],
+    )
+
+
+class RouteNeedsAPassageTests(unittest.TestCase):
+    """Близькі контури не доводять проходу: без дверей шляху між приміщеннями немає."""
+
+    def place(
+        self,
+        rooms: list[CallPointRoom],
+        exits: list[CallPointExit],
+        passages: list[CallPointPassage] | None = None,
+    ) -> Any:
+        return place_manual_call_points(
+            rooms=rooms,
+            exits=exits,
+            rule_rows=[mcp_rule()],
+            unit_scale_m=MM,
+            passages=passages,
+        )
+
+    def test_two_corridors_behind_a_solid_wall_are_not_connected(self) -> None:
+        rooms, exits = two_corridors_behind_a_wall()
+
+        outcome = self.place(rooms, exits)
+
+        # Сповіщувачі біля виходів лишаються, але шляху між ними ніхто не довів.
+        self.assertEqual(outcome.status, PLACED)
+        self.assertEqual(len(outcome.devices), 2)
+        self.assertTrue(all(device.exit_id for device in outcome.devices))
+        self.assertEqual(outcome.route_coverage, ROUTE_UNCONFIRMED)
+        self.assertEqual(outcome.unconnected_exit_ids, ["e_east"])
+        self.assertEqual(outcome.unconnected_room_names, ["east"])
+        assert outcome.route_warning is not None
+        self.assertTrue(outcome.route_warning.startswith(WARNING_ROUTE_UNCONFIRMED))
+        self.assertIn("east", outcome.route_warning)
+        self.assertEqual(outcome.used_passage_ids, [])
+
+    def test_same_contours_with_a_confirmed_passage_get_the_route(self) -> None:
+        rooms, exits = two_corridors_behind_a_wall()
+
+        outcome = self.place(rooms, exits, [passage_at("door", 20_150, 1_500)])
+
+        self.assertEqual(outcome.status, PLACED)
+        self.assertEqual(outcome.route_coverage, ROUTE_CONFIRMED)
+        self.assertIsNone(outcome.route_warning)
+        self.assertEqual(outcome.unconnected_exit_ids, [])
+        self.assertEqual(outcome.used_passage_ids, ["door"])
+        # 40 м між виходами: потрібен проміжний сповіщувач, відстані ≤ 30 м.
+        self.assertGreater(len(outcome.devices), 2)
+        self.assertTrue(all(gap <= 30_000 for gap in gaps_along_x(outcome.devices)))
+
+    def test_pair_of_fixtures_differs_only_by_the_passage(self) -> None:
+        rooms, exits = two_corridors_behind_a_wall()
+
+        without = self.place(rooms, exits)
+        with_passage = self.place(rooms, exits, [passage_at("door", 20_150, 1_500)])
+
+        self.assertEqual(len(without.devices), 2)
+        self.assertGreater(len(with_passage.devices), len(without.devices))
+        self.assertEqual(
+            (without.route_coverage, with_passage.route_coverage),
+            (ROUTE_UNCONFIRMED, ROUTE_CONFIRMED),
+        )
+
+    def test_rooms_sharing_an_edge_are_not_connected_without_a_passage(self) -> None:
+        rooms = [
+            room("west", "corridor", rect(0, 0, 20_000, 3_000)),
+            room("east", "corridor", rect(20_000, 0, 40_000, 3_000)),
+        ]
+        exits = [exit_at("a", 0, 1_500), exit_at("b", 40_000, 1_500)]
+
+        without = self.place(rooms, exits)
+        with_passage = self.place(rooms, exits, [passage_at("open", 20_000, 1_500)])
+
+        self.assertEqual(without.route_coverage, ROUTE_UNCONFIRMED)
+        self.assertEqual(len(without.devices), 2)
+        self.assertEqual(with_passage.route_coverage, ROUTE_CONFIRMED)
+        self.assertGreater(len(with_passage.devices), 2)
+
+    def test_route_through_a_passage_stays_inside_the_rooms(self) -> None:
+        rooms, exits = two_corridors_behind_a_wall()
+        outcome = self.place(rooms, exits, [passage_at("door", 20_150, 1_500)])
+
+        checkers = [_inside_checker(item) for item in rooms]
+        for device in outcome.devices:
+            self.assertTrue(
+                any(check(device.x, device.y) for check in checkers),
+                f"device {device} is inside no room (in the wall gap)",
+            )
+
+    def test_passage_far_from_the_wall_does_not_connect_anything(self) -> None:
+        rooms, exits = two_corridors_behind_a_wall()
+        passages = [
+            passage_at("inside_west", 10_000, 1_500),  # біля одного приміщення
+            passage_at("outside", 20_150, 20_000),  # далеко від обох
+        ]
+
+        outcome = self.place(rooms, exits, passages)
+
+        self.assertEqual(outcome.route_coverage, ROUTE_UNCONFIRMED)
+        self.assertEqual(len(outcome.devices), 2)
+        self.assertEqual(outcome.used_passage_ids, [])
+
+    def test_passage_between_other_rooms_does_not_connect_these_ones(self) -> None:
+        rooms = [
+            room("a", "corridor", rect(0, 0, 20_000, 3_000)),
+            room("b", "corridor", rect(20_300, 0, 40_300, 3_000)),
+            room("c", "corridor", rect(40_600, 0, 60_600, 3_000)),
+        ]
+        door_ab = passage_at("ab", 20_150, 1_500)
+
+        a_to_b = self.place(
+            rooms, [exit_at("a", 0, 1_500), exit_at("b", 40_300, 1_500)], [door_ab]
+        )
+        a_to_c = self.place(
+            rooms, [exit_at("a", 0, 1_500), exit_at("c", 60_600, 1_500)], [door_ab]
+        )
+
+        self.assertEqual(a_to_b.route_coverage, ROUTE_CONFIRMED)
+        self.assertEqual(a_to_c.route_coverage, ROUTE_UNCONFIRMED)
+        self.assertEqual(a_to_c.unconnected_exit_ids, ["c"])
+        self.assertEqual(len(a_to_c.devices), 2)
+
+    def test_chain_of_rooms_is_connected_through_two_passages(self) -> None:
+        rooms = [
+            room("a", "corridor", rect(0, 0, 20_000, 3_000)),
+            room("b", "corridor", rect(20_300, 0, 40_300, 3_000)),
+            room("c", "corridor", rect(40_600, 0, 60_600, 3_000)),
+        ]
+        outcome = self.place(
+            rooms,
+            [exit_at("a", 0, 1_500), exit_at("c", 60_600, 1_500)],
+            [passage_at("ab", 20_150, 1_500), passage_at("bc", 40_450, 1_500)],
+        )
+
+        self.assertEqual(outcome.route_coverage, ROUTE_CONFIRMED)
+        self.assertEqual(sorted(outcome.used_passage_ids), ["ab", "bc"])
+        self.assertTrue(all(gap <= 30_000 for gap in gaps_along_x(outcome.devices)))
+
+    def test_exits_of_the_same_room_need_no_passage(self) -> None:
+        corridor, exits = corridor_40m()
+        outcome = self.place([corridor], exits)
+
+        self.assertEqual(outcome.route_coverage, ROUTE_CONFIRMED)
+        self.assertIsNone(outcome.route_warning)
+
+    def test_single_exit_has_no_route_to_confirm(self) -> None:
+        corridor, _ = corridor_40m()
+        outcome = self.place([corridor], [exit_at("only", 0, 1_500)])
+
+        self.assertEqual(outcome.status, PLACED)
+        self.assertEqual(len(outcome.devices), 1)
+        self.assertEqual(outcome.route_coverage, ROUTE_NOT_APPLICABLE)
+        self.assertIsNone(outcome.route_warning)
+
+    def test_unconfirmed_route_is_part_of_the_client_status(self) -> None:
+        rooms, exits = two_corridors_behind_a_wall()
+        described = describe_call_point_outcome(self.place(rooms, exits))
+
+        # status — розміщення біля виходів; route_coverage — окремо шляхи між ними.
+        self.assertEqual(described["status"], PLACED)
+        self.assertEqual(described["device_count"], 2)
+        self.assertEqual(described["route_coverage"], ROUTE_UNCONFIRMED)
+        self.assertIn("не підтверджено", described["route_warning"])
+        self.assertEqual(described["unconnected_exit_ids"], ["e_east"])
+        self.assertEqual(described["unconnected_rooms"], ["east"])
+        self.assertIsNone(described["warning"])  # правило перевірене
+
+    def test_confirmed_route_has_no_route_warning_in_the_description(self) -> None:
+        rooms, exits = two_corridors_behind_a_wall()
+        described = describe_call_point_outcome(
+            self.place(rooms, exits, [passage_at("door", 20_150, 1_500)])
+        )
+
+        self.assertEqual(described["route_coverage"], ROUTE_CONFIRMED)
+        self.assertIsNone(described["route_warning"])
+        self.assertEqual(described["unconnected_exit_ids"], [])
+        self.assertEqual(described["passage_ids"], ["door"])
+
+    def test_exit_rooms_of_different_types_also_need_a_passage(self) -> None:
+        hall = room("hall", "hall", rect(0, 0, 10_000, 10_000))
+        office = room("office", "office", rect(10_300, 0, 20_300, 10_000))
+        exits = [exit_at("h", 0, 5_000), exit_at("o", 20_300, 5_000)]
+
+        self.assertEqual(
+            self.place([hall, office], exits).route_coverage, ROUTE_UNCONFIRMED
+        )
+        self.assertEqual(
+            self.place(
+                [hall, office], exits, [passage_at("d", 10_150, 5_000)]
+            ).route_coverage,
+            ROUTE_CONFIRMED,
+        )
+
+
+class PassageRowsTests(unittest.TestCase):
+    def test_rows_without_coordinates_are_skipped(self) -> None:
+        passages = passages_from_rows(
+            [
+                {"id": "p1", "x": 10, "y": 20, "name": "Двері"},
+                {"id": "p2", "x": None, "y": 5},
+                {"id": "p3", "x": "abc", "y": 5},
+                {"id": "p4", "x": "7.5", "y": "8"},
+            ]
+        )
+
+        self.assertEqual(
+            passages,
+            [
+                CallPointPassage("p1", 10.0, 20.0, "Двері"),
+                CallPointPassage("p4", 7.5, 8.0, None),
+            ],
+        )
+
+
+class RoomSegmentTests(unittest.TestCase):
+    """Відрізок «лежить у приміщенні» перевіряється точно, а не вибіркою точок."""
+
+    # Г-подібне приміщення: вирізаний кут (10..20, 10..20).
+    L_SHAPE = room(
+        "l", "corridor", ((0, 0), (20, 0), (20, 10), (10, 10), (10, 20), (0, 20))
+    )
+
+    def test_segment_inside_and_along_the_wall_is_covered(self) -> None:
+        shape = _Room(self.L_SHAPE)
+        self.assertTrue(shape.covers_segment((1, 1), (19, 9)))
+        self.assertTrue(shape.covers_segment((0, 0), (20, 0)))  # уздовж стіни
+        self.assertTrue(shape.covers_segment((1, 19), (9, 1)))
+
+    def test_segment_across_the_notch_is_not_covered(self) -> None:
+        shape = _Room(self.L_SHAPE)
+        self.assertFalse(shape.covers_segment((19, 9), (9, 19)))  # зрізає виріз
+        self.assertFalse(shape.covers_segment((1, 19), (19, 9)))
+
+    def test_segment_touching_a_reflex_corner_from_inside_is_covered(self) -> None:
+        shape = _Room(self.L_SHAPE)
+        self.assertTrue(shape.covers_segment((5, 15), (15, 5)))  # через кут (10, 10)
+
+    def test_segment_leaving_through_a_thin_wall_is_not_covered(self) -> None:
+        wall = room("w", "corridor", ((0, 0), (10, 0), (10, 3), (0, 3)))
+        shape = _Room(wall)
+        self.assertFalse(shape.covers_segment((5, 1), (14, 1)))  # кінець поза кімнатою
 
 
 def _inside_checker(room_: CallPointRoom):

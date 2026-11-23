@@ -4,6 +4,9 @@
   * геометрія дверей лежить на шарі EXITS;
   * поруч із дверима є підпис «Вихід» (TEXT/MTEXT; також Выход, Exit).
 
+Крім виходів тут шукаються двері між приміщеннями (``find_door_points``): вони
+підтверджують прохід між сусідніми приміщеннями для маршрутів евакуації.
+
 Модуль не залежить від shapely і ezdxf: він працює з будь-яким об'єктом, що поводиться
 як ``msp`` (ітерується по сутностях з ``dxftype()`` і ``dxf.layer``), тому його легко
 перевіряти в тестах без реальних DXF-файлів.
@@ -44,6 +47,14 @@ class DetectedExit:
     y: float
     name: str | None
     origin: str  # "layer" — двері на шарі EXITS; "label" — двері з підписом «Вихід»
+
+
+@dataclass(frozen=True)
+class DetectedDoor:
+    """Двері між приміщеннями (не евакуаційний вихід) у координатах креслення."""
+
+    x: float
+    y: float
 
 
 def is_exit_layer(name: str) -> bool:
@@ -211,3 +222,40 @@ def find_exit_points(
                 )
         named.append(item)
     return named
+
+
+def find_door_points(
+    msp: Iterable[Any],
+    unit_scale_m: float | None,
+    exits: Iterable[DetectedExit] = (),
+) -> list[DetectedDoor]:
+    """Двері на шарі дверей, які НЕ є евакуаційними виходами.
+
+    Це підтвердження проходу між сусідніми приміщеннями: близькі контури самі по собі
+    проходу не доводять. Двері на шарі EXITS і двері, що вже визначені як виходи
+    (``exits``), пропускаються: вони ведуть назовні, а не між приміщеннями.
+
+    Returns:
+        Центри дверей в координатах креслення, без дублікатів, у порядку знаходження.
+    """
+    scale = unit_scale_m if unit_scale_m and unit_scale_m > 0 else DEFAULT_UNIT_SCALE_M
+    # Стулка й дуга відкривання однієї дверей дають кілька сутностей: зливаємо їх.
+    dedupe_radius = DEDUPE_RADIUS_M / scale
+    exit_points = [(item.x, item.y) for item in exits]
+
+    doors: list[DetectedDoor] = []
+    for entity in msp:
+        if entity.dxftype() not in _GEOMETRY_TYPES:
+            continue
+        layer = str(getattr(entity.dxf, "layer", "") or "")
+        if is_exit_layer(layer) or not is_door_layer(layer):
+            continue
+        center = _entity_center(entity)
+        if center is None:
+            continue
+        if any(_distance(center, point) <= dedupe_radius for point in exit_points):
+            continue
+        if any(_distance(center, (door.x, door.y)) <= dedupe_radius for door in doors):
+            continue
+        doors.append(DetectedDoor(x=center[0], y=center[1]))
+    return doors

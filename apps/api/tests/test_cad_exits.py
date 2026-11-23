@@ -1,4 +1,4 @@
-"""BIM-75: пошук евакуаційних виходів у DXF (шар EXITS або підпис «Вихід»)."""
+"""BIM-75: пошук евакуаційних виходів і дверей між приміщеннями в DXF."""
 
 import sys
 import unittest
@@ -10,7 +10,7 @@ API_DIR = Path(__file__).resolve().parent.parent
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
-from src.modules.cad.exits import find_exit_points, is_exit_text
+from src.modules.cad.exits import find_door_points, find_exit_points, is_exit_text
 
 MM = 0.001  # креслення в міліметрах
 M = 1.0  # креслення в метрах
@@ -155,6 +155,54 @@ class FindExitPointsTests(unittest.TestCase):
     def test_unknown_scale_falls_back_to_millimetres(self) -> None:
         msp = [door_polyline("DOORS", 1000, 0, 1900, 100), text("Вихід", 1400, 800)]
         self.assertEqual(len(find_exit_points(msp, None)), 1)
+
+
+class FindDoorPointsTests(unittest.TestCase):
+    def test_ordinary_door_is_a_passage_candidate(self) -> None:
+        msp = [door_polyline("DOORS", 1000, 0, 1900, 100)]
+        found = find_door_points(msp, MM)
+        self.assertEqual([(d.x, d.y) for d in found], [(1450.0, 50.0)])
+
+    def test_exit_doors_are_not_passages(self) -> None:
+        msp = [
+            door_polyline("EXITS", 1000, 0, 1900, 100),
+            door_polyline("DOORS", 20000, 0, 20900, 100),
+            door_polyline("DOORS", 30000, 0, 30900, 100),
+            text("Вихід", 30400, 800),
+        ]
+        exits = find_exit_points(msp, MM)
+        found = find_door_points(msp, MM, exits)
+        # Двері на шарі EXITS і двері з підписом «Вихід» ведуть назовні.
+        self.assertEqual(len(exits), 2)
+        self.assertEqual([(d.x, d.y) for d in found], [(20450.0, 50.0)])
+
+    def test_exits_layer_is_skipped_even_without_the_exit_list(self) -> None:
+        self.assertEqual(
+            find_door_points([door_polyline("EXITS", 1000, 0, 1900, 100)], MM), []
+        )
+
+    def test_leaf_and_swing_of_one_door_give_one_passage(self) -> None:
+        leaf = FakeEntity("LINE", "DOORS", start=(1000, 0, 0), end=(1000, 900, 0))
+        swing = FakeEntity(
+            "ARC",
+            "DOORS",
+            center=(1000, 0, 0),
+            start_point=(1000, 900, 0),
+            end_point=(1900, 0, 0),
+        )
+        opening = door_polyline("DOORS", 1000, -50, 1900, 50)
+        self.assertEqual(len(find_door_points([leaf, swing, opening], MM)), 1)
+
+    def test_two_distant_doors_and_ukrainian_layer(self) -> None:
+        msp = [
+            door_polyline("Двері", 1000, 0, 1900, 100),
+            door_polyline("DOOR_INT", 9000, 0, 9900, 100),
+            door_polyline("WALLS", 5000, 0, 5900, 100),
+        ]
+        self.assertEqual(len(find_door_points(msp, MM)), 2)
+
+    def test_empty_drawing_has_no_doors(self) -> None:
+        self.assertEqual(find_door_points([], MM), [])
 
 
 if __name__ == "__main__":

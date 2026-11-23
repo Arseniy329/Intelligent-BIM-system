@@ -1,5 +1,7 @@
 """In-memory stand-in for the Supabase query builder used by API tests."""
 
+import copy
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -87,7 +89,74 @@ class FakeTable:
         return MagicMock(data=[dict(row) for row in matched])
 
 
-def fake_supabase(tables: dict[str, FakeTable]) -> MagicMock:
+def fake_supabase(
+    tables: dict[str, FakeTable],
+    rpc: dict[str, Callable[[dict[str, Any]], Any]] | None = None,
+) -> MagicMock:
+    """Fake client. ``rpc`` maps a database function name to a Python handler.
+
+    A function that is not in ``rpc`` fails loudly (KeyError) instead of silently
+    returning a MagicMock "success".
+    """
     supabase = MagicMock()
     supabase.table.side_effect = lambda name: tables[name]
+    handlers = rpc or {}
+
+    def call_rpc(name: str, params: dict[str, Any] | None = None) -> MagicMock:
+        handler = handlers[name]
+        call = MagicMock()
+        call.execute.side_effect = lambda: MagicMock(data=handler(params or {}))
+        return call
+
+    supabase.rpc.side_effect = call_rpc
     return supabase
+
+
+def fake_replace_dxf_layout(
+    tables: dict[str, FakeTable], fail_after_delete: bool = False
+) -> Callable[[dict[str, Any]], Any]:
+    """Stand-in for the ``replace_dxf_layout`` database function.
+
+    Mirrors its all-or-nothing behaviour: the DXF exits/passages of the drawing are
+    replaced, manual ones are kept, and when anything fails (``fail_after_delete``
+    simulates a failing write after the old rows were removed) the tables are
+    restored, as the transaction would roll back. The real function is exercised on
+    PostgreSQL by supabase/tests/check_migrations.sh.
+    """
+
+    def handler(params: dict[str, Any]) -> dict[str, int]:
+        exits, passages = tables["exits"], tables["passages"]
+        snapshot = (copy.deepcopy(exits.rows), copy.deepcopy(passages.rows))
+        drawing_id = params["p_drawing_id"]
+        try:
+            for table in (exits, passages):
+                table.rows[:] = [
+                    row
+                    for row in table.rows
+                    if not (
+                        row.get("drawing_id") == drawing_id
+                        and row.get("source") == "dxf"
+                    )
+                ]
+            if fail_after_delete:
+                raise RuntimeError("simulated write failure")
+            for item in params.get("p_exits", []):
+                exits.rows.append({**item, "drawing_id": drawing_id, "source": "dxf"})
+            for item in params.get("p_passages", []):
+                passages.rows.append(
+                    {**item, "drawing_id": drawing_id, "source": "dxf"}
+                )
+            for link in params.get("p_manual_exit_rooms", []):
+                for row in exits.rows:
+                    if row["id"] == link["id"] and row.get("source") == "manual":
+                        row["room_id"] = link["room_id"]
+        except Exception:
+            exits.rows[:] = snapshot[0]
+            passages.rows[:] = snapshot[1]
+            raise
+        return {
+            "exits": len(params.get("p_exits", [])),
+            "passages": len(params.get("p_passages", [])),
+        }
+
+    return handler

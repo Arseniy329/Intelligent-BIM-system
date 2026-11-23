@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 API_DIR = Path(__file__).resolve().parent.parent
 if str(API_DIR) not in sys.path:
@@ -12,13 +13,23 @@ if str(API_DIR) not in sys.path:
 from src.modules.placement.service import (  # noqa: E402
     INSUFFICIENT_DATA,
     PLACED,
+    PLACEMENT_COMPLETE,
+    PLACEMENT_INSUFFICIENT_DATA,
+    PLACEMENT_PARTIAL,
+    REASON_BAD_OUTLINE,
     REASON_NO_HEIGHT,
+    REASON_PLACEMENT_FAILED,
+    SCOPE_REMAINDER,
+    SCOPE_ROOM,
+    SCOPE_ZONE,
     RuleRecord,
     build_placement_targets,
     describe_outcome,
     effective_grid_step_m,
+    place_devices_from_rule,
     place_targets,
     resolve_rule_for_height,
+    summarize_outcomes,
 )
 
 SCALE_MM = 0.001  # метрів в одній одиниці креслення (креслення в мм)
@@ -290,11 +301,14 @@ class TestPlaceTargets(unittest.TestCase):
 
     def test_room_with_zones_is_not_placed_as_a_whole(self) -> None:
         room = room_row("room", 3.0)
-        zones = [zone_row("z1", "room", 3.0, rect_mm(0, 0, 20, 40))]
+        zones = [
+            zone_row("z1", "room", 3.0, rect_mm(0, 0, 20, 40)),
+            zone_row("z2", "room", 3.0, rect_mm(20, 0, 40, 40)),
+        ]
         targets = build_placement_targets([room], zones)
 
-        self.assertEqual(len(targets), 1)
-        self.assertEqual(targets[0].zone_id, "z1")
+        self.assertEqual([t.zone_id for t in targets], ["z1", "z2"])
+        self.assertTrue(all(t.scope == SCOPE_ZONE for t in targets))
 
     def test_targets_for_rooms_without_zones_and_default_zone_name(self) -> None:
         rooms = [
@@ -302,11 +316,13 @@ class TestPlaceTargets(unittest.TestCase):
             room_row("b", 3.0),
             {"id": "broken", "name": "No outline", "height": 3.0, "polygon": []},
         ]
-        zones = [zone_row("z1", "b", 3.0, rect_mm(0, 0, 10, 10))]
+        zones = [zone_row("z1", "b", 3.0, rect_mm(0, 0, 40, 40))]
         targets = build_placement_targets(rooms, zones)
 
+        # Приміщення без контуру не губиться: воно є в результаті з причиною.
         self.assertEqual(
-            [(t.room_id, t.zone_id) for t in targets], [("a", None), ("b", "z1")]
+            [(t.room_id, t.zone_id) for t in targets],
+            [("a", None), ("b", "z1"), ("broken", None)],
         )
         self.assertIsNone(targets[0].zone_name)
         self.assertEqual(targets[1].zone_name, "Зона 1")
@@ -331,6 +347,194 @@ class TestPlaceTargets(unittest.TestCase):
         self.assertEqual(missing_info["reason"], REASON_NO_HEIGHT)
         self.assertEqual(missing_info["device_count"], 0)
         self.assertIsNone(missing_info["rule"])
+
+    # ── Інваріант: кожна частина приміщення оброблена або має видиму причину ──
+
+    def test_partial_zone_leaves_visible_remainder(self) -> None:
+        """Зона в кутку 20×20 з 40×40: решта (75 %) не зникає мовчки."""
+        room = room_row("room", 3.0)
+        room["area"] = 1600.0
+        zones = [zone_row("z1", "room", 3.0, rect_mm(0, 0, 20, 20), name="Кут")]
+        zone_outcome, remainder = self._place([room], zones)
+
+        self.assertEqual(zone_outcome.status, PLACED)
+        self.assertEqual(zone_outcome.target.scope, SCOPE_ZONE)
+        # Приладів у зоні — тільки в межах зони.
+        self.assertTrue(
+            all(d.x <= 20_000 and d.y <= 20_000 for d in zone_outcome.devices)
+        )
+
+        self.assertEqual(remainder.target.scope, SCOPE_REMAINDER)
+        self.assertEqual(remainder.target.room_id, "room")
+        self.assertIsNone(remainder.target.zone_id)
+        self.assertEqual(remainder.target.zone_name, "Решта приміщення")
+        self.assertEqual(remainder.status, INSUFFICIENT_DATA)
+        self.assertEqual(remainder.devices, [])
+        assert remainder.reason is not None
+        self.assertIn("не віднесено до жодної зони", remainder.reason)
+        self.assertIn("75 %", remainder.reason)
+        self.assertEqual(remainder.target.area_m2, 1200.0)
+
+    def test_partial_zone_remainder_is_not_hidden_by_room_height(self) -> None:
+        """Висота приміщення не підставляється в решту: це була б вигадана висота."""
+        room = room_row("room", 11.0)
+        zones = [zone_row("z1", "room", 3.0, rect_mm(0, 0, 40, 10))]
+        _, remainder = self._place([room], zones)
+
+        self.assertEqual(remainder.status, INSUFFICIENT_DATA)
+        self.assertEqual(remainder.devices, [])
+        self.assertIsNone(remainder.target.height_m)
+
+    def test_adjacent_zones_covering_the_room_have_no_remainder(self) -> None:
+        """Три суміжні зони ділять приміщення повністю — решти немає."""
+        room = room_row("room", None)
+        zones = [
+            zone_row("z1", "room", 3.0, rect_mm(0, 0, 40, 10)),
+            zone_row("z2", "room", 11.0, rect_mm(0, 10, 40, 30)),
+            zone_row("z3", "room", 3.0, rect_mm(0, 30, 40, 40)),
+        ]
+        outcomes = self._place([room], zones)
+
+        self.assertEqual([o.target.zone_id for o in outcomes], ["z1", "z2", "z3"])
+        self.assertTrue(all(o.status == PLACED for o in outcomes))
+        self.assertFalse(any(o.target.scope == SCOPE_REMAINDER for o in outcomes))
+        summary = summarize_outcomes(outcomes)
+        self.assertEqual(summary["placement_status"], PLACEMENT_COMPLETE)
+        self.assertEqual(summary["skipped"], [])
+
+    def test_small_gap_within_tolerance_is_not_a_remainder(self) -> None:
+        """Щілина 0,1 м між зонами (0,25 % площі) — похибка креслення."""
+        room = room_row("room", None)
+        zones = [
+            zone_row("z1", "room", 3.0, rect_mm(0, 0, 40, 19.95)),
+            zone_row("z2", "room", 3.0, rect_mm(0, 20.05, 40, 40)),
+        ]
+        targets = build_placement_targets([room], zones)
+
+        self.assertEqual([t.scope for t in targets], [SCOPE_ZONE, SCOPE_ZONE])
+
+    def test_gap_above_tolerance_is_a_remainder(self) -> None:
+        """Смуга 2 м між зонами (5 % площі) вже не губиться."""
+        room = room_row("room", None)
+        zones = [
+            zone_row("z1", "room", 3.0, rect_mm(0, 0, 40, 19)),
+            zone_row("z2", "room", 3.0, rect_mm(0, 21, 40, 40)),
+        ]
+        targets = build_placement_targets([room], zones)
+
+        self.assertEqual(
+            [t.scope for t in targets], [SCOPE_ZONE, SCOPE_ZONE, SCOPE_REMAINDER]
+        )
+
+    def test_zone_with_bad_outline_counts_as_uncovered(self) -> None:
+        room = room_row("room", None)
+        zones = [
+            zone_row("z1", "room", 3.0, rect_mm(0, 0, 40, 20)),
+            zone_row("z2", "room", 3.0, []),
+        ]
+        z1, z2, remainder = self._place([room], zones)
+
+        self.assertEqual(z1.status, PLACED)
+        self.assertEqual(
+            (z2.status, z2.reason), (INSUFFICIENT_DATA, REASON_BAD_OUTLINE)
+        )
+        self.assertEqual(remainder.target.scope, SCOPE_REMAINDER)
+
+    def test_room_without_outline_is_reported_not_dropped(self) -> None:
+        broken = {"id": "broken", "name": "No outline", "height": 3.0, "polygon": []}
+        good = room_row("good", 3.0)
+        outcomes = self._place([broken, good])
+
+        self.assertEqual([o.target.room_id for o in outcomes], ["broken", "good"])
+        self.assertEqual(outcomes[0].status, INSUFFICIENT_DATA)
+        self.assertEqual(outcomes[0].reason, REASON_BAD_OUTLINE)
+        self.assertEqual(outcomes[1].status, PLACED)
+
+    def test_failure_in_one_room_does_not_cancel_the_others(self) -> None:
+        real_place = place_devices_from_rule
+
+        def fail_for_bad_room(coords: Any, rule: Any, unit_scale_m: Any = None) -> Any:
+            if coords[0] == (0.0, 0.0) and coords[-1] == (0.0, 7_000.0):
+                raise ValueError("Invalid or empty room polygon")
+            return real_place(coords, rule, unit_scale_m)
+
+        bad = room_row("bad", 3.0)
+        bad["polygon"] = rect_mm(0, 0, 40, 7)  # розпізнаємо за останньою точкою
+        with patch(
+            "src.modules.placement.service.place_devices_from_rule",
+            side_effect=fail_for_bad_room,
+        ):
+            outcomes = self._place([bad, room_row("good", 3.0)])
+
+        self.assertEqual(outcomes[0].status, INSUFFICIENT_DATA)
+        self.assertEqual(outcomes[0].reason, REASON_PLACEMENT_FAILED)
+        self.assertEqual(outcomes[0].devices, [])
+        self.assertEqual(outcomes[1].status, PLACED)
+        self.assertGreater(len(outcomes[1].devices), 0)
+
+    def test_every_part_of_the_room_is_placed_or_has_a_reason(self) -> None:
+        """Інваріант для різних наборів: немає результату без приладів і без причини."""
+        scenarios: list[tuple[dict[str, Any], list[dict[str, Any]]]] = [
+            (room_row("r", 3.0), []),
+            (room_row("r", None), []),
+            (room_row("r", 3.0), [zone_row("z", "r", 3.0, rect_mm(0, 0, 20, 20))]),
+            (room_row("r", 3.0), [zone_row("z", "r", None, rect_mm(0, 0, 40, 40))]),
+            (
+                room_row("r", None),
+                [
+                    zone_row("a", "r", 3.0, rect_mm(0, 0, 40, 25)),
+                    zone_row("b", "r", 13.0, rect_mm(0, 25, 40, 40)),
+                ],
+            ),
+        ]
+        for room, zones in scenarios:
+            for outcome in self._place([room], zones):
+                has_devices = bool(outcome.devices)
+                has_reason = bool(outcome.reason)
+                self.assertTrue(
+                    has_devices != has_reason,
+                    f"{room['height']=} {outcome.target.scope=}: "
+                    f"devices={has_devices}, reason={outcome.reason!r}",
+                )
+
+    def test_summary_partial_and_insufficient(self) -> None:
+        partial = self._place(
+            [room_row("a", 3.0), room_row("b", None)],
+        )
+        summary = summarize_outcomes(partial)
+        self.assertEqual(summary["placement_status"], PLACEMENT_PARTIAL)
+        self.assertEqual(summary["device_count"], len(partial[0].devices))
+        self.assertEqual(
+            summary["skipped"],
+            [
+                {
+                    "room_id": "b",
+                    "zone_id": None,
+                    "name": "Room b",
+                    "zone_name": None,
+                    "scope": SCOPE_ROOM,
+                    "reason": REASON_NO_HEIGHT,
+                }
+            ],
+        )
+
+        nothing = self._place([room_row("a", None), room_row("b", 13.0)])
+        summary = summarize_outcomes(nothing)
+        self.assertEqual(summary["placement_status"], PLACEMENT_INSUFFICIENT_DATA)
+        self.assertEqual(summary["device_count"], 0)
+        self.assertEqual(len(summary["skipped"]), 2)
+
+    def test_describe_outcome_has_scope_and_area(self) -> None:
+        room = room_row("room", 3.0)
+        room["area"] = 1600.0
+        zone_outcome, remainder = self._place(
+            [room], [zone_row("z1", "room", 3.0, rect_mm(0, 0, 40, 20))]
+        )
+        self.assertEqual(describe_outcome(zone_outcome)["scope"], SCOPE_ZONE)
+        remainder_info = describe_outcome(remainder)
+        self.assertEqual(remainder_info["scope"], SCOPE_REMAINDER)
+        self.assertEqual(remainder_info["area_m2"], 800.0)
+        self.assertEqual(remainder_info["status"], INSUFFICIENT_DATA)
 
 
 if __name__ == "__main__":
