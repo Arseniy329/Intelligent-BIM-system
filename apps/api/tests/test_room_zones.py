@@ -78,6 +78,9 @@ class RoomZonesTestCase(unittest.TestCase):
                     "units": "mm",
                     "unit_scale_m": 0.001,
                     "status": "processing",
+                    "original_file_name": "plan.dxf",
+                    "storage_path": f"{self.user_id}/{self.drawing_id}/source.dxf",
+                    "created_at": "2026-11-19T10:00:00+00:00",
                 }
             ]
         )
@@ -418,6 +421,135 @@ class TestPlaceUsesRoomAndZoneHeight(RoomZonesTestCase):
         # Прилади — тільки в межах зони.
         self.assertGreater(len(self.devices_table.inserts), 0)
         self.assertTrue(all(row["x"] <= 5_000 for row in self.devices_table.inserts))
+
+    # ── Звіт переживає перезавантаження: його повертає GET, а не лише POST ──
+
+    def reload(self) -> Any:
+        """Новий запит без жодного стану POST: те, що бачить користувач після
+        повного перезавантаження сторінки або відкриття посилання іншою людиною."""
+        return self.client.get(f"/api/v1/drawings/{self.drawing_id}")
+
+    def test_partial_report_survives_a_reload(self) -> None:
+        self.add_zone(rect_mm(0, 0, 5_000, 8_000), 3.0, "Ліва половина")
+        posted = self.place().json()
+        self.assertEqual(posted["placement_status"], "partial")
+
+        reloaded = self.reload()
+
+        self.assertEqual(reloaded.status_code, 200, reloaded.text)
+        body = reloaded.json()
+        # Результат на місці (DXF і прилади доступні), а поруч — ті самі причини.
+        self.assertEqual(body["drawing"]["status"], "processed")
+        self.assertGreater(len(body["devices"]), 0)
+        report = body["placementReport"]
+        self.assertEqual(report["placement_status"], "partial")
+        self.assertEqual(report["device_count"], posted["device_count"])
+        self.assertEqual(report["skipped"], posted["skipped"])
+        self.assertEqual([item["scope"] for item in report["skipped"]], ["remainder"])
+        self.assertIn("не віднесено до жодної зони", report["skipped"][0]["reason"])
+
+    def test_missing_height_report_survives_a_reload(self) -> None:
+        self.place()
+
+        report = self.reload().json()["placementReport"]
+
+        self.assertEqual(report["placement_status"], "insufficient_data")
+        self.assertEqual(report["device_count"], 0)
+        self.assertEqual(report["skipped"][0]["reason"], "Не введено висоту")
+
+    def test_report_is_written_with_the_processed_status_in_one_update(self) -> None:
+        self.add_zone(rect_mm(0, 0, 5_000, 8_000), 3.0, "Ліва половина")
+        posted = self.place().json()
+
+        (update,) = [
+            values
+            for values in self.drawings_table.updates
+            if values.get("status") == "processed"
+        ]
+        self.assertEqual(
+            update["placement_report"],
+            {
+                "placement_status": posted["placement_status"],
+                "device_count": posted["device_count"],
+                "skipped": posted["skipped"],
+            },
+        )
+
+    def test_complete_placement_report_is_stored_too(self) -> None:
+        self.room_row["height"] = 3.0
+        self.place()
+
+        report = self.reload().json()["placementReport"]
+
+        self.assertEqual(report["placement_status"], "complete")
+        self.assertEqual(report["skipped"], [])
+
+    def test_result_without_a_report_matches_the_contract_exactly(self) -> None:
+        """Старі креслення (розміщені до цієї зміни) не отримують нових ключів."""
+        self.drawings_table.rows[0]["status"] = "processed"
+
+        body = self.reload().json()
+
+        self.assertNotIn("placementReport", body)
+        self.assertEqual(
+            sorted(body),
+            [
+                "devices",
+                "downloadUrl",
+                "downloadUrlExpiresAt",
+                "drawing",
+                "rooms",
+                "sourceDownloadUrl",
+                "sourceDownloadUrlExpiresAt",
+            ],
+        )
+
+    def test_reprocessing_clears_the_stored_report(self) -> None:
+        """Приміщення створюються заново: старий звіт до них не належить."""
+        self.room_row["height"] = 3.0
+        self.place()
+        self.assertIn("placementReport", self.reload().json())
+
+        with (
+            patch("src.modules.drawings.router.download_dxf_to_tmp", return_value=None),
+            patch(
+                "src.modules.drawings.router.parse_dxf_rooms_with_scale",
+                return_value=([], 0.001),
+            ),
+        ):
+            response = self.client.post(f"/api/v1/drawings/{self.drawing_id}/process")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(self.drawings_table.rows[0]["placement_report"])
+        self.assertNotIn("placementReport", self.reload().json())
+
+    def test_report_of_a_failed_drawing_is_not_shown(self) -> None:
+        self.place()
+        self.drawings_table.rows[0]["status"] = "error"
+
+        self.assertNotIn("placementReport", self.reload().json())
+
+    # ── Зміна контуру приміщення після створення зон ──
+
+    def test_zone_left_outside_a_narrowed_room_is_not_placed(self) -> None:
+        """Приміщення 10×8 м звузили до 5×8 м; зона 10×8 м лишилась старою."""
+        stale = self.add_zone(rect_mm(0, 0, 10_000, 8_000), 3.0, "Стара зона")
+        self.room_row["polygon"] = rect_mm(0, 0, 5_000, 8_000)
+
+        response = self.place()
+
+        body = response.json()
+        self.assertEqual(response.status_code, 200, response.text)
+        by_scope = {item["scope"]: item for item in body["placements"]}
+        self.assertEqual(by_scope["zone"]["zone_id"], stale["id"])
+        self.assertEqual(by_scope["zone"]["status"], "insufficient_data")
+        self.assertIn("виходить за межі приміщення", by_scope["zone"]["reason"])
+        self.assertIn("remainder", by_scope)
+        self.assertEqual(body["placement_status"], "insufficient_data")
+        self.assertEqual(body["device_count"], 0)
+        self.assertEqual(self.devices_table.inserts, [])
+        report = self.reload().json()["placementReport"]
+        self.assertEqual(report["skipped"], body["skipped"])
 
     def test_full_split_by_adjacent_zones_is_complete(self) -> None:
         self.add_zone(rect_mm(0, 0, 5_000, 8_000), 3.0, "Ліва")

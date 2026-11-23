@@ -29,6 +29,7 @@ from src.modules.drawings.schemas import (
     DrawingDetailResponse,
     DrawingListItem,
     DrawingRecord,
+    DrawingResultWithReport,
 )
 from src.modules.drawings.service import (
     generate_and_upload_result_dxf,
@@ -232,8 +233,14 @@ async def process_drawing(
 
         # unit_scale_m (migration 007) lets manual room edits compute areas
         # even after every parsed room has been deleted.
+        # Приміщення створено заново, тож звіт попереднього розміщення втратив
+        # чинність: після повторної обробки його не слід показувати.
         supabase.table("drawings").update(
-            {"status": "processing", "unit_scale_m": unit_scale_m}
+            {
+                "status": "processing",
+                "unit_scale_m": unit_scale_m,
+                "placement_report": None,
+            }
         ).eq("id", drawing_id).execute()
 
         return {
@@ -350,9 +357,14 @@ async def place_drawing_devices(
         if new_device_rows:
             supabase.table("devices").insert(new_device_rows).execute()
 
-        supabase.table("drawings").update({"status": "processed"}).eq(
-            "id", drawing_id
-        ).execute()
+        # `status: processed` лише каже, що крок розміщення завершено. Чи оброблено
+        # все креслення, показує placement_status; пропущені приміщення/зони з
+        # причинами — у skipped. Звіт пишеться тим самим UPDATE, що й статус, і
+        # повертається в GET: після перезавантаження він не зникає.
+        placement_summary = summarize_outcomes(outcomes)
+        supabase.table("drawings").update(
+            {"status": "processed", "placement_report": placement_summary}
+        ).eq("id", drawing_id).execute()
 
         result_storage_path = generate_and_upload_result_dxf(drawing_id, supabase)
 
@@ -361,10 +373,7 @@ async def place_drawing_devices(
             "status": "processed",
             "result_path": result_storage_path,
             "placements": [describe_outcome(outcome) for outcome in outcomes],
-            # `status: processed` лише каже, що крок розміщення завершено. Чи
-            # оброблено все креслення, показує placement_status; пропущені
-            # приміщення/зони з причинами — у skipped.
-            **summarize_outcomes(outcomes),
+            **placement_summary,
         }
     except Exception as exc:
         try:
@@ -384,13 +393,13 @@ async def place_drawing_devices(
 
 @router.get(
     "/{drawing_id}",
-    response_model=DrawingResult | DrawingDetailResponse,
+    response_model=DrawingResultWithReport | DrawingResult | DrawingDetailResponse,
 )
 async def get_drawing_detail(
     drawing_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     supabase: Annotated[Client | None, Depends(get_supabase_client)] = None,
-) -> DrawingResult | DrawingDetailResponse:
+) -> DrawingResultWithReport | DrawingResult | DrawingDetailResponse:
     if supabase is None:
         supabase = get_supabase_client(settings)
 
@@ -538,16 +547,32 @@ async def get_drawing_detail(
                 download_url = None
                 download_url_expires_at = None
 
-        return DrawingResult(
-            sourceDownloadUrl=AnyUrl(source_download_url)
+        # Звіт останнього розміщення належить лише готовому результату (processed)
+        # або проміжному стану після /process; після помилки він застарів.
+        stored_report = drawing_data.get("placement_report")
+        placement_report = (
+            stored_report
+            if isinstance(stored_report, dict)
+            and status_raw in {"processing", "processed"}
+            else None
+        )
+
+        result_fields: dict[str, Any] = {
+            "sourceDownloadUrl": AnyUrl(source_download_url)
             if source_download_url
             else None,
-            sourceDownloadUrlExpiresAt=source_download_url_expires_at,
-            drawing=drawing,
-            rooms=rooms,
-            devices=devices,
-            downloadUrl=download_url,
-            downloadUrlExpiresAt=download_url_expires_at,
+            "sourceDownloadUrlExpiresAt": source_download_url_expires_at,
+            "drawing": drawing,
+            "rooms": rooms,
+            "devices": devices,
+            "downloadUrl": download_url,
+            "downloadUrlExpiresAt": download_url_expires_at,
+        }
+        if placement_report is None:
+            # Без звіту відповідь байт-у-байт збігається з контрактом DrawingResult.
+            return DrawingResult(**result_fields)
+        return DrawingResultWithReport(
+            **result_fields, placementReport=placement_report
         )
 
     # Flat DrawingDetailResponse format for unprocessed drawings

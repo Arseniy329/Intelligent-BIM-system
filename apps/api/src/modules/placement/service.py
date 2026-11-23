@@ -16,6 +16,10 @@ REASON_BAD_OUTLINE = "Некоректний контур"
 REASON_PLACEMENT_FAILED = (
     "Не вдалося розмістити прилади: контур некоректний або сітка надто щільна"
 )
+REASON_ZONE_OUTSIDE_ROOM = (
+    "Зона виходить за межі приміщення (контур приміщення змінено): "
+    "змініть контур зони або видаліть її"
+)
 
 # Що саме розміщується: усе приміщення, його зона або частина приміщення,
 # яку не покрито жодною зоною (див. build_placement_targets).
@@ -30,6 +34,11 @@ PLACEMENT_INSUFFICIENT_DATA = "insufficient_data"
 
 # Частина площі приміщення, яку можна не покривати зонами (похибка накреслення).
 UNCOVERED_TOLERANCE_RATIO = 0.01
+
+# Допуск виходу контуру зони за контур приміщення — частка більшого розміру
+# приміщення (відхилення прив'язки до країв при ручному накресленні). Той самий
+# допуск використовується при створенні зони (rooms/zones.py) і при розміщенні.
+ZONE_INSIDE_TOLERANCE_RATIO = 0.001
 
 # Для цих видів значень «суворіше» означає «більше» (мінімальні вимоги).
 # Для решти (максимальні крок/площа/відстань) суворіше — менше значення.
@@ -379,6 +388,42 @@ def _shoelace_area(coords: Sequence[tuple[float, float]]) -> float:
     return abs(total) / 2.0
 
 
+def _valid_shape(coords: Sequence[tuple[float, float]]) -> Polygon | None:
+    """Багатокутник із контуру або None, якщо контур непридатний."""
+    if len(coords) < 3:
+        return None
+    try:
+        shape = Polygon(coords)
+        if not shape.is_valid:
+            shape = shape.buffer(0)
+        return shape if not shape.is_empty and shape.area > 0 else None
+    except Exception:  # noqa: BLE001 — зіпсований контур не має ламати розміщення
+        return None
+
+
+def zone_lies_inside_room(
+    zone_coords: Sequence[tuple[float, float]],
+    room_coords: Sequence[tuple[float, float]],
+) -> bool:
+    """Чи лежить зона в межах контуру приміщення (з допуском створення зони).
+
+    Контур приміщення можна змінити після створення зон (вузити, зсунути). Тоді
+    стара зона виходить за приміщення, і прилади в ній опинилися б поза ним. Якщо
+    котрийсь контур непридатний, порівнювати нічого: це окремий випадок «Некоректний
+    контур», і тут повертається True.
+    """
+    zone = _valid_shape(zone_coords)
+    room = _valid_shape(room_coords)
+    if zone is None or room is None:
+        return True
+    min_x, min_y, max_x, max_y = room.bounds
+    tolerance = max(max_x - min_x, max_y - min_y) * ZONE_INSIDE_TOLERANCE_RATIO
+    try:
+        return bool(room.buffer(tolerance).covers(zone))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _uncovered_target(
     room: Mapping[str, Any],
     *,
@@ -392,7 +437,9 @@ def _uncovered_target(
 
     Зони перевіряються при створенні: лежать усередині приміщення і не
     перекриваються (допуск 1 %), тож непокрита частка дорівнює
-    1 − Σ площ зон / площа приміщення. Окремого контуру залишку не будуємо:
+    1 − Σ площ зон / площа приміщення. Сюди передаються лише зони, які й зараз
+    лежать у приміщенні (див. zone_lies_inside_room): зона, що вийшла за змінений
+    контур, не закриває жодної його частини. Окремого контуру залишку не будуємо:
     для нього немає висоти, тож приладів він не отримує, але причина
     показується користувачу, а не губиться мовчки.
     """
@@ -444,6 +491,9 @@ def build_placement_targets(
     пропуску. Тому:
     * якщо зони не покривають приміщення повністю, додається ціль «Решта
       приміщення» зі статусом «недостатньо даних» і поясненням;
+    * зона, що вийшла за змінений контур приміщення, не розміщується й не
+      зараховується в покриття: вона отримує причину, а її частина приміщення
+      потрапляє в «Решту»;
     * приміщення без придатного контуру не відкидається мовчки, а потрапляє
       в результат із причиною «Некоректний контур».
     """
@@ -460,7 +510,14 @@ def build_placement_targets(
 
         zones = zones_by_room.get(room_id or "", [])
         if zones:
+            inside_zones: list[Mapping[str, Any]] = []
             for index, zone in enumerate(zones, start=1):
+                zone_coords = row_coords(zone)
+                # Інваріант «зона лежить у приміщенні» діє не лише при створенні
+                # зони: контур приміщення могли змінити після цього.
+                outside = not zone_lies_inside_room(zone_coords, room_coords)
+                if not outside:
+                    inside_zones.append(zone)
                 targets.append(
                     PlacementTarget(
                         room_id=room_id,
@@ -470,8 +527,9 @@ def build_placement_targets(
                         or f"Зона {index}",
                         room_type=room_type,
                         height_m=row_height_m(zone),
-                        coords=row_coords(zone),
+                        coords=zone_coords,
                         scope=SCOPE_ZONE,
+                        skip_reason=REASON_ZONE_OUTSIDE_ROOM if outside else None,
                     )
                 )
             remainder = _uncovered_target(
@@ -480,7 +538,7 @@ def build_placement_targets(
                 room_name=room_name,
                 room_type=room_type,
                 room_coords=room_coords,
-                zone_rows=zones,
+                zone_rows=inside_zones,
             )
             if remainder is not None:
                 targets.append(remainder)

@@ -99,6 +99,32 @@ it("ignores malformed placement report parts and responses without a report", ()
   expect(placementReport(DEMO_RESULT)).toBeNull();
   expect(placementReport(undefined)).toBeNull();
 });
+it("reads the stored placement report that GET returns with a result, so a reload keeps the reasons", () => {
+  const stored = {
+    placement_status: "partial", device_count: 6,
+    skipped: [{ room_id: "r1", zone_id: null, name: "Hall", zone_name: "Решта приміщення", scope: "remainder",
+      reason: "Частину приміщення (≈40 м², 50 %) не віднесено до жодної зони" }],
+  };
+  const result = parseDrawing({ ...DEMO_RESULT, placementReport: stored }, id);
+  expect(placementReport(result)).toMatchObject({ placementStatus: "partial", deviceCount: 6 });
+  expect(placementReport(result)?.placementIssues).toEqual([
+    { title: "Hall — Решта приміщення", reason: expect.stringContaining("не віднесено до жодної зони") },
+  ]);
+  // The same wire shape as the POST /place acknowledgement gives the same report.
+  expect(placementReport(result)).toEqual(parsePlacementReport(stored));
+  expect(placementReport(parseDrawingOperation({ drawing_id: id, status: "processed", ...stored }, id, "processed")))
+    .toEqual(placementReport(result));
+});
+it.each([null, "partial", {}, { placement_status: "invented" }])("treats a null or malformed stored report (%j) as no report and keeps the result valid", stored => {
+  const result = parseDrawing({ ...DEMO_RESULT, placementReport: stored }, id);
+  expect(placementReport(result)).toBeNull();
+  expect(result).toMatchObject({ rooms: DEMO_RESULT.rooms, devices: DEMO_RESULT.devices });
+  expect(result).not.toHaveProperty("placementReport");
+});
+it("keeps a result without a report as it is", () => {
+  expect(parseDrawing(DEMO_RESULT, id)).toBe(DEMO_RESULT);
+  expect(placementReport(parseDrawing(DEMO_RESULT, id))).toBeNull();
+});
 it("rejects mismatched IDs, absent data and invalid jobs", async () => {
   expect(() => parseDrawing(null, id)).toThrow();
   expect(() => parseDrawing(detail, "another-id")).toThrow();

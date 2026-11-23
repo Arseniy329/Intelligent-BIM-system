@@ -32,6 +32,24 @@ begin
 end
 $$;
 
+-- ── BIM-73: звіт розміщення зберігається разом із результатом ──────────────
+do $$
+declare
+  col_type text;
+  col_nullable text;
+begin
+  select data_type, is_nullable into col_type, col_nullable
+  from information_schema.columns
+  where table_schema = 'public' and table_name = 'drawings' and column_name = 'placement_report';
+  if col_type is distinct from 'jsonb' then
+    raise exception 'drawings.placement_report must be jsonb, found %', col_type;
+  end if;
+  if col_nullable <> 'YES' then
+    raise exception 'drawings.placement_report must be nullable (null = no report)';
+  end if;
+end
+$$;
+
 -- ── BIM-73: room_zones і RLS ────────────────────────────────────────────────
 do $$
 begin

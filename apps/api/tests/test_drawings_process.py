@@ -125,8 +125,9 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             self.assertEqual(room["confirmed"], False)
 
         # Verify drawings table status updated to 'processing'
+        # Приміщення створено заново, тож збережений звіт розміщення скидається.
         mock_drawings_query.update.assert_called_with(
-            {"status": "processing", "unit_scale_m": 0.001}
+            {"status": "processing", "unit_scale_m": 0.001, "placement_report": None}
         )
 
         # Verify /tmp cleanup
@@ -587,7 +588,17 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             self.assertEqual(dev["layer"], "SYS_FIRE_SENSORS")
 
         # Verify drawing status updated to 'processed'
-        mock_drawings_query.update.assert_called_with({"status": "processed"})
+        # Звіт розміщення пишеться тим самим UPDATE, що й статус (GET його повертає).
+        mock_drawings_query.update.assert_called_with(
+            {
+                "status": "processed",
+                "placement_report": {
+                    "placement_status": "complete",
+                    "device_count": len(inserted_devices),
+                    "skipped": [],
+                },
+            }
+        )
 
         # Verify DXF uploaded
         self.assertEqual(len(uploaded_payloads), 1)
@@ -1107,7 +1118,13 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         get_resp = self.client.get(f"/api/v1/drawings/{drawing_id}")
         self.assertEqual(get_resp.status_code, 200)
 
-        result = DrawingResult.model_validate(get_resp.json())
+        # GET повертає збережений звіт розміщення поруч із контрактом (DrawingResult
+        # не допускає зайвих полів): контракт перевіряється без нього, а звіт — окремо.
+        body = get_resp.json()
+        stored_report = body.pop("placementReport")
+        self.assertEqual(stored_report, db["drawings"][0]["placement_report"])
+        self.assertEqual(stored_report["device_count"], len(db["devices"]))
+        result = DrawingResult.model_validate(body)
         self.assertEqual(str(result.drawing.id), drawing_id)
         self.assertEqual(result.drawing.status.value, "processed")
         self.assertEqual(len(result.rooms), len(db["rooms"]))

@@ -143,7 +143,9 @@ function DrawingDetailContent({
   const error = state.detail.error || state.process.error || state.place.error || state.jobError;
   const processingFailed = state.currentJob?.status === "failed";
   // `processed` only means the placement step finished; skipped rooms/zones come with reasons.
-  const placement = placementReport(state.place.data);
+  // The report of the POST that just ran wins; otherwise the one the API stored with the
+  // result, so a reload or a shared link shows the same reasons next to the result.
+  const placement = placementReport(state.place.data) ?? placementReport(data);
   const units = isDrawingResult(data) ? data.drawing.resolvedUnits : data.units;
   const reprocessing = !!result?.rooms.length || metadata.status === "processed";
   const mappedRooms =
