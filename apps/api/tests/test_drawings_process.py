@@ -1,9 +1,12 @@
 import io
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import ezdxf
@@ -20,6 +23,20 @@ from src.contracts.generated import DrawingResult
 from src.core.auth import CurrentUser, get_current_user
 from src.infrastructure.supabase import get_supabase_client
 from src.main import app
+from src.modules.drawings.router import (
+    EXIT_DETECTION_FAILED,
+    WARNING_EXIT_DETECTION_FAILED,
+)
+from src.modules.placement.manual_call_points import (
+    WARNING_PASSAGES_IGNORED,
+    WARNING_ROUTE_UNCONFIRMED,
+)
+from tests.fakes import (
+    FakeTable,
+    fake_replace_dxf_layout,
+    fake_supabase,
+    set_null_on_room_delete,
+)
 
 FIXTURES_DIR = API_DIR / "tests" / "fixtures" / "test_drawing_dxf"
 
@@ -125,8 +142,9 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             self.assertEqual(room["confirmed"], False)
 
         # Verify drawings table status updated to 'processing'
+        # Приміщення створено заново, тож збережений звіт розміщення скидається.
         mock_drawings_query.update.assert_called_with(
-            {"status": "processing", "unit_scale_m": 0.001}
+            {"status": "processing", "unit_scale_m": 0.001, "placement_report": None}
         )
 
         # Verify /tmp cleanup
@@ -222,8 +240,14 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertIn("лишено без змін", data["exit_detection"]["warning"])
         # Приміщення розпізнано і збережено, статус креслення оновлено.
         self.assertGreater(len(result["rooms"]), 0)
+        # Збій кроку лишається і у звіті креслення: після перезавантаження
+        # попередження не зникає.
         result["drawings_query"].update.assert_called_with(
-            {"status": "processing", "unit_scale_m": 0.001}
+            {
+                "status": "processing",
+                "unit_scale_m": 0.001,
+                "placement_report": {"exit_detection": data["exit_detection"]},
+            }
         )
         # Старі виходи не видалялись окремим запитом.
         result["exits_table"].delete.assert_not_called()
@@ -689,7 +713,18 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             self.assertEqual(dev["layer"], "SYS_FIRE_SENSORS")
 
         # Verify drawing status updated to 'processed'
-        mock_drawings_query.update.assert_called_with({"status": "processed"})
+        # Звіт розміщення пишеться тим самим UPDATE, що й статус (GET його повертає).
+        mock_drawings_query.update.assert_called_with(
+            {
+                "status": "processed",
+                "placement_report": {
+                    "placement_status": "complete",
+                    "device_count": len(inserted_devices),
+                    "skipped": [],
+                    "manual_call_points": call_points,
+                },
+            }
+        )
 
         # Verify DXF uploaded
         self.assertEqual(len(uploaded_payloads), 1)
@@ -1209,7 +1244,13 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         get_resp = self.client.get(f"/api/v1/drawings/{drawing_id}")
         self.assertEqual(get_resp.status_code, 200)
 
-        result = DrawingResult.model_validate(get_resp.json())
+        # GET повертає збережений звіт розміщення поруч із контрактом (DrawingResult
+        # не допускає зайвих полів): контракт перевіряється без нього, а звіт — окремо.
+        body = get_resp.json()
+        stored_report = body.pop("placementReport")
+        self.assertEqual(stored_report, db["drawings"][0]["placement_report"])
+        self.assertEqual(stored_report["device_count"], len(db["devices"]))
+        result = DrawingResult.model_validate(body)
         self.assertEqual(str(result.drawing.id), drawing_id)
         self.assertEqual(result.drawing.status.value, "processed")
         self.assertEqual(len(result.rooms), len(db["rooms"]))
@@ -1241,6 +1282,297 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertEqual(len(intermediate["rooms"]), len(result.rooms))
         self.assertEqual(intermediate["devices"], [])
         self.assertIsNone(intermediate["downloadUrl"])
+
+
+def _points(*coords: tuple[float, float]) -> list[SimpleNamespace]:
+    return [SimpleNamespace(x=x, y=y) for x, y in coords]
+
+
+class TestStaleLayoutAfterFailedReprocess(unittest.TestCase):
+    """Повторна обробка: збій запису виходів і проходів не підтверджує новий маршрут.
+
+    Приміщення при кожній обробці створюються заново (нові id), а запис виходів і
+    проходів — окремий крок, який може не вдатись. Тоді в БД лишаються проходи зі
+    старої обробки: вони не мають автоматично підтверджувати маршрут для нових
+    контурів, а причина має бути видима і в POST /place, і після перезавантаження.
+    """
+
+    DOOR = (20_150.0, 1_500.0)
+
+    def setUp(self) -> None:
+        self.user_id = str(uuid4())
+        self.drawing_id = str(uuid4())
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+        # Попередня обробка: два коридори через стіну, вихід у кожному, двері між ними.
+        self.old_west, self.old_east = str(uuid4()), str(uuid4())
+        self.rooms_table = FakeTable(
+            [
+                self.room_row(self.old_west, "West", 0, 20_000),
+                self.room_row(self.old_east, "East", 20_300, 40_300),
+            ]
+        )
+        self.exits_table = FakeTable(
+            [
+                self.exit_row(0, 1_500, self.old_west),
+                self.exit_row(40_300, 1_500, self.old_east),
+            ]
+        )
+        self.old_passage = {
+            "id": str(uuid4()),
+            "drawing_id": self.drawing_id,
+            "name": None,
+            "x": self.DOOR[0],
+            "y": self.DOOR[1],
+            "source": "dxf",
+            "room_a_id": self.old_west,
+            "room_b_id": self.old_east,
+            "created_at": "2026-11-20T10:00:00+00:00",
+        }
+        self.passages_table = FakeTable([self.old_passage])
+        self.drawings_table = FakeTable(
+            [
+                {
+                    "id": self.drawing_id,
+                    "owner_id": self.user_id,
+                    "units": "mm",
+                    "unit_scale_m": 0.001,
+                    "status": "processed",
+                    "original_file_name": "plan.dxf",
+                    "storage_path": f"{self.user_id}/{self.drawing_id}/source.dxf",
+                    "created_at": "2026-11-19T10:00:00+00:00",
+                    "placement_report": None,
+                }
+            ]
+        )
+        self.devices_table = FakeTable([])
+        # Приміщення видаляються при обробці, пара проходу обнуляється (set null).
+        self.rooms_table.on_delete = set_null_on_room_delete(
+            (self.exits_table, ("room_id",)),
+            (self.passages_table, ("room_a_id", "room_b_id")),
+        )
+        self.tables = {
+            "rooms": self.rooms_table,
+            "room_zones": FakeTable([]),
+            "exits": self.exits_table,
+            "passages": self.passages_table,
+            "drawings": self.drawings_table,
+            "devices": self.devices_table,
+            "rules": FakeTable([self.manual_call_point_rule()]),
+        }
+        self.current_user = CurrentUser(id=self.user_id, role="engineer")
+        app.dependency_overrides[get_current_user] = lambda: self.current_user
+
+    def tearDown(self) -> None:
+        app.dependency_overrides.clear()
+
+    def room_row(self, room_id: str, name: str, x0: float, x1: float) -> dict[str, Any]:
+        return {
+            "id": room_id,
+            "drawing_id": self.drawing_id,
+            "name": name,
+            "type": "corridor",
+            "height": 3.0,
+            "area": (x1 - x0) * 3 / 1000,
+            "polygon": [
+                {"x": x0, "y": 0},
+                {"x": x1, "y": 0},
+                {"x": x1, "y": 3_000},
+                {"x": x0, "y": 3_000},
+            ],
+            "source": "auto",
+        }
+
+    def exit_row(self, x: float, y: float, room_id: str) -> dict[str, Any]:
+        return {
+            "id": str(uuid4()),
+            "drawing_id": self.drawing_id,
+            "room_id": room_id,
+            "name": None,
+            "x": x,
+            "y": y,
+            "source": "dxf",
+            "created_at": "2026-11-20T10:00:00+00:00",
+        }
+
+    @staticmethod
+    def manual_call_point_rule() -> dict[str, Any]:
+        return {
+            "id": str(uuid4()),
+            "rule_id": "MANUAL_CALL_POINT_SPACING_DSTU",
+            "name": "MANUAL_CALL_POINT_SPACING_DSTU",
+            "device_type": "manual_call_point",
+            "value_kind": "max_grid_spacing_m",
+            "room_types": [],
+            "min_height_m": None,
+            "max_height_m": None,
+            "value": 30.0,
+            "conditions": {"exit_offset_m": 1.0},
+            "verification_status": "verified",
+        }
+
+    def use_rpc(self, fails: bool) -> TestClient:
+        supabase = fake_supabase(
+            self.tables,
+            rpc={
+                "replace_dxf_layout": fake_replace_dxf_layout(
+                    self.tables, fail_after_delete=fails
+                )
+            },
+        )
+        app.dependency_overrides[get_supabase_client] = lambda: supabase
+        return TestClient(app)
+
+    def place(self, client: TestClient) -> Any:
+        with patch(
+            "src.modules.drawings.router.generate_and_upload_result_dxf",
+            return_value="result.dxf",
+        ):
+            return client.post(f"/api/v1/drawings/{self.drawing_id}/place")
+
+    def reprocess(self, client: TestClient) -> Any:
+        """Повторний POST /process: нові приміщення, ті самі виходи й двері."""
+        dxf = Path(self.tmp.name) / f"{uuid4()}.dxf"
+        dxf.write_bytes(b"0\nEOF\n")
+        new_rooms = [
+            SimpleNamespace(
+                id=uuid4(),
+                name=name,
+                type="corridor",
+                height=3.0,
+                area=60.0,
+                polygon=_points((x0, 0), (x1, 0), (x1, 3_000), (x0, 3_000)),
+                source=None,
+            )
+            for name, x0, x1 in (("West", 0, 20_000), ("East", 20_300, 40_300))
+        ]
+        exits = [
+            SimpleNamespace(x=0.0, y=1_500.0, name=None),
+            SimpleNamespace(x=40_300.0, y=1_500.0, name=None),
+        ]
+        doors = [SimpleNamespace(x=self.DOOR[0], y=self.DOOR[1])]
+        with (
+            patch("src.modules.drawings.router.download_dxf_to_tmp", return_value=dxf),
+            patch(
+                "src.modules.drawings.router.parse_dxf_rooms_with_scale",
+                return_value=(new_rooms, 0.001),
+            ),
+            patch("src.modules.drawings.router.read_dxf_document"),
+            patch("src.modules.drawings.router.find_exit_points", return_value=exits),
+            patch("src.modules.drawings.router.find_door_points", return_value=doors),
+        ):
+            return client.post(f"/api/v1/drawings/{self.drawing_id}/process")
+
+    def reload(self, client: TestClient) -> Any:
+        """Новий запит без стану POST: що бачить користувач після перезавантаження."""
+        return client.get(f"/api/v1/drawings/{self.drawing_id}")
+
+    def test_the_route_is_confirmed_by_the_passage_before_reprocessing(self) -> None:
+        response = self.place(self.use_rpc(fails=False))
+
+        self.assertEqual(response.status_code, 200, response.text)
+        mcp = response.json()["manual_call_points"]
+        self.assertEqual(mcp["route_coverage"], "confirmed")
+        self.assertEqual(mcp["passage_ids"], [self.old_passage["id"]])
+
+    def test_old_passage_does_not_confirm_the_route_after_a_failed_rewrite(
+        self,
+    ) -> None:
+        client = self.use_rpc(fails=True)
+
+        processed = self.reprocess(client)
+
+        self.assertEqual(processed.status_code, 200, processed.text)
+        self.assertEqual(processed.json()["exit_detection"]["status"], "failed")
+        # Старі дані не втрачено, але прохід більше не належить жодному приміщенню.
+        (kept,) = self.passages_table.rows
+        self.assertEqual(kept["id"], self.old_passage["id"])
+        self.assertIsNone(kept["room_a_id"])
+        self.assertIsNone(kept["room_b_id"])
+        self.assertNotIn(self.old_west, {r["id"] for r in self.rooms_table.rows})
+
+        response = self.place(client)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        mcp = body["manual_call_points"]
+        # Статус і пояснення, а не лише кількість сповіщувачів.
+        self.assertEqual(mcp["status"], "placed")
+        self.assertEqual(mcp["device_count"], 2)  # лише біля виходів
+        self.assertEqual(mcp["route_coverage"], "unconfirmed")
+        self.assertEqual(mcp["passage_ids"], [])
+        self.assertEqual(mcp["ignored_passage_ids"], [self.old_passage["id"]])
+        self.assertEqual(len(mcp["unconnected_exit_ids"]), 1)
+        self.assertEqual(mcp["unconnected_rooms"], ["East"])
+        self.assertIn(WARNING_ROUTE_UNCONFIRMED, mcp["route_warning"])
+        self.assertIn(WARNING_PASSAGES_IGNORED, mcp["route_warning"])
+        # Збій оновлення виходів і проходів теж лишається у звіті розміщення.
+        self.assertEqual(body["exit_detection"]["status"], EXIT_DETECTION_FAILED)
+        self.assertEqual(
+            body["exit_detection"]["warning"], WARNING_EXIT_DETECTION_FAILED
+        )
+
+    def test_the_explanation_is_still_there_after_a_reload(self) -> None:
+        client = self.use_rpc(fails=True)
+        self.reprocess(client)
+        posted = self.place(client).json()
+
+        detail = self.reload(client)
+
+        self.assertEqual(detail.status_code, 200, detail.text)
+        report = detail.json()["placementReport"]
+        self.assertEqual(report["manual_call_points"], posted["manual_call_points"])
+        self.assertEqual(report["exit_detection"], posted["exit_detection"])
+        self.assertEqual(report["manual_call_points"]["route_coverage"], "unconfirmed")
+        self.assertIn(
+            WARNING_PASSAGES_IGNORED, report["manual_call_points"]["route_warning"]
+        )
+
+    def test_a_failed_rewrite_is_visible_after_a_reload_before_any_placement(
+        self,
+    ) -> None:
+        client = self.use_rpc(fails=True)
+        self.reprocess(client)
+
+        detail = self.reload(client)
+
+        self.assertEqual(detail.status_code, 200, detail.text)
+        report = detail.json()["placementReport"]
+        # Розміщення ще не було: у звіті лише збій кроку, без placement_status.
+        self.assertEqual(list(report), ["exit_detection"])
+        self.assertEqual(report["exit_detection"]["status"], EXIT_DETECTION_FAILED)
+
+    def test_successful_reprocessing_binds_the_door_to_the_new_rooms(self) -> None:
+        client = self.use_rpc(fails=False)
+
+        processed = self.reprocess(client)
+
+        self.assertEqual(processed.json()["exit_detection"]["status"], "ok")
+        new_ids = {row["id"] for row in self.rooms_table.rows}
+        (passage,) = self.passages_table.rows
+        self.assertNotEqual(passage["id"], self.old_passage["id"])
+        self.assertEqual({passage["room_a_id"], passage["room_b_id"]}, new_ids)
+
+        mcp = self.place(client).json()["manual_call_points"]
+
+        self.assertEqual(mcp["route_coverage"], "confirmed")
+        self.assertEqual(mcp["passage_ids"], [passage["id"]])
+        self.assertEqual(mcp["ignored_passage_ids"], [])
+        self.assertIsNone(mcp["route_warning"])
+        # Без збою звіту про виходи нема: нічого показувати нема чого.
+        self.assertNotIn("exit_detection", self.place(client).json())
+
+    def test_a_good_reprocessing_clears_the_failure_of_a_previous_one(self) -> None:
+        failed = self.use_rpc(fails=True)
+        self.reprocess(failed)
+        self.assertIn("placementReport", self.reload(failed).json())
+
+        good = self.use_rpc(fails=False)
+        self.reprocess(good)
+
+        self.assertNotIn("placementReport", self.reload(good).json())
+        self.assertNotIn("exit_detection", self.place(good).json())
 
 
 if __name__ == "__main__":

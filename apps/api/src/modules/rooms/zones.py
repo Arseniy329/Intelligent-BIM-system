@@ -12,11 +12,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from shapely.geometry import Polygon
 
 from src.contracts.generated import Point, RoomPolygon
+from src.modules.placement.service import ZONE_INSIDE_TOLERANCE_RATIO
 from src.modules.rooms.service import row_points
 
 # Допуск виходу контуру зони за контур приміщення — частка більшого розміру
-# приміщення (відхилення прив'язки до країв при ручному накресленні).
-INSIDE_TOLERANCE_RATIO = 0.001
+# приміщення (відхилення прив'язки до країв при ручному накресленні). Єдине
+# значення і для створення зони, і для розміщення (placement.service).
+INSIDE_TOLERANCE_RATIO = ZONE_INSIDE_TOLERANCE_RATIO
 # Дозволене перекриття зон — частка площі меншої з двох зон.
 OVERLAP_TOLERANCE_RATIO = 0.01
 

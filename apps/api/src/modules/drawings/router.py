@@ -32,6 +32,7 @@ from src.modules.drawings.schemas import (
     DrawingDetailResponse,
     DrawingListItem,
     DrawingRecord,
+    DrawingResultWithReport,
 )
 from src.modules.drawings.service import (
     generate_and_upload_result_dxf,
@@ -41,6 +42,7 @@ from src.modules.drawings.service import (
 from src.modules.placement.manual_call_points import (
     describe_call_point_outcome,
     exits_from_rows,
+    passage_room_pair,
     passages_from_rows,
     place_manual_call_points,
     room_id_near_exit,
@@ -197,9 +199,16 @@ def _save_dxf_layout(
     помилці лишається попередній набір. Позначені вручну лишаються; оновлюється
     лише їхній зв'язок із приміщенням, бо приміщення при обробці створюються заново.
 
+    Кожні двері зберігаються разом із парою приміщень, які вони з'єднують (з
+    геометрії; без однозначної пари — без пари). Приміщення при обробці створюються
+    заново, тож проходи зі старої обробки втрачають пару (``on delete set null``) і
+    не підтверджують маршрути для нових контурів, навіть якщо цей запис не вдався.
+
     Пошук виходів не повинен ламати розпізнавання приміщень, тому збій не
     піднімається, а повертається станом кроку (``exit_detection`` у відповіді
-    /process) із попередженням, а не лише в логах.
+    /process) із попередженням, а не лише в логах. Збій також зберігається разом зі
+    звітом креслення (див. ``process_drawing``), щоб попередження не зникло після
+    перезавантаження.
     """
     try:
         document = read_dxf_document(dxf_path)
@@ -218,10 +227,19 @@ def _save_dxf_layout(
             }
             for item in detected
         ]
-        passage_rows = [
-            {"id": str(uuid4()), "name": None, "x": door.x, "y": door.y}
-            for door in doors
-        ]
+        passage_rows = []
+        for door in doors:
+            pair = passage_room_pair((door.x, door.y), rooms, unit_scale_m)
+            passage_rows.append(
+                {
+                    "id": str(uuid4()),
+                    "name": None,
+                    "x": door.x,
+                    "y": door.y,
+                    "room_a_id": pair[0] if pair else None,
+                    "room_b_id": pair[1] if pair else None,
+                }
+            )
 
         manual = (
             supabase.table("exits")
@@ -240,6 +258,32 @@ def _save_dxf_layout(
             if room_id != row.get("room_id"):
                 manual_links.append({"id": str(row["id"]), "room_id": room_id})
 
+        # Позначені вручну проходи лишаються, але пару приміщень для нових контурів
+        # визначаємо знову: однозначна — прив'язуємо, ні — прохід чекає підтвердження.
+        manual_passages = (
+            supabase.table("passages")
+            .select("*")
+            .eq("drawing_id", drawing_id)
+            .eq("source", "manual")
+            .execute()
+        )
+        manual_passage_links: list[dict[str, Any]] = []
+        for row in (
+            manual_passages.data if isinstance(manual_passages.data, list) else []
+        ):
+            if not isinstance(row, dict):
+                continue
+            pair = passage_room_pair(
+                (float(row["x"]), float(row["y"])), rooms, unit_scale_m
+            )
+            manual_passage_links.append(
+                {
+                    "id": str(row["id"]),
+                    "room_a_id": pair[0] if pair else None,
+                    "room_b_id": pair[1] if pair else None,
+                }
+            )
+
         supabase.rpc(
             "replace_dxf_layout",
             {
@@ -247,6 +291,7 @@ def _save_dxf_layout(
                 "p_exits": exit_rows,
                 "p_passages": passage_rows,
                 "p_manual_exit_rooms": manual_links,
+                "p_manual_passage_rooms": manual_passage_links,
             },
         ).execute()
     except Exception:
@@ -265,6 +310,22 @@ def _save_dxf_layout(
         "passages": len(passage_rows),
         "warning": None,
     }
+
+
+def _stale_layout_report(drawing_data: dict[str, Any]) -> dict[str, Any] | None:
+    """Збій оновлення виходів і проходів після останньої обробки, якщо він був.
+
+    Доки обробку не виконано успішно, DXF-виходи й проходи в БД можуть бути зі старої
+    обробки. Проходи без пари приміщень маршрути не підтверджують, але інженер має
+    бачити причину й у звіті розміщення.
+    """
+    report = drawing_data.get("placement_report")
+    if not isinstance(report, dict):
+        return None
+    layout = report.get("exit_detection")
+    if isinstance(layout, dict) and layout.get("status") == EXIT_DETECTION_FAILED:
+        return layout
+    return None
 
 
 @router.post("/{drawing_id}/process")
@@ -340,8 +401,20 @@ async def process_drawing(
 
         # unit_scale_m (migration 007) lets manual room edits compute areas
         # even after every parsed room has been deleted.
+        # Приміщення створено заново, тож звіт попереднього розміщення втратив
+        # чинність. Замість нього лишається лише збій кроку «виходи й проходи»:
+        # він не повинен зникнути після перезавантаження, і /place переносить його
+        # у свій звіт, доки обробку не виконано успішно.
         supabase.table("drawings").update(
-            {"status": "processing", "unit_scale_m": unit_scale_m}
+            {
+                "status": "processing",
+                "unit_scale_m": unit_scale_m,
+                "placement_report": (
+                    None
+                    if exit_detection["status"] == EXIT_DETECTION_OK
+                    else {"exit_detection": exit_detection}
+                ),
+            }
         ).eq("id", drawing_id).execute()
 
         return {
@@ -506,9 +579,23 @@ async def place_drawing_devices(
         if new_device_rows:
             supabase.table("devices").insert(new_device_rows).execute()
 
-        supabase.table("drawings").update({"status": "processed"}).eq(
-            "id", drawing_id
-        ).execute()
+        # `status: processed` лише каже, що крок розміщення завершено. Чи оброблено
+        # все креслення, показує placement_status; пропущені приміщення/зони з
+        # причинами — у skipped; стан ручних сповіщувачів і шляхів евакуації — у
+        # manual_call_points. Звіт пишеться тим самим UPDATE, що й статус, і
+        # повертається в GET: після перезавантаження жодне попередження не зникає.
+        placement_report: dict[str, Any] = {
+            **summarize_outcomes(outcomes),
+            "manual_call_points": describe_call_point_outcome(call_points),
+        }
+        stale_layout = _stale_layout_report(drawing_data)
+        if stale_layout is not None:
+            # Збій оновлення виходів і проходів після останньої обробки лишається
+            # видимим, доки обробку не виконано успішно.
+            placement_report["exit_detection"] = stale_layout
+        supabase.table("drawings").update(
+            {"status": "processed", "placement_report": placement_report}
+        ).eq("id", drawing_id).execute()
 
         result_storage_path = generate_and_upload_result_dxf(drawing_id, supabase)
 
@@ -517,11 +604,7 @@ async def place_drawing_devices(
             "status": "processed",
             "result_path": result_storage_path,
             "placements": [describe_outcome(outcome) for outcome in outcomes],
-            # `status: processed` лише каже, що крок розміщення завершено. Чи
-            # оброблено все креслення, показує placement_status; пропущені
-            # приміщення/зони з причинами — у skipped.
-            **summarize_outcomes(outcomes),
-            "manual_call_points": describe_call_point_outcome(call_points),
+            **placement_report,
         }
     except Exception as exc:
         try:
@@ -541,13 +624,13 @@ async def place_drawing_devices(
 
 @router.get(
     "/{drawing_id}",
-    response_model=DrawingResult | DrawingDetailResponse,
+    response_model=DrawingResultWithReport | DrawingResult | DrawingDetailResponse,
 )
 async def get_drawing_detail(
     drawing_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     supabase: Annotated[Client | None, Depends(get_supabase_client)] = None,
-) -> DrawingResult | DrawingDetailResponse:
+) -> DrawingResultWithReport | DrawingResult | DrawingDetailResponse:
     if supabase is None:
         supabase = get_supabase_client(settings)
 
@@ -695,16 +778,32 @@ async def get_drawing_detail(
                 download_url = None
                 download_url_expires_at = None
 
-        return DrawingResult(
-            sourceDownloadUrl=AnyUrl(source_download_url)
+        # Звіт останнього розміщення належить лише готовому результату (processed)
+        # або проміжному стану після /process; після помилки він застарів.
+        stored_report = drawing_data.get("placement_report")
+        placement_report = (
+            stored_report
+            if isinstance(stored_report, dict)
+            and status_raw in {"processing", "processed"}
+            else None
+        )
+
+        result_fields: dict[str, Any] = {
+            "sourceDownloadUrl": AnyUrl(source_download_url)
             if source_download_url
             else None,
-            sourceDownloadUrlExpiresAt=source_download_url_expires_at,
-            drawing=drawing,
-            rooms=rooms,
-            devices=devices,
-            downloadUrl=download_url,
-            downloadUrlExpiresAt=download_url_expires_at,
+            "sourceDownloadUrlExpiresAt": source_download_url_expires_at,
+            "drawing": drawing,
+            "rooms": rooms,
+            "devices": devices,
+            "downloadUrl": download_url,
+            "downloadUrlExpiresAt": download_url_expires_at,
+        }
+        if placement_report is None:
+            # Без звіту відповідь байт-у-байт збігається з контрактом DrawingResult.
+            return DrawingResult(**result_fields)
+        return DrawingResultWithReport(
+            **result_fields, placementReport=placement_report
         )
 
     # Flat DrawingDetailResponse format for unprocessed drawings

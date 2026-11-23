@@ -13,8 +13,14 @@ class FakeTable:
     assert what the endpoint wrote.
     """
 
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        on_delete: Callable[[list[dict[str, Any]]], None] | None = None,
+    ) -> None:
         self.rows = rows
+        # Stand-in for ``ON DELETE`` rules of the database (e.g. ``set null``).
+        self.on_delete = on_delete
         self.updates: list[dict[str, Any]] = []
         self.inserts: list[dict[str, Any]] = []
         self.deleted: list[dict[str, Any]] = []
@@ -84,9 +90,33 @@ class FakeTable:
             self.rows[:] = [
                 row for row in self.rows if not any(row is m for m in matched)
             ]
+            if self.on_delete is not None:
+                self.on_delete(matched)
         if single:
             return MagicMock(data=dict(matched[0]) if matched else None)
         return MagicMock(data=[dict(row) for row in matched])
+
+
+def set_null_on_room_delete(
+    *referencing: tuple[FakeTable, tuple[str, ...]],
+) -> Callable[[list[dict[str, Any]]], None]:
+    """``ON DELETE SET NULL`` for rows that point at deleted rooms.
+
+    Each item is ``(table, columns)``: those columns of the table become ``None``
+    when the room they reference is deleted, as the foreign keys of migrations
+    013, 014 and 016 do. The real behaviour is checked on PostgreSQL by
+    supabase/tests/assertions.sql.
+    """
+
+    def handler(deleted: list[dict[str, Any]]) -> None:
+        ids = {str(room["id"]) for room in deleted}
+        for table, columns in referencing:
+            for row in table.rows:
+                for column in columns:
+                    if str(row.get(column)) in ids:
+                        row[column] = None
+
+    return handler
 
 
 def fake_supabase(
@@ -150,6 +180,11 @@ def fake_replace_dxf_layout(
                 for row in exits.rows:
                     if row["id"] == link["id"] and row.get("source") == "manual":
                         row["room_id"] = link["room_id"]
+            for link in params.get("p_manual_passage_rooms", []):
+                for row in passages.rows:
+                    if row["id"] == link["id"] and row.get("source") == "manual":
+                        row["room_a_id"] = link.get("room_a_id")
+                        row["room_b_id"] = link.get("room_b_id")
         except Exception:
             exits.rows[:] = snapshot[0]
             passages.rows[:] = snapshot[1]

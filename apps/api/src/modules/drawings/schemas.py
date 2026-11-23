@@ -1,8 +1,10 @@
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from src.contracts.generated import DrawingResult
 
 
 class DrawingStatus(str, Enum):  # noqa: UP042
@@ -63,3 +65,23 @@ class DrawingDetailResponse(BaseModel):
     created_at: datetime
     source_download_url: str | None = None
     source_download_url_expires_at: datetime | None = None
+
+
+class DrawingResultWithReport(DrawingResult):
+    """Результат креслення разом зі збереженим звітом останнього розміщення.
+
+    Контракт ``DrawingResult`` генерується зі схеми й не змінюється, тож звіт —
+    окреме необов'язкове поле, яке GET /drawings/{id} додає ЛИШЕ коли звіт є
+    (без звіту відповідь точно відповідає ``DrawingResult``). Форма значення
+    збігається з відповіддю POST /place (``placement_status``, ``device_count``,
+    ``skipped``): клієнт читає обидва одним розбором. Щоб внести поле в спільний
+    контракт, потрібна окрема зміна ``contracts.schema.json`` і перегенерація.
+    """
+
+    placementReport: dict[str, Any] = Field(
+        ...,
+        description=(
+            "Звіт останнього кроку розміщення: чи оброблено все креслення і що "
+            "пропущено та чому."
+        ),
+    )

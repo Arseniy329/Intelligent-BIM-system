@@ -28,11 +28,22 @@ from src.modules.exits.schemas import (
     PassageCreateRequest,
 )
 from src.modules.placement.manual_call_points import (
+    passage_at_rooms,
+    passage_room_pair,
     room_id_near_exit,
     rooms_from_rows,
 )
 
 router = APIRouter(tags=["exits"])
+
+PASSAGE_ROOMS_UNKNOWN = (
+    "Не вдалося однозначно визначити два приміщення, які з'єднує прохід. Позначте "
+    "точку в стіні між приміщеннями або вкажіть roomIds"
+)
+PASSAGE_ROOMS_INVALID = (
+    "roomIds мають бути двома різними приміщеннями цього креслення, стіни яких "
+    "підходять до точки проходу"
+)
 
 
 def exit_from_row(row: dict[str, Any]) -> Exit:
@@ -129,12 +140,15 @@ def passage_from_row(row: dict[str, Any]) -> Passage:
         source = ExitSource(str(row.get("source")))
     except ValueError:
         source = ExitSource.manual
+    first, second = row.get("room_a_id"), row.get("room_b_id")
     return Passage(
         id=str(row["id"]),
         drawingId=UUID(str(row["drawing_id"])),
         name=row.get("name"),
         position=Point(x=float(row["x"]), y=float(row["y"])),
         source=source,
+        # Пара є лише повна: з однією стороною прохід нічого не з'єднує.
+        roomIds=[str(first), str(second)] if first and second else [],
     )
 
 
@@ -167,8 +181,40 @@ async def create_passage(
     supabase: Annotated[Client, Depends(get_supabase_client)],
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Passage:
-    """Інженер підтверджує прохід (двері або отвір) між приміщеннями на плані."""
-    get_drawing_for_user(supabase, drawing_id, current_user)
+    """Інженер підтверджує прохід (двері або отвір) між двома приміщеннями на плані.
+
+    Прохід з'єднує рівно два приміщення. Їх називає інженер (``roomIds``) або вони
+    визначаються з креслення, якщо пара однозначна. Інакше — 422: прохід без пари
+    нічого б не підтвердив, а вгадувати сторону не можна.
+    """
+    drawing = get_drawing_for_user(supabase, drawing_id, current_user)
+
+    rooms = rooms_from_rows(
+        all_rows(
+            supabase.table("rooms")
+            .select("*")
+            .eq("drawing_id", str(drawing_id))
+            .execute()
+        )
+    )
+    point = (payload.position.x, payload.position.y)
+    scale = stored_unit_scale_m(drawing)
+    if payload.roomIds is not None:
+        named = (payload.roomIds[0], payload.roomIds[1])
+        if not passage_at_rooms(point, named, rooms, scale):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=PASSAGE_ROOMS_INVALID,
+            )
+        pair = named
+    else:
+        derived = passage_room_pair(point, rooms, scale)
+        if derived is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=PASSAGE_ROOMS_UNKNOWN,
+            )
+        pair = derived
 
     values: dict[str, Any] = {
         "id": str(uuid4()),
@@ -177,6 +223,8 @@ async def create_passage(
         "x": payload.position.x,
         "y": payload.position.y,
         "source": ExitSource.manual.value,
+        "room_a_id": pair[0],
+        "room_b_id": pair[1],
         "created_at": datetime.now(UTC).isoformat(),
     }
     inserted = first_row(supabase.table("passages").insert(values).execute())

@@ -24,7 +24,13 @@ from src.modules.drawings.router import (
     WARNING_EXIT_DETECTION_FAILED,
     _save_dxf_layout,
 )
-from tests.fakes import FakeTable, fake_replace_dxf_layout, fake_supabase
+from src.modules.exits.router import PASSAGE_ROOMS_INVALID, PASSAGE_ROOMS_UNKNOWN
+from tests.fakes import (
+    FakeTable,
+    fake_replace_dxf_layout,
+    fake_supabase,
+    set_null_on_room_delete,
+)
 
 
 def rect_mm(x0: float, y0: float, x1: float, y1: float) -> list[dict[str, float]]:
@@ -89,6 +95,12 @@ class ExitsTestCase(unittest.TestCase):
             ]
         )
         self.devices_table = FakeTable([])
+        # Приміщення при обробці створюються заново: зв'язки з ними обнуляються,
+        # як ``on delete set null`` у міграціях.
+        self.rooms_table.on_delete = set_null_on_room_delete(
+            (self.exits_table, ("room_id",)),
+            (self.passages_table, ("room_a_id", "room_b_id")),
+        )
         self.dstu_rule = call_point_rule("MANUAL_CALL_POINT_SPACING_DSTU", 30.0)
         self.dbn_rule = call_point_rule("MANUAL_CALL_POINT_SPACING_DBN", 50.0)
         self.smoke_rule = {
@@ -152,6 +164,7 @@ class ExitsTestCase(unittest.TestCase):
         y: float,
         source: str = "manual",
         created_at: str = "2026-11-20T10:00:00+00:00",
+        room_ids: tuple[str, str] | None = None,
     ) -> dict[str, Any]:
         row = {
             "id": str(uuid4()),
@@ -160,10 +173,30 @@ class ExitsTestCase(unittest.TestCase):
             "x": x,
             "y": y,
             "source": source,
+            "room_a_id": room_ids[0] if room_ids else None,
+            "room_b_id": room_ids[1] if room_ids else None,
             "created_at": created_at,
         }
         self.passages_table.rows.append(row)
         return row
+
+    def add_east_corridor(self) -> str:
+        """Другий коридор через суцільну стіну 0,3 м; перший звужується до 0..20 м."""
+        self.room_row["polygon"] = rect_mm(0, 0, 20_000, 3_000)
+        east_id = str(uuid4())
+        self.rooms_table.rows.append(
+            {
+                "id": east_id,
+                "drawing_id": self.drawing_id,
+                "name": "East_Corridor",
+                "type": "corridor",
+                "height": 3.0,
+                "area": 60.0,
+                "polygon": rect_mm(20_300, 0, 40_300, 3_000),
+                "source": "auto",
+            }
+        )
+        return east_id
 
 
 class TestExitsApi(ExitsTestCase):
@@ -357,9 +390,16 @@ class TestPlaceManualCallPoints(ExitsTestCase):
 
 
 class TestPassagesApi(ExitsTestCase):
-    def test_engineer_confirms_a_passage(self) -> None:
+    def setUp(self) -> None:
+        super().setUp()
+        self.east_id = self.add_east_corridor()
+
+    def url(self) -> str:
+        return f"/api/v1/drawings/{self.drawing_id}/passages"
+
+    def test_engineer_confirms_a_passage_and_the_pair_comes_from_the_plan(self) -> None:
         response = self.client.post(
-            f"/api/v1/drawings/{self.drawing_id}/passages",
+            self.url(),
             json={"position": {"x": 20_150, "y": 1_500}, "name": " Двері 1 "},
         )
 
@@ -368,18 +408,86 @@ class TestPassagesApi(ExitsTestCase):
         self.assertEqual(body["source"], "manual")
         self.assertEqual(body["name"], "Двері 1")
         self.assertEqual(body["position"], {"x": 20_150, "y": 1_500})
-        self.assertEqual(self.passages_table.rows[0]["source"], "manual")
+        self.assertEqual(set(body["roomIds"]), {self.room_id, self.east_id})
+        (stored,) = self.passages_table.rows
+        self.assertEqual(stored["source"], "manual")
+        self.assertEqual(
+            {stored["room_a_id"], stored["room_b_id"]}, set(body["roomIds"])
+        )
+
+    def test_engineer_names_the_rooms_explicitly(self) -> None:
+        response = self.client.post(
+            self.url(),
+            json={
+                "position": {"x": 20_150, "y": 1_500},
+                "roomIds": [self.east_id, self.room_id],
+            },
+        )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["roomIds"], [self.east_id, self.room_id])
+
+    def test_passage_without_a_determinable_pair_is_rejected(self) -> None:
+        for position in ({"x": 10_000, "y": 1_500}, {"x": 900_000, "y": 900_000}):
+            with self.subTest(position=position):
+                response = self.client.post(self.url(), json={"position": position})
+
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(response.json()["detail"], PASSAGE_ROOMS_UNKNOWN)
+        self.assertEqual(self.passages_table.rows, [])
+
+    def test_explicit_rooms_must_be_two_rooms_of_the_drawing_at_the_wall(self) -> None:
+        point = {"x": 20_150, "y": 1_500}
+        for room_ids in (
+            [self.room_id, self.room_id],
+            [self.room_id, str(uuid4())],
+        ):
+            with self.subTest(room_ids=room_ids):
+                response = self.client.post(
+                    self.url(), json={"position": point, "roomIds": room_ids}
+                )
+
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(response.json()["detail"], PASSAGE_ROOMS_INVALID)
+        far = self.client.post(
+            self.url(),
+            json={
+                "position": {"x": 900_000, "y": 900_000},
+                "roomIds": [self.room_id, self.east_id],
+            },
+        )
+        self.assertEqual(far.status_code, 422, far.text)
+        for bad in ([self.room_id], [self.room_id, self.east_id, str(uuid4())], "x"):
+            with self.subTest(bad=bad):
+                self.assertEqual(
+                    self.client.post(
+                        self.url(), json={"position": point, "roomIds": bad}
+                    ).status_code,
+                    422,
+                )
+        self.assertEqual(self.passages_table.rows, [])
+
+    def test_a_passage_without_a_pair_is_listed_with_empty_room_ids(self) -> None:
+        self.add_passage(1, 1, "dxf")  # створений до прив'язки або неоднозначний
+
+        (item,) = self.client.get(self.url()).json()
+
+        self.assertEqual(item["roomIds"], [])
 
     def test_list_returns_dxf_and_manual_passages(self) -> None:
-        self.add_passage(1, 1, "dxf", "2026-11-20T10:00:00+00:00")
+        pair = (self.room_id, self.east_id)
+        self.add_passage(1, 1, "dxf", "2026-11-20T10:00:00+00:00", pair)
         self.add_passage(2, 2, "manual", "2026-11-20T11:00:00+00:00")
 
         response = self.client.get(f"/api/v1/drawings/{self.drawing_id}/passages")
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(
-            [(item["position"]["x"], item["source"]) for item in response.json()],
-            [(1.0, "dxf"), (2.0, "manual")],
+            [
+                (item["position"]["x"], item["source"], item["roomIds"])
+                for item in response.json()
+            ],
+            [(1.0, "dxf", list(pair)), (2.0, "manual", [])],
         )
 
     def test_invalid_body_is_rejected(self) -> None:
@@ -428,22 +536,8 @@ class TestPlaceRouteNeedsPassage(ExitsTestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        # Східний коридор через суцільну стіну 0,3 м від західного (рядок rooms
-        # setUp-а — західний коридор 0..40 м; звужуємо його до 0..20 м).
-        self.room_row["polygon"] = rect_mm(0, 0, 20_000, 3_000)
-        self.east_id = str(uuid4())
-        self.rooms_table.rows.append(
-            {
-                "id": self.east_id,
-                "drawing_id": self.drawing_id,
-                "name": "East_Corridor",
-                "type": "corridor",
-                "height": 3.0,
-                "area": 60.0,
-                "polygon": rect_mm(20_300, 0, 40_300, 3_000),
-                "source": "auto",
-            }
-        )
+        # Східний коридор через суцільну стіну 0,3 м від західного.
+        self.east_id = self.add_east_corridor()
         self.add_exit(0, 1_500, "dxf")
         self.add_exit(40_300, 1_500, "manual")
 
@@ -474,7 +568,9 @@ class TestPlaceRouteNeedsPassage(ExitsTestCase):
         self.assertEqual(len(rows), 2)
 
     def test_manual_passage_confirms_the_route(self) -> None:
-        passage = self.add_passage(20_150, 1_500, "manual")
+        passage = self.add_passage(
+            20_150, 1_500, "manual", room_ids=(self.room_id, self.east_id)
+        )
 
         result = self.place()
 
@@ -482,6 +578,7 @@ class TestPlaceRouteNeedsPassage(ExitsTestCase):
         self.assertEqual(result["route_coverage"], "confirmed")
         self.assertIsNone(result["route_warning"])
         self.assertEqual(result["passage_ids"], [passage["id"]])
+        self.assertEqual(result["ignored_passage_ids"], [])
         self.assertGreater(result["device_count"], 2)
         rows = [
             r for r in self.devices_table.inserts if r["type"] == "manual_call_point"
@@ -490,12 +587,26 @@ class TestPlaceRouteNeedsPassage(ExitsTestCase):
         self.assertTrue(all(b - a <= 30_000 for a, b in zip(xs, xs[1:], strict=False)))
 
     def test_passage_from_the_dxf_confirms_the_route_too(self) -> None:
-        self.add_passage(20_150, 1_500, "dxf")
+        self.add_passage(20_150, 1_500, "dxf", room_ids=(self.east_id, self.room_id))
 
         self.assertEqual(self.place()["route_coverage"], "confirmed")
 
+    def test_passage_without_a_pair_confirms_nothing_and_says_why(self) -> None:
+        passage = self.add_passage(20_150, 1_500, "dxf")  # пари приміщень немає
+
+        result = self.place()
+
+        self.assertEqual(result["status"], "placed")
+        self.assertEqual(result["route_coverage"], "unconfirmed")
+        self.assertEqual(result["passage_ids"], [])
+        self.assertEqual(result["ignored_passage_ids"], [passage["id"]])
+        self.assertIn("не визначено два приміщення", result["route_warning"])
+        self.assertEqual(result["device_count"], 2)
+
     def test_removing_the_passage_brings_the_warning_back(self) -> None:
-        passage = self.add_passage(20_150, 1_500, "manual")
+        passage = self.add_passage(
+            20_150, 1_500, "manual", room_ids=(self.room_id, self.east_id)
+        )
         self.assertEqual(self.place()["route_coverage"], "confirmed")
 
         self.client.delete(f"/api/v1/passages/{passage['id']}")
@@ -506,7 +617,7 @@ class TestPlaceRouteNeedsPassage(ExitsTestCase):
 class TestSaveLayoutFromDxf(ExitsTestCase):
     """Обробка креслення: виходи й проходи з DXF зберігаються атомарно."""
 
-    def make_dxf(self, directory: Path) -> Path:
+    def make_dxf(self, directory: Path, wall_door: bool = False) -> Path:
         doc = ezdxf.new("R2010")
         doc.layers.add("EXITS")
         doc.layers.add("DOORS")
@@ -530,13 +641,26 @@ class TestSaveLayoutFromDxf(ExitsTestCase):
             close=True,
             dxfattribs={"layer": "DOORS"},
         )
+        if wall_door:
+            # Двері в стіні між двома коридорами (стіна 20,0..20,3 м).
+            msp.add_lwpolyline(
+                [(20_000, 1_000), (20_300, 1_000), (20_300, 2_000), (20_000, 2_000)],
+                close=True,
+                dxfattribs={"layer": "DOORS"},
+            )
         path = directory / "plan.dxf"
         doc.saveas(str(path))
         return path
 
-    def save(self, path: Path) -> dict[str, Any]:
+    def save(
+        self, path: Path, rooms: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
         return _save_dxf_layout(
-            self.supabase, self.drawing_id, path, 0.001, [self.room_row]
+            self.supabase,
+            self.drawing_id,
+            path,
+            0.001,
+            rooms if rooms is not None else [self.room_row],
         )
 
     def test_exits_and_doors_from_the_dxf_are_saved(self) -> None:
@@ -557,6 +681,46 @@ class TestSaveLayoutFromDxf(ExitsTestCase):
         (passage,) = self.passages_table.rows
         self.assertEqual(passage["source"], "dxf")
         self.assertEqual((round(passage["x"]), round(passage["y"])), (20_450, 0))
+        # Біля дверей лише одне приміщення: другого боку немає, пари теж.
+        self.assertIsNone(passage["room_a_id"])
+        self.assertIsNone(passage["room_b_id"])
+
+    def test_door_in_a_wall_between_two_rooms_is_saved_with_the_pair(self) -> None:
+        east_id = self.add_east_corridor()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self.save(
+                self.make_dxf(Path(tmp), wall_door=True), list(self.rooms_table.rows)
+            )
+
+        self.assertEqual(state["status"], EXIT_DETECTION_OK)
+        between = [
+            row
+            for row in self.passages_table.rows
+            if round(row["x"]) == 20_150 and round(row["y"]) == 1_500
+        ]
+        (door,) = between
+        self.assertEqual(
+            {door["room_a_id"], door["room_b_id"]}, {self.room_id, east_id}
+        )
+
+    def test_manual_passage_is_rebound_to_the_new_rooms(self) -> None:
+        east_id = self.add_east_corridor()
+        # Після повторної обробки приміщення нові, тож пара ручного проходу втрачена.
+        manual = self.add_passage(20_150, 1_500, "manual")
+        # Прохід, якого більше немає біля жодної стіни, пари не отримає.
+        lost = self.add_passage(
+            10_000, 1_500, "manual", room_ids=("old-room-a", "old-room-b")
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.save(self.make_dxf(Path(tmp)), list(self.rooms_table.rows))
+
+        self.assertEqual(
+            {manual["room_a_id"], manual["room_b_id"]}, {self.room_id, east_id}
+        )
+        self.assertIsNone(lost["room_a_id"])
+        self.assertIsNone(lost["room_b_id"])
 
     def test_reprocessing_replaces_dxf_rows_and_keeps_manual_ones(self) -> None:
         stale = self.add_exit(12_345, 1_500, "dxf")
@@ -636,7 +800,7 @@ class TestSaveLayoutFromDxf(ExitsTestCase):
         self.assertEqual(self.passages_table.inserts, [])
 
     def test_missing_database_function_is_reported_not_swallowed(self) -> None:
-        """Міграція 014 не застосована: крок помічено збійним, дані не чіпали."""
+        """Міграція 016 не застосована: крок помічено збійним, дані не чіпали."""
         previous = self.add_exit(12_345, 1_500, "dxf")
         self.supabase = fake_supabase(self.tables, rpc={})
 

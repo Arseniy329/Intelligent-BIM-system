@@ -19,6 +19,7 @@ from src.modules.placement.service import (  # noqa: E402
     REASON_BAD_OUTLINE,
     REASON_NO_HEIGHT,
     REASON_PLACEMENT_FAILED,
+    REASON_ZONE_OUTSIDE_ROOM,
     SCOPE_REMAINDER,
     SCOPE_ROOM,
     SCOPE_ZONE,
@@ -439,6 +440,72 @@ class TestPlaceTargets(unittest.TestCase):
             (z2.status, z2.reason), (INSUFFICIENT_DATA, REASON_BAD_OUTLINE)
         )
         self.assertEqual(remainder.target.scope, SCOPE_REMAINDER)
+
+    # ── Зміна контуру приміщення після створення зон ──
+
+    def test_zone_outside_narrowed_room_is_not_accepted(self) -> None:
+        """Приміщення звузили до 20×40, стара зона 40×40 лишилась: приладів поза
+        приміщенням бути не може, а «решта» не зникає через завелику суму площ."""
+        room = room_row("room", None, width_m=20, depth_m=40)
+        stale = zone_row("z-old", "room", 3.0, rect_mm(0, 0, 40, 40), name="Стара")
+        outcomes = self._place([room], [stale])
+
+        self.assertEqual(
+            [(o.target.scope, o.status) for o in outcomes],
+            [(SCOPE_ZONE, INSUFFICIENT_DATA), (SCOPE_REMAINDER, INSUFFICIENT_DATA)],
+        )
+        self.assertEqual(outcomes[0].reason, REASON_ZONE_OUTSIDE_ROOM)
+        self.assertEqual(outcomes[0].target.zone_id, "z-old")
+        self.assertTrue(all(o.devices == [] for o in outcomes))
+        # Жодна частина приміщення не лишилась без приладів і без причини.
+        summary = summarize_outcomes(outcomes)
+        self.assertEqual(summary["placement_status"], PLACEMENT_INSUFFICIENT_DATA)
+        self.assertEqual(summary["device_count"], 0)
+        self.assertEqual(
+            [item["reason"] for item in summary["skipped"]][0], REASON_ZONE_OUTSIDE_ROOM
+        )
+
+    def test_zone_partly_outside_the_room_is_skipped_as_a_whole(self) -> None:
+        room = room_row("room", None, width_m=30, depth_m=40)
+        stale = zone_row("z", "room", 3.0, rect_mm(20, 0, 40, 40))
+        zone_outcome, remainder = self._place([room], [stale])
+
+        self.assertEqual(zone_outcome.reason, REASON_ZONE_OUTSIDE_ROOM)
+        self.assertEqual(zone_outcome.devices, [])
+        self.assertEqual(remainder.target.scope, SCOPE_REMAINDER)
+        assert remainder.reason is not None
+        self.assertIn("100 %", remainder.reason)
+
+    def test_valid_zone_still_placed_next_to_a_stale_one(self) -> None:
+        room = room_row("room", None)
+        zones = [
+            zone_row("ok", "room", 3.0, rect_mm(0, 0, 40, 20)),
+            zone_row("stale", "room", 3.0, rect_mm(0, 20, 40, 60)),
+        ]
+        ok, stale, remainder = self._place([room], zones)
+
+        self.assertEqual(ok.status, PLACED)
+        self.assertGreater(len(ok.devices), 0)
+        self.assertTrue(all(d.y <= 20_000 for d in ok.devices))
+        self.assertEqual(stale.reason, REASON_ZONE_OUTSIDE_ROOM)
+        self.assertEqual(remainder.target.scope, SCOPE_REMAINDER)
+        assert remainder.reason is not None
+        self.assertIn("50 %", remainder.reason)
+
+    def test_zone_within_creation_tolerance_is_still_accepted(self) -> None:
+        """0,03 м за краєм 40-метрового приміщення — похибка прив'язки (0,1 %)."""
+        room = room_row("room", None)
+        zones = [zone_row("z", "room", 3.0, rect_mm(0, 0, 40.03, 40))]
+        (outcome,) = self._place([room], zones)
+
+        self.assertEqual(outcome.status, PLACED)
+
+    def test_zone_beyond_creation_tolerance_is_rejected(self) -> None:
+        room = room_row("room", None)
+        zones = [zone_row("z", "room", 3.0, rect_mm(0, 0, 40.2, 40))]
+        outcomes = self._place([room], zones)
+
+        self.assertEqual(outcomes[0].reason, REASON_ZONE_OUTSIDE_ROOM)
 
     def test_room_without_outline_is_reported_not_dropped(self) -> None:
         broken = {"id": "broken", "name": "No outline", "height": 3.0, "polygon": []}

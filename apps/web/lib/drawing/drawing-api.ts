@@ -5,7 +5,10 @@ import { isDrawingDemoEnabled } from "./demo-mode";
 // FastAPI preserves requested units until parsing; shared DrawingDetailResponse
 // currently allows only resolved mm/m. Keep this wire adaptation local to the client.
 export type DrawingDetail = Omit<DrawingDetailResponse, "units" | "status"> & { units: RequestedDrawingUnits; status: DrawingDetailResponse["status"] | ContractDrawingStatus };
-export type DrawingResponse = DrawingDetail | DrawingResult;
+// GET returns the stored report of the last placement next to the contract fields
+// (the generated `DrawingResult` stays untouched), so it survives a reload.
+export type DrawingResultView = DrawingResult & { placementReport?: PlacementReport };
+export type DrawingResponse = DrawingDetail | DrawingResultView;
 // The synchronous POST endpoints return snake_case acknowledgements, not jobs.
 // `status: "processed"` only says the placement step finished. Whether every room
 // and zone was handled is in `placementStatus`; what was skipped and why is in
@@ -24,11 +27,11 @@ export type PlacementReport = {
   warnings?: string[];
 };
 export type DrawingOperation = { drawingId: string; status: "processing" | "processed" } & PlacementReport;
-export type ProcessingResponse = DrawingOperation | DrawingResult | ProcessingJob;
+export type ProcessingResponse = DrawingOperation | DrawingResultView | ProcessingJob;
 export interface DrawingApi {
   getDrawing(id: string, signal?: AbortSignal): Promise<DrawingResponse>;
   processDrawing(id: string, signal?: AbortSignal): Promise<ProcessingResponse>;
-  placeDrawing?(id: string, signal?: AbortSignal): Promise<DrawingOperation | DrawingResult>;
+  placeDrawing?(id: string, signal?: AbortSignal): Promise<DrawingOperation | DrawingResultView>;
   // Only adapters with an actual job endpoint (currently the explicit demo) poll.
   getJob?(id: string, signal?: AbortSignal): Promise<ProcessingJob>;
 }
@@ -114,7 +117,7 @@ export function drawingErrorMessage(error: unknown): string {
   return "Не вдалося отримати дані. Перевірте з’єднання та спробуйте ще раз.";
 }
 
-export function isDrawingResult(data: DrawingResponse): data is DrawingResult {
+export function isDrawingResult(data: DrawingResponse): data is DrawingResultView {
   return "drawing" in data;
 }
 
@@ -151,7 +154,7 @@ export function normalizeDrawingDetail(value: unknown, id: string): DrawingDetai
   };
 }
 
-export function parseDrawingOperation(value: unknown, id: string, status: DrawingOperation["status"]): DrawingOperation | DrawingResult {
+export function parseDrawingOperation(value: unknown, id: string, status: DrawingOperation["status"]): DrawingOperation | DrawingResultView {
   if (record(value) && "drawing" in value) {
     const result = parseDrawing(value, id);
     if (isDrawingResult(result)) return result;
@@ -203,10 +206,27 @@ function operationWarnings(value: Record<string, unknown>): string[] {
   return warnings;
 }
 
-/** The placement report of a finished POST call, or null when the response has none. */
-export function placementReport(operation: DrawingOperation | DrawingResult | undefined): PlacementReport | null {
-  if (!operation || "drawing" in operation) return null;
-  return operation.placementStatus || operation.warnings?.length ? operation : null;
+/** A POST acknowledgement: neither a result (`drawing`) nor a job (`id`) nor a flat detail (`id`). */
+function isOperation(value: ProcessingResponse | DrawingResponse): value is DrawingOperation {
+  return !("drawing" in value) && !("id" in value) && "drawingId" in value;
+}
+
+/**
+ * The placement report of a response: the acknowledgement of POST /process or /place,
+ * or the report GET returns with a result (it is stored, so it survives a reload).
+ * Accepts every shape a mutation or a query can hold (a job included); null when
+ * there is nothing to show, i.e. neither a placement status nor a step warning.
+ */
+export function placementReport(source: ProcessingResponse | DrawingResponse | undefined): PlacementReport | null {
+  if (!source) return null;
+  const report = "drawing" in source ? source.placementReport : isOperation(source) ? source : undefined;
+  if (!report || !(report.placementStatus || report.warnings?.length)) return null;
+  const result: PlacementReport = {};
+  if (report.placementStatus) result.placementStatus = report.placementStatus;
+  if (report.deviceCount !== undefined) result.deviceCount = report.deviceCount;
+  if (report.placementIssues) result.placementIssues = report.placementIssues;
+  if (report.warnings?.length) result.warnings = report.warnings;
+  return result;
 }
 
 export function parseDrawing(value: unknown, id: string): DrawingResponse {
@@ -232,6 +252,14 @@ export function parseDrawing(value: unknown, id: string): DrawingResponse {
         (device.roomId === null || typeof device.roomId === "string") && typeof device.layer === "string" &&
         ["smoke_detector", "heat_detector", "sounder", "manual_call_point"].includes(String(device.type)) && validPoint(device.position)))
       throw new Error("Invalid drawing result.");
+    if ("placementReport" in value) {
+      // The stored report is optional (null before the first placement): a missing
+      // or malformed one is dropped instead of failing the whole result.
+      const { placementReport: stored, ...contract } = value;
+      const report = record(stored) ? parsePlacementReport(stored) : null;
+      const useful = !!report && (!!report.placementStatus || !!report.warnings?.length);
+      return (useful ? { ...contract, placementReport: report } : contract) as unknown as DrawingResponse;
+    }
   }
   return value as unknown as DrawingResponse;
 }

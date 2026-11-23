@@ -32,6 +32,24 @@ begin
 end
 $$;
 
+-- ── BIM-73: звіт розміщення зберігається разом із результатом ──────────────
+do $$
+declare
+  col_type text;
+  col_nullable text;
+begin
+  select data_type, is_nullable into col_type, col_nullable
+  from information_schema.columns
+  where table_schema = 'public' and table_name = 'drawings' and column_name = 'placement_report';
+  if col_type is distinct from 'jsonb' then
+    raise exception 'drawings.placement_report must be jsonb, found %', col_type;
+  end if;
+  if col_nullable <> 'YES' then
+    raise exception 'drawings.placement_report must be nullable (null = no report)';
+  end if;
+end
+$$;
+
 -- ── BIM-73: room_zones і RLS ────────────────────────────────────────────────
 do $$
 begin
@@ -130,11 +148,14 @@ begin
      or not (select relrowsecurity from pg_class where oid = 'public.passages'::regclass) then
     raise exception 'RLS must be enabled on exits and passages';
   end if;
-  if has_function_privilege('anon', 'public.replace_dxf_layout(uuid, jsonb, jsonb, jsonb)', 'execute') then
+  if to_regprocedure('public.replace_dxf_layout(uuid, jsonb, jsonb, jsonb)') is not null then
+    raise exception 'the old 4-argument replace_dxf_layout must be dropped';
+  end if;
+  if has_function_privilege('anon', 'public.replace_dxf_layout(uuid, jsonb, jsonb, jsonb, jsonb)', 'execute') then
     raise exception 'anon must not execute replace_dxf_layout';
   end if;
-  if not has_function_privilege('authenticated', 'public.replace_dxf_layout(uuid, jsonb, jsonb, jsonb)', 'execute')
-     or not has_function_privilege('service_role', 'public.replace_dxf_layout(uuid, jsonb, jsonb, jsonb)', 'execute') then
+  if not has_function_privilege('authenticated', 'public.replace_dxf_layout(uuid, jsonb, jsonb, jsonb, jsonb)', 'execute')
+     or not has_function_privilege('service_role', 'public.replace_dxf_layout(uuid, jsonb, jsonb, jsonb, jsonb)', 'execute') then
     raise exception 'authenticated and service_role must execute replace_dxf_layout';
   end if;
 end
@@ -186,9 +207,9 @@ values ('33333333-0000-0000-0000-00000000000a', 'owner3@example.com');
 insert into public.drawings (id, owner_id, original_file_name, storage_path, units)
 values ('33333333-0000-0000-0000-0000000000d1', '33333333-0000-0000-0000-00000000000a',
         'c.dxf', 'assert/c.dxf', 'mm');
-insert into public.rooms (id, drawing_id, name, polygon)
-values ('33333333-0000-0000-0000-0000000000a1', '33333333-0000-0000-0000-0000000000d1',
-        'Hall', '[]'::jsonb);
+insert into public.rooms (id, drawing_id, name, polygon) values
+  ('33333333-0000-0000-0000-0000000000a1', '33333333-0000-0000-0000-0000000000d1', 'Hall', '[]'::jsonb),
+  ('33333333-0000-0000-0000-0000000000a2', '33333333-0000-0000-0000-0000000000d1', 'Corridor', '[]'::jsonb);
 insert into public.exits (id, drawing_id, name, x, y, source) values
   ('33333333-0000-0000-0000-0000000000e1', '33333333-0000-0000-0000-0000000000d1', 'old dxf 1', 1, 1, 'dxf'),
   ('33333333-0000-0000-0000-0000000000e2', '33333333-0000-0000-0000-0000000000d1', 'old dxf 2', 2, 2, 'dxf'),
@@ -208,8 +229,11 @@ begin
     '33333333-0000-0000-0000-0000000000d1',
     '[{"name": "new A", "x": 10, "y": 10, "room_id": "33333333-0000-0000-0000-0000000000a1"},
       {"name": "new B", "x": 20, "y": 20}]'::jsonb,
-    '[{"x": 15, "y": 15}]'::jsonb,
-    '[{"id": "33333333-0000-0000-0000-0000000000e3", "room_id": "33333333-0000-0000-0000-0000000000a1"}]'::jsonb);
+    '[{"x": 15, "y": 15, "room_a_id": "33333333-0000-0000-0000-0000000000a1",
+       "room_b_id": "33333333-0000-0000-0000-0000000000a2"}]'::jsonb,
+    '[{"id": "33333333-0000-0000-0000-0000000000e3", "room_id": "33333333-0000-0000-0000-0000000000a1"}]'::jsonb,
+    '[{"id": "33333333-0000-0000-0000-0000000000f2", "room_a_id": "33333333-0000-0000-0000-0000000000a1",
+       "room_b_id": "33333333-0000-0000-0000-0000000000a2"}]'::jsonb);
   if result <> '{"exits": 2, "passages": 1}'::jsonb then
     raise exception 'unexpected result %', result;
   end if;
@@ -222,6 +246,31 @@ begin
      or (select count(*) from public.passages where source = 'manual') <> 1 then
     raise exception 'replace_dxf_layout did not replace the DXF layout as expected';
   end if;
+  -- Прохід належить конкретній парі приміщень: і dxf-прохід, і заново прив'язаний ручний.
+  if (select count(*) from public.passages
+      where room_a_id = '33333333-0000-0000-0000-0000000000a1'
+        and room_b_id = '33333333-0000-0000-0000-0000000000a2') <> 2 then
+    raise exception 'both passages must be bound to the room pair';
+  end if;
+
+  -- Застарілість: коли приміщення зникає (повторна обробка створює нові), пара
+  -- проходу обнуляється, а сам прохід лишається. Такий прохід нічого не підтверджує.
+  delete from public.rooms where id = '33333333-0000-0000-0000-0000000000a2';
+  if (select count(*) from public.passages) <> 2
+     or (select count(*) from public.passages where room_b_id is null) <> 2
+     or (select count(*) from public.passages
+         where room_a_id = '33333333-0000-0000-0000-0000000000a1') <> 2 then
+    raise exception 'deleting a room must unbind its passages (room_b_id -> null) but keep them';
+  end if;
+  -- Прохід сам із собою (однакові приміщення) заборонено.
+  begin
+    insert into public.passages (drawing_id, x, y, room_a_id, room_b_id)
+    values ('33333333-0000-0000-0000-0000000000d1', 0, 0,
+            '33333333-0000-0000-0000-0000000000a1', '33333333-0000-0000-0000-0000000000a1');
+    raise exception 'a passage between a room and itself must be rejected';
+  exception when check_violation then
+    null;
+  end;
 
   -- Збій посередині (приміщення не існує -> порушення зовнішнього ключа): нічого
   -- не змінилося, попередній набір на місці.

@@ -12,8 +12,19 @@
 виходи належать. Рухатись можна лише всередині приміщення; з одного приміщення в
 інше — лише через ПРОХІД (двері з креслення або прохід, підтверджений інженером).
 Близькі чи навіть однакові контури проходу не доводять: між ними може бути суцільна
-стіна. Якщо проходу між приміщеннями виходів немає, сповіщувачі лишаються біля
-виходів, а ``route_coverage`` = ``unconfirmed`` з попередженням.
+стіна.
+
+Прохід з'єднує РІВНО ДВА приміщення: ті, що лежать по різні боки стіни, в якій він
+стоїть (``room_a_id``, ``room_b_id``). Раніше прохід з'єднував усі приміщення біля
+точки, і двері між A і B «підтверджували» шлях до сусіднього C. Якщо з креслення
+не можна однозначно визначити дві сторони (двері на стику трьох приміщень), пару
+не вгадують: прохід нічого не з'єднує, доки інженер не підтвердить його із
+зазначенням приміщень. Те саме для застарілого проходу: приміщення при кожній
+обробці отримують нові id, тож прохід зі старої обробки пари не має.
+
+Якщо проходу між приміщеннями виходів немає, сповіщувачі лишаються біля виходів,
+а ``route_coverage`` = ``unconfirmed`` з попередженням. Вихід, який не належить
+жодному приміщенню, теж робить покриття ``unconfirmed``: шлях до нього не перевірено.
 
 Модуль не залежить від shapely, fastapi і БД: працює зі списками координат, тому
 повністю перевіряється юніт-тестами.
@@ -43,6 +54,14 @@ WARNING_ROUTE_UNCONFIRMED = (
     "проходу між приміщеннями. Сповіщувачі стоять лише біля виходів; позначте "
     "прохід на плані"
 )
+WARNING_EXITS_WITHOUT_ROOM = (
+    "Шлях евакуації підтверджено лише для частини виходів: вихід не належить "
+    "жодному приміщенню, шлях до нього не перевірено"
+)
+WARNING_PASSAGES_IGNORED = (
+    "Не враховано проходи, для яких не визначено два приміщення (двері на стику "
+    "кількох приміщень або проходи зі старої обробки); підтвердіть їх на плані"
+)
 
 # Покриття шляхів евакуації між виходами (окремо від статусу розміщення).
 ROUTE_CONFIRMED = "confirmed"  # усі виходи з'єднані проходами; точки на шляхах є
@@ -57,6 +76,9 @@ DEFAULT_EXIT_OFFSET_M = 1.0  # відступ від виходу, якщо йо
 EXIT_ROOM_TOLERANCE_M = 0.5  # двері лежать у стіні: до приміщення не далі за це
 PASSAGE_ROOM_TOLERANCE_M = 0.8  # прохід (двері) у стіні: до приміщення не далі за це
 PASSAGE_INWARD_M = 0.5  # на скільки вглиб приміщення відступити від проходу
+PASSAGE_SIDE_PROBE_M = 0.05  # проба вбік від стіни, щоб відрізнити внутрішню сторону
+PASSAGE_INSIDE_SLACK_M = 0.25  # двері намальовані трохи всередині приміщення
+PASSAGE_OPPOSITE_DOT = -0.95  # нормалі двох сторін стіни майже протилежні
 INWARD_NUDGE_M = 0.15  # на скільки зсунути точку всередину приміщення
 DEDUPE_M = 0.3  # два сповіщувачі ближче за це — це один
 MAX_WAYPOINTS = 120
@@ -83,12 +105,16 @@ class CallPointExit:
 
 @dataclass(frozen=True)
 class CallPointPassage:
-    """Прохід між приміщеннями: двері з DXF або прохід, підтверджений інженером."""
+    """Прохід між двома приміщеннями: двері з DXF або підтверджений інженером."""
 
     id: str
     x: float
     y: float
     name: str | None = None
+    # Два приміщення, які прохід з'єднує. Немає пари (None) — прохід неоднозначний
+    # або застарілий і нічого не підтверджує.
+    room_a_id: str | None = None
+    room_b_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +155,9 @@ class CallPointOutcome:
     unconnected_exit_ids: list[str] = field(default_factory=list)
     unconnected_room_names: list[str] = field(default_factory=list)
     used_passage_ids: list[str] = field(default_factory=list)
+    # Проходи без пари приміщень або з парою, що більше не збігається з контурами.
+    ignored_passage_ids: list[str] = field(default_factory=list)
+    skipped_exit_names: list[str] = field(default_factory=list)
 
 
 # ── Приміщення й виходи з рядків БД ─────────────────────────────────────────
@@ -181,9 +210,20 @@ def passages_from_rows(rows: list[dict[str, Any]]) -> list[CallPointPassage]:
         if x is None or y is None:
             continue
         passages.append(
-            CallPointPassage(id=str(row.get("id")), x=x, y=y, name=row.get("name"))
+            CallPointPassage(
+                id=str(row.get("id")),
+                x=x,
+                y=y,
+                name=row.get("name"),
+                room_a_id=_optional_id(row.get("room_a_id")),
+                room_b_id=_optional_id(row.get("room_b_id")),
+            )
         )
     return passages
+
+
+def _optional_id(value: Any) -> str | None:
+    return str(value) if value else None
 
 
 def room_id_near_exit(
@@ -194,6 +234,69 @@ def room_id_near_exit(
     indexed = [_Room(room) for room in rooms if len(_clean_ring(room.coords)) >= 3]
     room = _assign_exit_room(point, indexed, EXIT_ROOM_TOLERANCE_M / scale)
     return room.room.id if room else None
+
+
+def passage_room_pair(
+    point: Point, rooms: list[CallPointRoom], unit_scale_m: float | None
+) -> tuple[str, str] | None:
+    """Два приміщення по різні боки стіни, в якій стоїть прохід; інакше ``None``.
+
+    Приміщення біля точки підходять, лише якщо їхні стіни повернуті до проходу
+    «спинами» одна до одної: нормалі всередину майже протилежні, а сама точка
+    лежить у стіні між ними (поза обома приміщеннями, з невеликим допуском на
+    товщину намальованих дверей). Пара має бути єдиною: коли перед точкою кілька
+    приміщень утворюють більше однієї пари (наприклад, тонка шахта між двома
+    коридорами) або жодної, результат ``None``. Пару тоді не вгадують — прохід нічого
+    не з'єднуватиме, доки інженер не підтвердить його із зазначенням приміщень.
+    """
+    scale = unit_scale_m if unit_scale_m and unit_scale_m > 0 else 0.001
+    tolerance = PASSAGE_ROOM_TOLERANCE_M / scale
+    probe = PASSAGE_SIDE_PROBE_M / scale
+    slack = PASSAGE_INSIDE_SLACK_M / scale
+    faces: dict[str, list[Point]] = {}
+    for item in rooms:
+        if len(_clean_ring(item.coords)) < 3:
+            continue
+        room = _Room(item)
+        if room.boundary_distance(point) > tolerance:
+            continue  # двері не в стіні цього приміщення (або воно просто навколо)
+        normals = room.facing_normals(point, tolerance, probe, slack)
+        if normals:  # приміщення без стіни перед точкою не є стороною цих дверей
+            faces[item.id] = normals
+    pairs = [
+        (first, second)
+        for index, first in enumerate(faces)
+        for second in list(faces)[index + 1 :]
+        if _opposite(faces[first], faces[second])
+    ]
+    return pairs[0] if len(pairs) == 1 else None
+
+
+def passage_at_rooms(
+    point: Point,
+    room_ids: tuple[str, str],
+    rooms: list[CallPointRoom],
+    unit_scale_m: float | None,
+) -> bool:
+    """Обидва приміщення пари існують, різні й стіна обох — біля проходу."""
+    first, second = room_ids
+    if first == second:
+        return False
+    scale = unit_scale_m if unit_scale_m and unit_scale_m > 0 else 0.001
+    tolerance = PASSAGE_ROOM_TOLERANCE_M / scale
+    by_id = {
+        item.id: _Room(item) for item in rooms if len(_clean_ring(item.coords)) >= 3
+    }
+    return all(
+        room_id in by_id and by_id[room_id].boundary_distance(point) <= tolerance
+        for room_id in room_ids
+    )
+
+
+def _opposite(first: list[Point], second: list[Point]) -> bool:
+    return any(
+        a[0] * b[0] + a[1] * b[1] <= PASSAGE_OPPOSITE_DOT for a in first for b in second
+    )
 
 
 # ── Правило ──────────────────────────────────────────────────────────────────
@@ -267,6 +370,15 @@ def _dist_point_segment(p: Point, a: Point, b: Point) -> float:
         return _dist(p, a)
     t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length_sq))
     return _dist(p, (a[0] + t * dx, a[1] + t * dy))
+
+
+def _closest_on_segment(p: Point, a: Point, b: Point) -> Point:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length_sq = dx * dx + dy * dy
+    if length_sq == 0:
+        return a
+    t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length_sq))
+    return (a[0] + t * dx, a[1] + t * dy)
 
 
 def _clean_ring(coords: tuple[Point, ...]) -> tuple[Point, ...]:
@@ -405,6 +517,44 @@ class _Room:
             best = self.ring[0]
         self._interior = best
         return best
+
+    def facing_normals(
+        self, point: Point, tolerance: float, probe: float, slack: float
+    ) -> list[Point]:
+        """Одиничні нормалі всередину приміщення стін, до яких «дивиться» точка.
+
+        Стіна підходить, якщо вона не далі за ``tolerance`` від точки, точка
+        проєктується на саму стіну (а не за її кінець) і лежить із зовнішнього боку
+        стіни (не глибше за ``slack`` усередині). Внутрішній бік визначається пробою
+        вбік: рівно одна з двох точок має бути в приміщенні.
+        """
+        ring = self.ring
+        normals: list[Point] = []
+        for index, start in enumerate(ring):
+            end = ring[(index + 1) % len(ring)]
+            length = _dist(start, end)
+            if length == 0:
+                continue
+            closest = _closest_on_segment(point, start, end)
+            if _dist(point, closest) > tolerance:
+                continue
+            along = (
+                (point[0] - start[0]) * (end[0] - start[0])
+                + (point[1] - start[1]) * (end[1] - start[1])
+            ) / (length * length)
+            if along < 0.0 or along > 1.0:
+                continue  # точка за кінцем стіни: ця стіна не «перед» нею
+            nx, ny = -(end[1] - start[1]) / length, (end[0] - start[0]) / length
+            toward = self.contains((closest[0] + nx * probe, closest[1] + ny * probe))
+            away = self.contains((closest[0] - nx * probe, closest[1] - ny * probe))
+            if toward == away:
+                continue  # вершина, тонкий виступ: бік не визначається
+            if not toward:
+                nx, ny = -nx, -ny
+            if (point[0] - closest[0]) * nx + (point[1] - closest[1]) * ny > slack:
+                continue  # точка всередині приміщення, а не в його стіні
+            normals.append((nx, ny))
+        return normals
 
     def inward_reflex_points(self, nudge: float) -> list[Point]:
         """Угнуті кути контуру, зсунуті всередину: опорні точки обходу кутів."""
@@ -702,6 +852,7 @@ def place_manual_call_points(
         room = _assign_exit_room((exit_point.x, exit_point.y), indexed, tolerance)
         if room is None:
             outcome.skipped_exit_ids.append(exit_point.id)
+            outcome.skipped_exit_names.append(exit_point.name or exit_point.id)
             continue
         position = _point_near_exit((exit_point.x, exit_point.y), room, offset)
         exit_devices.append((exit_point, room, position))
@@ -752,27 +903,40 @@ def place_manual_call_points(
             network.add_node(waypoint, room.room.id)
             waypoint_count += 1
 
-    # Прохід з'єднує приміщення, до яких він прилягає (двері лежать у стіні між ними).
+    # Прохід з'єднує РІВНО свою пару приміщень (двері лежать у стіні між ними), а не
+    # всі приміщення біля точки. Без пари або з парою, що вже не збігається з
+    # контурами, прохід нічого не підтверджує.
     passage_tolerance = units(PASSAGE_ROOM_TOLERANCE_M)
     passage_inward = units(PASSAGE_INWARD_M)
+    by_id = {room.room.id: room for room in indexed}
     for passage in passages or []:
         point = (passage.x, passage.y)
-        adjoining = [room for room in walk_rooms if room.near(point, passage_tolerance)]
-        if len(adjoining) < 2:
+        first = by_id.get(passage.room_a_id) if passage.room_a_id else None
+        second = by_id.get(passage.room_b_id) if passage.room_b_id else None
+        if (
+            first is None
+            or second is None
+            or first is second
+            or first.boundary_distance(point) > passage_tolerance
+            or second.boundary_distance(point) > passage_tolerance
+        ):
+            outcome.ignored_passage_ids.append(passage.id)
             continue
+        if first.room.id not in network.by_id or second.room.id not in network.by_id:
+            continue  # прохід між приміщеннями, якими шлях евакуації не йде
         sides = [
             network.add_node(
                 _point_near_exit(point, room, passage_inward), room.room.id
             )
-            for room in adjoining
+            for room in (first, second)
         ]
-        for index, first in enumerate(sides):
-            for second in sides[index + 1 :]:
-                network.add_link(first, second)
+        network.add_link(sides[0], sides[1])
         outcome.used_passage_ids.append(passage.id)
 
     if len(exit_node_ids) < 2:
-        outcome.route_coverage = ROUTE_NOT_APPLICABLE
+        # Один вихід у приміщенні: шляху між виходами немає. Але якщо є ще виходи
+        # поза приміщеннями, шлях до них не перевірено.
+        _finish_route_coverage(outcome, [], exit_devices)
         return outcome
 
     paths = _shortest_paths(network, exit_node_ids)
@@ -791,24 +955,49 @@ def place_manual_call_points(
 
     # Покриття шляхів: виходи, між якими немає доведеного шляху, повідомляємо окремо.
     groups = _groups(len(exit_node_ids), distances)
-    if len(groups) <= 1:
-        outcome.route_coverage = ROUTE_CONFIRMED
-        return outcome
-
     groups.sort(key=lambda members: (-len(members), min(members)))
     detached = [node for group in groups[1:] for node in sorted(group)]
+    _finish_route_coverage(outcome, detached, exit_devices)
+    return outcome
+
+
+def _finish_route_coverage(
+    outcome: CallPointOutcome,
+    detached: list[int],
+    exit_devices: list[tuple[CallPointExit, _Room, Point]],
+) -> None:
+    """Загальний стан шляхів: ``confirmed`` лише якщо доведено шлях до УСІХ виходів.
+
+    Виходи, не з'єднані проходами з рештою (``detached``), і виходи поза
+    приміщеннями (``skipped_exit_ids``) однаково не підтверджені: підмножина
+    з'єднаних виходів не робить підтвердженим шлях до всіх.
+    """
+    skipped = outcome.skipped_exit_ids
+    if not detached and not skipped:
+        outcome.route_coverage = (
+            ROUTE_CONFIRMED if len(exit_devices) >= 2 else ROUTE_NOT_APPLICABLE
+        )
+        return
+
     outcome.route_coverage = ROUTE_UNCONFIRMED
     outcome.unconnected_exit_ids = [exit_devices[node][0].id for node in detached]
+    outcome.unconnected_exit_ids.extend(skipped)
     names: list[str] = []
     for node in detached:
         name = exit_devices[node][1].room.name or exit_devices[node][1].room.id
         if name not in names:
             names.append(name)
     outcome.unconnected_room_names = names
-    outcome.route_warning = (
-        f"{WARNING_ROUTE_UNCONFIRMED}. Приміщення: {'; '.join(names)}"
-    )
-    return outcome
+
+    parts: list[str] = []
+    if detached:
+        parts.append(f"{WARNING_ROUTE_UNCONFIRMED}. Приміщення: {'; '.join(names)}")
+    if skipped:
+        skipped_names = "; ".join(outcome.skipped_exit_names)
+        parts.append(f"{WARNING_EXITS_WITHOUT_ROOM}. Виходи: {skipped_names}")
+    if outcome.ignored_passage_ids:
+        parts.append(f"{WARNING_PASSAGES_IGNORED} ({len(outcome.ignored_passage_ids)})")
+    outcome.route_warning = ". ".join(parts)
 
 
 def _fill_long_gaps(
@@ -865,7 +1054,10 @@ def describe_call_point_outcome(outcome: CallPointOutcome) -> dict[str, Any]:
         "route_warning": outcome.route_warning,
         "unconnected_exit_ids": list(outcome.unconnected_exit_ids),
         "unconnected_rooms": list(outcome.unconnected_room_names),
+        "skipped_exit_names": list(outcome.skipped_exit_names),
         "passage_ids": list(outcome.used_passage_ids),
+        # Проходи без пари приміщень (неоднозначні або застарілі) нічого не з'єднують.
+        "ignored_passage_ids": list(outcome.ignored_passage_ids),
         "rule": _describe_rule(outcome.rule) if outcome.rule else None,
         "alternative_rules": [
             _describe_rule(rule) for rule in outcome.alternative_rules
