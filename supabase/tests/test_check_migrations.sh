@@ -6,10 +6,11 @@
 #
 # Потрібен ізольований Postgres (як і для check_migrations.sh) і refs origin/main,
 # origin/dev (`git fetch origin main dev`). Сценарії:
-#   H.   БД, що існувала ДО запуску, не видаляється при аварійному завершенні
-#        (guard над наявною БД падає, а прибирання чіпає лише створене цим запуском);
-#   I.   createdb, що впав посеред підготовки: реєструються й прибираються лише
-#        успішно створені БД;
+#   H.   (під заглушками, за журналом викликів) існує лише стороння bimcheck_main —
+#        нова поведінка не планує dropdb для БД, якої не створювала; негативний
+#        контроль ФІКСУЄ, що стара (безумовна) поведінка видалила б її;
+#   I.   (під заглушками) перший createdb успішний, другий падає — за журналом
+#        прибирання торкається лише створеної БД, не тієї, що не створилася;
 #   A–C. відсутній main-ref / dev-ref / обидва: помилка ДО роботи з БД, жодної БД не
 #        створено, повідомлення пояснює причину (а не "ALL MIGRATION CHECKS PASSED");
 #   D.   замість Postgres заглушки (psql/createdb/dropdb нічого не роблять): помилка;
@@ -79,39 +80,65 @@ make_canary() {
     "create table canary(owner text); insert into canary values ('someone else')" >/dev/null
 }
 
-# ── H. БД з ФІКСОВАНИМ canary-іменем, що існувала до запуску, не видаляється ─────
-# Відтворює початкову ваду: guard бачить, що bimcheck_clean уже існує, і падає; старий
-# безумовний trap тоді викликав би dropdb для цього (чужого) імені. Беремо саме
-# фіксоване ім'я, бо прибирання за списком CANARIES стосувалося саме їх.
-pre="${CANARIES[0]}"  # bimcheck_clean
-db_exists "$pre" && fail "H: fixture name $pre unexpectedly exists; clean up and retry"
-createdb "$pre" >/dev/null
-psql -X -q -d "$pre" -c "create table canary(owner text); insert into canary values ('pre-existing')" >/dev/null
-# guard над наявною БД має впасти (у підоболонці, щоб перехопити вихід)…
-if (guard_absent "${CANARIES[@]}") 2>/dev/null; then dropdb "$pre" >/dev/null; fail "H: guard accepted a pre-existing database"; fi
-# …а прибирання не чіпає її, бо її не створював цей запуск (реєстр порожній).
-drop_created
-db_exists "$pre" || fail "H: a pre-existing database with a fixed canary name was dropped"
-[ "$(psql -X -At -d "$pre" -c 'select owner from canary')" = "pre-existing" ] \
-  || fail "H: a pre-existing database was modified"
-# Негативний контроль: СТАРА поведінка (безумовний dropdb фіксованих імен) видалила б її.
-old_cleanup() { local db; for db in "${CANARIES[@]}"; do dropdb --if-exists "$db" >/dev/null 2>&1 || true; done; }
-old_cleanup
-db_exists "$pre" && fail "H: negative control broke — old cleanup did not drop the fixture"
-ok "H: a pre-existing database with a fixed canary name is never dropped (old cleanup would)"
+# ── H, I під ЗАГЛУШКАМИ: перевіряємо ЖУРНАЛ викликів, нічого не видаляючи ───────
+# createdb/dropdb/psql підміняються функціями, що лише ведуть журнал і моделюють
+# наявні БД. Так небезпечний виклик dropdb ФІКСУЄТЬСЯ, а не виконується; реальної
+# БД ці кейси не торкаються (нову поведінку на справжньому Postgres перевіряють E–G).
+STUBLOG="$WORK/stub_calls.log"
+SIM=""  # імена «наявних» БД (для заглушок), розділені пробілами
+sim_present() { printf '%s\n' $SIM | grep -qx "$1"; }
+createdb() { echo "createdb $1" >>"$STUBLOG"; if sim_present "$1"; then return 1; fi; SIM="$SIM $1"; return 0; }
+dropdb() { echo "dropdb ${!#}" >>"$STUBLOG"; return 0; }  # лише журнал, без видалення
+psql() {
+  local last=""
+  for last; do :; done  # остання позиційна — рядок запиту після -c
+  case $last in
+    *"pg_database where datname='"*)
+      local n=${last#*datname=\'}; n=${n%%\'*}; sim_present "$n" && echo 1 || true ;;
+  esac
+  return 0
+}
 
-# ── I. createdb, що впав посеред підготовки, не потрапляє в реєстр ──────────────
-a="bimcheck_selftest_i_${SELF_ID}"
-before=${#CREATED[@]}
-make_canary "$a"  # успіх → зареєстровано
-# Повторний createdb тієї ж БД падає; у підоболонці, щоб не завершити самотест.
-if (make_canary "$a") 2>/dev/null; then fail "I: a duplicate createdb should fail"; fi
-[ "${#CREATED[@]}" -eq "$((before + 1))" ] \
-  || fail "I: a failed createdb was registered for cleanup"
-drop_created  # прибирає лише успішно створене
-db_exists "$a" && fail "I: a database created by this run was not cleaned up"
-CREATED=()  # реєстр порожній перед основним тілом
-ok "I: a createdb that fails is not registered; only created databases are cleaned"
+# H. Існує лише СТОРОННЯ bimcheck_main. Нова поведінка (guard + облік) не має
+#    викликати dropdb для жодної БД, якої цей запуск не створював.
+: >"$STUBLOG"; SIM="bimcheck_main"
+(
+  CREATED=()
+  trap 'drop_created' EXIT
+  guard_absent "${CANARIES[@]}"  # впаде на bimcheck_main → EXIT → drop_created (реєстр порожній)
+) >/dev/null 2>&1 || true
+! grep -q '^dropdb ' "$STUBLOG" \
+  || fail "H: a database this run did not create was scheduled for dropping: $(grep '^dropdb ' "$STUBLOG" | tr '\n' ' ')"
+# Негативний контроль ФІКСУЄ (не виконує) небезпечний виклик старої поведінки:
+# безумовний dropdb фіксованих імен торкнувся б сторонньої bimcheck_main.
+: >"$STUBLOG"
+old_unsafe_cleanup() { local db; for db in "${CANARIES[@]}"; do dropdb --if-exists "$db"; done; }
+old_unsafe_cleanup
+grep -qx "dropdb bimcheck_main" "$STUBLOG" \
+  || fail "H: negative control did not record the unsafe drop of a foreign database"
+ok "H: a foreign bimcheck_* database is never dropped (recorded calls; old cleanup would)"
+
+# I. Перший createdb успішний, другий (БД уже існує) падає. Прибирання за аварією
+#    має торкнутись ЛИШЕ створеної БД — перевіряємо фактичні виклики в журналі.
+: >"$STUBLOG"
+a="bimcheck_selftest_i_a_${SELF_ID}"
+b="bimcheck_selftest_i_b_${SELF_ID}"
+SIM="$b"  # b «уже існує» → createdb b впаде
+(
+  CREATED=()
+  trap 'drop_created' EXIT
+  make_canary "$a"  # створено й зареєстровано
+  make_canary "$b"  # createdb падає → fail → EXIT → drop_created
+) >/dev/null 2>&1 || true
+grep -qx "createdb $a" "$STUBLOG" || fail "I: expected a createdb for $a"
+grep -qx "createdb $b" "$STUBLOG" || fail "I: expected a failed createdb for $b"
+grep -qx "dropdb $a" "$STUBLOG" || fail "I: the created database $a was not cleaned up"
+! grep -qx "dropdb $b" "$STUBLOG" \
+  || fail "I: cleanup dropped $b, which this run did not create"
+ok "I: a failed createdb is not registered; cleanup drops only the created database"
+
+unset -f createdb dropdb psql sim_present old_unsafe_cleanup
+SIM=""; CREATED=()
 
 # ── Передумова для E–G: фіксовані імена ще не зайняті (інакше не чіпаємо їх) ────
 guard_absent "${CANARIES[@]}"
