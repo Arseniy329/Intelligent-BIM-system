@@ -85,6 +85,22 @@ export interface Room {
   polygon: [Point, Point, Point, ...Point[]];
   source?: "auto" | "fire_rooms" | "manual";
   confirmed?: boolean;
+  /**
+   * Статус верифікації або розміщення правила для приміщення
+   */
+  rule_status?: "verified" | "needs_review" | "review_needed" | "insufficient_data" | null;
+  /**
+   * Причина пропуску розміщення або невизначеності правила
+   */
+  rule_reason?: string | null;
+  /**
+   * Аліас для rule_status (camelCase)
+   */
+  ruleStatus?: "verified" | "needs_review" | "review_needed" | "insufficient_data" | null;
+  /**
+   * Аліас для rule_reason (camelCase)
+   */
+  ruleReason?: string | null;
 }
 /**
  * Координата у двовимірній світовій системі DXF (WCS): початок (0, 0), +X праворуч, +Y вгору. Значення передаються без масштабування в одиницях Drawing.resolvedUnits; перетворення для Canvas/SVG виконує лише клієнт.

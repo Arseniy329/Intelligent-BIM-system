@@ -1050,6 +1050,10 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertTrue(mid_data["sourceDownloadUrl"].endswith("/source.dxf"))
         self.assertIsNotNone(mid_data["sourceDownloadUrlExpiresAt"])
 
+        # Without height devices are not placed, so engineer sets it before placement
+        for room_row in db["rooms"]:
+            room_row["height"] = 3.0
+
         # Step 2: POST /drawings/{id}/place
         place_resp = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
         self.assertEqual(place_resp.status_code, 200)

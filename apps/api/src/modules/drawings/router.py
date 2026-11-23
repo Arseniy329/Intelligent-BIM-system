@@ -34,7 +34,11 @@ from src.modules.drawings.service import (
     generate_and_upload_result_dxf,
     list_drawings_for_user,
 )
-from src.modules.placement.service import RuleRecord, place_devices_from_rule
+from src.modules.placement.service import (
+    RuleRecord,
+    place_devices_from_rule,
+    select_rule_for_room,
+)
 from src.modules.rooms.service import room_from_row, row_points
 
 router = APIRouter(prefix="/drawings", tags=["drawings"])
@@ -289,7 +293,7 @@ async def place_drawing_devices(
                 detail="No rooms found for this drawing",
             )
 
-        rules_response = supabase.table("rules").select("*").limit(1).execute()
+        rules_response = supabase.table("rules").select("*").limit(100).execute()
         if (
             not rules_response.data
             or not isinstance(rules_response.data, list)
@@ -300,62 +304,149 @@ async def place_drawing_devices(
                 detail="No fire safety rules available",
             )
 
-        rule_data = rules_response.data[0]
-        if (
-            not isinstance(rule_data, dict)
-            or "id" not in rule_data
-            or "threshold" not in rule_data
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid rule record format",
-            )
-
-        try:
-            threshold_val = float(rule_data["threshold"])
-        except (ValueError, TypeError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid rule threshold",
-            ) from exc
-
-        rule = RuleRecord(
-            id=str(rule_data["id"]),
-            threshold=threshold_val,
-            status=str(rule_data.get("status") or "needs_review"),
-        )
+        rules_list = [r for r in rules_response.data if isinstance(r, dict)]
 
         new_device_rows: list[dict[str, Any]] = []
+        outcomes: list[dict[str, Any]] = []
+
         for room in rooms_data:
             if not isinstance(room, dict):
                 continue
-            poly_data = room.get("polygon")
-            if not isinstance(poly_data, list) or len(poly_data) < 3:
-                continue
-            coords: list[tuple[float, float]] = []
-            for pt in poly_data:
-                if isinstance(pt, dict) and "x" in pt and "y" in pt:
-                    coords.append((float(pt["x"]), float(pt["y"])))
-                elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                    coords.append((float(pt[0]), float(pt[1])))
-            if len(coords) < 3:
-                continue
 
             room_id = str(room["id"]) if room.get("id") else None
-            placed_devices = place_devices_from_rule(coords, rule)
+            room_name = str(room.get("name") or "")
+
+            raw_h = room.get("height")
+            height_m: float | None = None
+            if raw_h is not None:
+                try:
+                    height_m = float(raw_h)
+                except (TypeError, ValueError):
+                    height_m = None
+
+            if height_m is None or height_m <= 0:
+                outcomes.append(
+                    {
+                        "room_id": room_id,
+                        "name": room_name,
+                        "height_m": height_m,
+                        "status": "insufficient_data",
+                        "reason": "Не введено висоту",
+                        "device_count": 0,
+                        "rule": None,
+                    }
+                )
+                continue
+
+            poly_data = room.get("polygon")
+            coords: list[tuple[float, float]] = []
+            if isinstance(poly_data, list):
+                for pt in poly_data:
+                    if isinstance(pt, dict) and "x" in pt and "y" in pt:
+                        coords.append((float(pt["x"]), float(pt["y"])))
+                    elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        coords.append((float(pt[0]), float(pt[1])))
+
+            if len(coords) < 3:
+                outcomes.append(
+                    {
+                        "room_id": room_id,
+                        "name": room_name,
+                        "height_m": height_m,
+                        "status": "insufficient_data",
+                        "reason": "Некоректний контур",
+                        "device_count": 0,
+                        "rule": None,
+                    }
+                )
+                continue
+
+            matched_rule = select_rule_for_room(
+                rules_list,
+                device_type="smoke_detector",
+                room_type=room.get("type"),
+                room_height_m=height_m,
+            )
+            if (
+                matched_rule is None
+                and len(rules_list) == 1
+                and "threshold" in rules_list[0]
+                and "device_type" not in rules_list[0]
+            ):
+                rule_fallback = rules_list[0]
+                try:
+                    th = float(rule_fallback["threshold"])
+                    matched_rule = RuleRecord(
+                        id=str(rule_fallback["id"]),
+                        threshold=th,
+                        status=str(rule_fallback.get("status") or "needs_review"),
+                    )
+                except (ValueError, TypeError):
+                    matched_rule = None
+
+            if matched_rule is None:
+                outcomes.append(
+                    {
+                        "room_id": room_id,
+                        "name": room_name,
+                        "height_m": height_m,
+                        "status": "insufficient_data",
+                        "reason": f"Немає правила для висоти {height_m:g} м",
+                        "device_count": 0,
+                        "rule": None,
+                    }
+                )
+                continue
+
+            try:
+                placed_devices = place_devices_from_rule(coords, matched_rule)
+            except ValueError:
+                outcomes.append(
+                    {
+                        "room_id": room_id,
+                        "name": room_name,
+                        "height_m": height_m,
+                        "status": "insufficient_data",
+                        "reason": (
+                            "Не вдалося розмістити прилади: контур некоректний"
+                            " або сітка надто щільна"
+                        ),
+                        "device_count": 0,
+                        "rule": None,
+                    }
+                )
+                continue
+
             for d in placed_devices:
                 new_device_rows.append(
                     {
                         "id": str(uuid4()),
                         "drawing_id": drawing_id,
                         "room_id": room_id,
-                        "rule_id": str(rule.id),
+                        "rule_id": str(matched_rule.id),
                         "type": "smoke_detector",
                         "layer": "SYS_FIRE_SENSORS",
                         "x": float(d.x),
                         "y": float(d.y),
                     }
                 )
+
+            outcomes.append(
+                {
+                    "room_id": room_id,
+                    "name": room_name,
+                    "height_m": height_m,
+                    "status": "placed",
+                    "reason": None,
+                    "device_count": len(placed_devices),
+                    "rule": {
+                        "id": matched_rule.id,
+                        "rule_id": matched_rule.rule_id,
+                        "name": matched_rule.name,
+                        "verification_status": matched_rule.status,
+                    },
+                }
+            )
 
         supabase.table("devices").delete().eq("drawing_id", drawing_id).execute()
 
@@ -368,10 +459,33 @@ async def place_drawing_devices(
 
         result_storage_path = generate_and_upload_result_dxf(drawing_id, supabase)
 
+        skipped = [
+            {
+                "room_id": o["room_id"],
+                "name": o["name"],
+                "scope": "room",
+                "reason": o["reason"],
+                "status": o["status"],
+            }
+            for o in outcomes
+            if o["status"] != "placed"
+        ]
+
+        if not skipped:
+            placement_status = "complete"
+        elif not new_device_rows:
+            placement_status = "insufficient_data"
+        else:
+            placement_status = "partial"
+
         return {
             "drawing_id": drawing_id,
             "status": "processed",
             "result_path": result_storage_path,
+            "placement_status": placement_status,
+            "device_count": len(new_device_rows),
+            "placements": outcomes,
+            "skipped": skipped,
         }
     except Exception as exc:
         try:
@@ -461,6 +575,27 @@ async def get_drawing_detail(
         download_url: AnyUrl | None = None
         download_url_expires_at: datetime | None = None
 
+        devices_res = (
+            supabase.table("devices").select("*").eq("drawing_id", drawing_id).execute()
+        )
+        devices_by_room: dict[str, list[dict[str, Any]]] = {}
+        if isinstance(devices_res.data, list):
+            for d in devices_res.data:
+                if isinstance(d, dict) and d.get("room_id"):
+                    devices_by_room.setdefault(str(d["room_id"]), []).append(d)
+
+        rules_rows: list[dict[str, Any]] = []
+        try:
+            rules_res = supabase.table("rules").select("*").execute()
+            if isinstance(rules_res.data, list):
+                rules_rows = [row for row in rules_res.data if isinstance(row, dict)]
+        except Exception:
+            rules_rows = []
+
+        rules_by_id: dict[str, dict[str, Any]] = {
+            str(rule["id"]): rule for rule in rules_rows if "id" in rule
+        }
+
         rooms_res = (
             supabase.table("rooms").select("*").eq("drawing_id", drawing_id).execute()
         )
@@ -468,11 +603,80 @@ async def get_drawing_detail(
             for r in rooms_res.data:
                 if not isinstance(r, dict) or len(row_points(r)) < 3:
                     continue
-                rooms.append(room_from_row(r))
 
-        devices_res = (
-            supabase.table("devices").select("*").eq("drawing_id", drawing_id).execute()
-        )
+                room_id_str = str(r["id"])
+                room_devices = devices_by_room.get(room_id_str, [])
+                rule_status: str | None = None
+                rule_reason: str | None = None
+
+                raw_h = r.get("height")
+                height_val: float | None = None
+                if raw_h is not None:
+                    try:
+                        height_val = float(raw_h)
+                    except (TypeError, ValueError):
+                        height_val = None
+
+                if room_devices:
+                    dev_rule_id = str(room_devices[0].get("rule_id") or "")
+                    matched_rule_dict = rules_by_id.get(dev_rule_id)
+                    rule_status = (
+                        str(
+                            matched_rule_dict.get("verification_status")
+                            or matched_rule_dict.get("status")
+                            or "verified"
+                        )
+                        if matched_rule_dict
+                        else "verified"
+                    )
+                    rule_reason = None
+                else:
+                    if height_val is None or height_val <= 0:
+                        rule_status = "insufficient_data"
+                        rule_reason = "Не введено висоту"
+                    elif (
+                        not r.get("type")
+                        or str(r.get("type")).strip() in {"", "unknown"}
+                    ):
+                        rule_status = "insufficient_data"
+                        rule_reason = "Не обрано тип приміщення"
+                    else:
+                        matched = select_rule_for_room(
+                            rules_rows,
+                            device_type="smoke_detector",
+                            room_type=r.get("type"),
+                            room_height_m=height_val,
+                        )
+                        if (
+                            matched is None
+                            and len(rules_rows) == 1
+                            and "threshold" in rules_rows[0]
+                            and "device_type" not in rules_rows[0]
+                        ):
+                            try:
+                                fallback_status = str(
+                                    rules_rows[0].get("status") or "needs_review"
+                                )
+                                matched = RuleRecord(
+                                    id=str(rules_rows[0]["id"]),
+                                    threshold=float(rules_rows[0]["threshold"]),
+                                    status=fallback_status,
+                                )
+                            except (ValueError, TypeError):
+                                matched = None
+
+                        if matched is None:
+                            rule_status = "insufficient_data"
+                            rule_reason = f"Немає правила для висоти {height_val:g} м"
+                        else:
+                            rule_status = "needs_review"
+                            rule_reason = None
+
+                rooms.append(
+                    room_from_row(
+                        r, rule_status=rule_status, rule_reason=rule_reason
+                    )
+                )
         if status_raw == "processed" and isinstance(devices_res.data, list):
             for d in devices_res.data:
                 if not isinstance(d, dict):
