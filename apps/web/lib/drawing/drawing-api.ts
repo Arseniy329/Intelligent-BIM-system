@@ -23,6 +23,8 @@ export type PlacementReport = {
   placementStatus?: PlacementStatus;
   deviceCount?: number;
   placementIssues?: PlacementIssue[];
+  /** Warnings of the step that do not fail it, e.g. exits not saved or an unconfirmed evacuation route. */
+  warnings?: string[];
 };
 export type DrawingOperation = { drawingId: string; status: "processing" | "processed" } & PlacementReport;
 export type ProcessingResponse = DrawingOperation | DrawingResultView | ProcessingJob;
@@ -179,7 +181,29 @@ export function parsePlacementReport(value: Record<string, unknown>): PlacementR
       return [{ title: `${room}${zone}`, reason: item.reason }];
     });
   }
+  const warnings = operationWarnings(value);
+  if (warnings.length) report.warnings = warnings;
   return report;
+}
+
+/**
+ * Step warnings of POST /process (`exit_detection`) and POST /place (`manual_call_points`):
+ * the step itself succeeded, but the engineer must know about the gap.
+ */
+function operationWarnings(value: Record<string, unknown>): string[] {
+  const warnings: string[] = [];
+  const text = (candidate: unknown) => typeof candidate === "string" && candidate ? candidate : null;
+  if (record(value.exit_detection)) {
+    const warning = text(value.exit_detection.warning);
+    if (warning) warnings.push(warning);
+  }
+  if (record(value.manual_call_points)) {
+    const mcp = value.manual_call_points;
+    const reason = mcp.status === "insufficient_data" ? text(mcp.reason) : null;
+    for (const message of [reason, text(mcp.route_warning), text(mcp.warning)])
+      if (message) warnings.push(`Ручні сповіщувачі: ${message}`);
+  }
+  return warnings;
 }
 
 /** A POST acknowledgement: neither a result (`drawing`) nor a job (`id`) nor a flat detail (`id`). */
@@ -188,16 +212,21 @@ function isOperation(value: ProcessingResponse | DrawingResponse): value is Draw
 }
 
 /**
- * The placement report of a response: the acknowledgement of POST /place or the
- * report GET returns with a result (it is stored, so it survives a reload).
- * Accepts every shape a mutation or a query can hold; null when there is no report.
+ * The placement report of a response: the acknowledgement of POST /process or /place,
+ * or the report GET returns with a result (it is stored, so it survives a reload).
+ * Accepts every shape a mutation or a query can hold (a job included); null when
+ * there is nothing to show, i.e. neither a placement status nor a step warning.
  */
 export function placementReport(source: ProcessingResponse | DrawingResponse | undefined): PlacementReport | null {
   if (!source) return null;
   const report = "drawing" in source ? source.placementReport : isOperation(source) ? source : undefined;
-  if (!report?.placementStatus) return null;
-  const { placementStatus, deviceCount, placementIssues } = report;
-  return { placementStatus, deviceCount, placementIssues };
+  if (!report || !(report.placementStatus || report.warnings?.length)) return null;
+  const result: PlacementReport = {};
+  if (report.placementStatus) result.placementStatus = report.placementStatus;
+  if (report.deviceCount !== undefined) result.deviceCount = report.deviceCount;
+  if (report.placementIssues) result.placementIssues = report.placementIssues;
+  if (report.warnings?.length) result.warnings = report.warnings;
+  return result;
 }
 
 export function parseDrawing(value: unknown, id: string): DrawingResponse {
@@ -228,7 +257,8 @@ export function parseDrawing(value: unknown, id: string): DrawingResponse {
       // or malformed one is dropped instead of failing the whole result.
       const { placementReport: stored, ...contract } = value;
       const report = record(stored) ? parsePlacementReport(stored) : null;
-      return (report?.placementStatus ? { ...contract, placementReport: report } : contract) as unknown as DrawingResponse;
+      const useful = !!report && (!!report.placementStatus || !!report.warnings?.length);
+      return (useful ? { ...contract, placementReport: report } : contract) as unknown as DrawingResponse;
     }
   }
   return value as unknown as DrawingResponse;

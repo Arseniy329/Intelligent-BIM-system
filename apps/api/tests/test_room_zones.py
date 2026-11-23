@@ -85,6 +85,7 @@ class RoomZonesTestCase(unittest.TestCase):
             ]
         )
         self.devices_table = FakeTable([])
+        self.exits_table = FakeTable([])
         self.rules_table = FakeTable(
             [
                 smoke_rule("SMOKE_GRID_HEIGHT_3_5", None, 3.5, 9.0, 80),
@@ -95,6 +96,8 @@ class RoomZonesTestCase(unittest.TestCase):
             {
                 "rooms": self.rooms_table,
                 "room_zones": self.zones_table,
+                "exits": self.exits_table,
+                "passages": FakeTable([]),
                 "drawings": self.drawings_table,
                 "devices": self.devices_table,
                 "rules": self.rules_table,
@@ -472,6 +475,8 @@ class TestPlaceUsesRoomAndZoneHeight(RoomZonesTestCase):
                 "placement_status": posted["placement_status"],
                 "device_count": posted["device_count"],
                 "skipped": posted["skipped"],
+                # BIM-75: стан ручних сповіщувачів і шляхів теж у звіті.
+                "manual_call_points": posted["manual_call_points"],
             },
         )
 
@@ -510,11 +515,16 @@ class TestPlaceUsesRoomAndZoneHeight(RoomZonesTestCase):
         self.place()
         self.assertIn("placementReport", self.reload().json())
 
+        exits_saved = {"status": "ok", "exits": 0, "passages": 0, "warning": None}
         with (
             patch("src.modules.drawings.router.download_dxf_to_tmp", return_value=None),
             patch(
                 "src.modules.drawings.router.parse_dxf_rooms_with_scale",
                 return_value=([], 0.001),
+            ),
+            patch(
+                "src.modules.drawings.router._save_dxf_layout",
+                return_value=exits_saved,
             ),
         ):
             response = self.client.post(f"/api/v1/drawings/{self.drawing_id}/process")

@@ -144,8 +144,12 @@ function DrawingDetailContent({
   const processingFailed = state.currentJob?.status === "failed";
   // `processed` only means the placement step finished; skipped rooms/zones come with reasons.
   // The report of the POST that just ran wins; otherwise the one the API stored with the
-  // result, so a reload or a shared link shows the same reasons next to the result.
+  // result, so a reload or a shared link shows the same reasons and warnings next to it.
   const placement = placementReport(state.place.data) ?? placementReport(data);
+  const stepWarnings = [...new Set([
+    ...(placementReport(state.process.data)?.warnings ?? []),
+    ...(placement?.warnings ?? []),
+  ])];
   const units = isDrawingResult(data) ? data.drawing.resolvedUnits : data.units;
   const reprocessing = !!result?.rooms.length || metadata.status === "processed";
   const mappedRooms =
@@ -335,7 +339,7 @@ function DrawingDetailContent({
               </button>
             </div>
           )}
-          {placement && placement.placementStatus !== "complete" && (
+          {placement?.placementStatus && placement.placementStatus !== "complete" && (
             <div
               role="alert"
               data-slot="placement-incomplete-banner"
@@ -363,6 +367,19 @@ function DrawingDetailContent({
               >
                 Перейти до приміщень →
               </button>
+            </div>
+          )}
+          {stepWarnings.length > 0 && (
+            <div
+              role="alert"
+              data-slot="operation-warnings-banner"
+              className="space-y-1 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-900 shadow-xs"
+            >
+              <ul className="list-disc space-y-1 pl-5">
+                {stepWarnings.map((warning, index) => (
+                  <li key={`${warning}-${index}`}>{warning}</li>
+                ))}
+              </ul>
             </div>
           )}
           {result && !demo && <PlanEditorPanel editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}

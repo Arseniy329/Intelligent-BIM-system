@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DrawingDetailResponse } from "@bim/contracts";
+import type { DrawingDetailResponse, ProcessingJob } from "@bim/contracts";
 import { ApiAuthenticationError, ApiHttpError, createDrawing } from "@/lib/api";
-import { drawingApi, drawingErrorMessage, downloadLink, fetchDrawingDownload, listDrawings, normalizeDrawingDetail, parseDrawing, parseJob, parseDrawingOperation, parsePlacementReport, placementReport, processingErrorMessage } from "@/lib/drawing/drawing-api";
+import { type DrawingResponse, drawingApi, drawingErrorMessage, downloadLink, fetchDrawingDownload, listDrawings, normalizeDrawingDetail, parseDrawing, parseJob, parseDrawingOperation, parsePlacementReport, placementReport, processingErrorMessage } from "@/lib/drawing/drawing-api";
 import { DEMO_RESULT } from "@/lib/drawing/demo-drawing";
 import { createDemoDrawingApi } from "@/lib/drawing/demo-api";
 import { isDrawingDemoEnabled } from "@/lib/drawing/demo-mode";
@@ -99,6 +99,36 @@ it("ignores malformed placement report parts and responses without a report", ()
   expect(placementReport(DEMO_RESULT)).toBeNull();
   expect(placementReport(undefined)).toBeNull();
 });
+it("keeps the warnings of the process and place steps instead of dropping them", () => {
+  const processed = parseDrawingOperation({
+    drawing_id: id, status: "processing",
+    exit_detection: { status: "failed", exits: null, passages: null, warning: "Раніше збережені виходи й проходи лишено без змін" },
+  }, id, "processing");
+  expect(placementReport(processed)?.warnings).toEqual(["Раніше збережені виходи й проходи лишено без змін"]);
+
+  const placed = parseDrawingOperation({
+    drawing_id: id, status: "processed", placement_status: "complete", device_count: 4,
+    skipped: [],
+    manual_call_points: {
+      status: "placed", reason: null, warning: null,
+      route_coverage: "unconfirmed", route_warning: "Шлях евакуації між виходами не підтверджено. Приміщення: East",
+    },
+  }, id, "processed");
+  expect(placementReport(placed)).toMatchObject({ placementStatus: "complete" });
+  expect(placementReport(placed)?.warnings).toEqual(["Ручні сповіщувачі: Шлях евакуації між виходами не підтверджено. Приміщення: East"]);
+});
+it("shows why manual call points were not placed and ignores responses without warnings", () => {
+  const noExits = parseDrawingOperation({
+    drawing_id: id, status: "processed", placement_status: "complete", device_count: 4,
+    manual_call_points: { status: "insufficient_data", reason: "Позначте евакуаційні виходи", warning: null, route_warning: null },
+  }, id, "processed");
+  expect(placementReport(noExits)?.warnings).toEqual(["Ручні сповіщувачі: Позначте евакуаційні виходи"]);
+  const clean = parseDrawingOperation({
+    drawing_id: id, status: "processing", exit_detection: { status: "ok", exits: 2, passages: 1, warning: null },
+  }, id, "processing");
+  expect(placementReport(clean)).toBeNull();
+  expect(clean).toEqual({ drawingId: id, status: "processing" });
+});
 it("reads the stored placement report that GET returns with a result, so a reload keeps the reasons", () => {
   const stored = {
     placement_status: "partial", device_count: 6,
@@ -124,6 +154,31 @@ it.each([null, "partial", {}, { placement_status: "invented" }])("treats a null 
 it("keeps a result without a report as it is", () => {
   expect(parseDrawing(DEMO_RESULT, id)).toBe(DEMO_RESULT);
   expect(placementReport(parseDrawing(DEMO_RESULT, id))).toBeNull();
+});
+it("shows the stored step warnings after a reload, also when no device was placed yet", () => {
+  // /process stores only the exit detection outcome; /place adds the manual call point outcome.
+  const processed = parseDrawing({
+    ...DEMO_RESULT,
+    placementReport: { exit_detection: { status: "failed", exits: null, passages: null, warning: "Виходи не збережено: пошук виходів завершився помилкою" } },
+  }, id);
+  expect(placementReport(processed)).toEqual({ warnings: ["Виходи не збережено: пошук виходів завершився помилкою"] });
+
+  const placed = parseDrawing({
+    ...DEMO_RESULT,
+    placementReport: {
+      placement_status: "complete", device_count: 4, skipped: [],
+      manual_call_points: { status: "placed", route_coverage: "unconfirmed", route_warning: "Прохід не прив'язано до двох приміщень" },
+    },
+  }, id);
+  expect(placementReport(placed)).toEqual({
+    placementStatus: "complete", deviceCount: 4, placementIssues: [],
+    warnings: ["Ручні сповіщувачі: Прохід не прив'язано до двох приміщень"],
+  });
+});
+it("reads the report from every response shape a mutation can hold, a processing job included", () => {
+  const job = { id: "job", drawingId: id, status: "queued", errorMessage: null } as ProcessingJob;
+  expect(placementReport(job)).toBeNull();
+  expect(placementReport(detail as unknown as DrawingResponse)).toBeNull();
 });
 it("rejects mismatched IDs, absent data and invalid jobs", async () => {
   expect(() => parseDrawing(null, id)).toThrow();
