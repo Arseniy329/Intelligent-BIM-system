@@ -18,7 +18,23 @@ export type RoomConfirmationStatus = "confirmed" | "unconfirmed";
 
 export type RoomCompletenessStatus = "sufficient" | "insufficient";
 
-export type RuleVerificationStatus = "verified" | "needs_review" | "review_needed";
+export type RuleVerificationStatus =
+  | "verified"
+  | "needs_review"
+  | "review_needed"
+  | "insufficient_data";
+
+export type RuleStatus = RuleVerificationStatus;
+
+/**
+ * Returns true when the given status represents a rule that could not be
+ * evaluated because required room data is missing.
+ */
+export function isInsufficientDataStatus(
+  status: string | null | undefined
+): boolean {
+  return status === "insufficient_data";
+}
 
 export interface RoomPoint {
   x: number;
@@ -40,7 +56,16 @@ export interface Room {
   polygon?: RoomPoint[];
   hasUnsavedChanges?: boolean;
   isDirty?: boolean;
+  reason?: string | null;
+  status_reason?: string | null;
 }
+
+/**
+ * Room row shape rendered in the rooms table and drawing detail panels.
+ */
+export type RoomListItem = Room;
+export type RoomRow = Room;
+export type RoomWithRules = Room;
 
 export const BLOCKING_REASONS = {
   UNSAVED_CHANGES: "Незбережені зміни",

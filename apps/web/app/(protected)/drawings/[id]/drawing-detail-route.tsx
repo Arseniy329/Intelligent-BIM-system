@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { DrawingDetail } from "@/components/drawing/drawing-detail";
+import { RuleStatusBadge } from "@/components/rooms/badges";
+import { isInsufficientDataStatus, pluralizeRooms } from "@/types/rooms";
 import {
   ApiError,
   getDrawing,
@@ -77,6 +79,98 @@ function legacyDevices(value: DrawingResponse) {
 function legacySourceUrl(value: DrawingResponse): string | null {
   const url = value.sourceDownloadUrl;
   return typeof url === "string" && url ? url : null;
+}
+
+const RULE_STATUS_VALUES = new Set([
+  "verified",
+  "needs_review",
+  "review_needed",
+  "insufficient_data",
+]);
+
+const MISSING_REASON_FALLBACK = "Причина не вказана";
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readRoomField(
+  room: unknown,
+  keys: string[],
+): string | null {
+  const record = asRecord(room);
+  if (!record) return null;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function roomRuleStatus(room: unknown): string | null {
+  const raw = readRoomField(room, [
+    "rule_status",
+    "ruleStatus",
+    "review_status",
+    "reviewStatus",
+    "status",
+  ]);
+  return raw && RULE_STATUS_VALUES.has(raw) ? raw : null;
+}
+
+function roomRuleReason(room: unknown): string | null {
+  return readRoomField(room, [
+    "reason",
+    "status_reason",
+    "statusReason",
+    "rule_reason",
+    "ruleReason",
+  ]);
+}
+
+function isInsufficientRoom(room: unknown): boolean {
+  const status = roomRuleStatus(room);
+  if (status) return isInsufficientDataStatus(status);
+
+  // Status missing: fall back to completeness signals so a room without
+  // height/type is still surfaced as insufficient on the drawing page.
+  const record = asRecord(room);
+  if (!record) return false;
+  const type =
+    typeof record.type === "string"
+      ? record.type
+      : typeof record.roomType === "string"
+        ? record.roomType
+        : null;
+  const height = typeof record.height === "number" ? record.height : null;
+  const typeMissing = !type || type.trim() === "" || type === "unknown";
+  const heightMissing =
+    height === null || height <= 0 || !Number.isFinite(height);
+  return typeMissing || heightMissing || Boolean(roomRuleReason(room));
+}
+
+function roomDisplayName(room: unknown, index: number): string {
+  const record = asRecord(room);
+  const name =
+    record && typeof record.name === "string" && record.name.trim()
+      ? record.name.trim()
+      : null;
+  const number =
+    record && typeof record.number === "string" && record.number.trim()
+      ? record.number.trim()
+      : null;
+  if (number && name) return `${number} · ${name}`;
+  return name ?? number ?? `Приміщення ${index + 1}`;
+}
+
+function roomKey(room: unknown, index: number): string {
+  const record = asRecord(room);
+  if (record && typeof record.id === "string" && record.id) return record.id;
+  return `room-${index}`;
 }
 
 function embeddedSourceUrl(value: DrawingDetailData): string | null {
@@ -241,7 +335,51 @@ export function DrawingDetailRoute({ id }: { id: string }) {
         </section>
       )}
 
-      {state.kind === "ready" && <DrawingDetail id={id} />}
+      {state.kind === "ready" &&
+        (() => {
+          const rooms: unknown[] = Array.isArray(state.drawing.rooms)
+            ? state.drawing.rooms
+            : [];
+          const insufficientRooms = rooms.filter(isInsufficientRoom);
+          return (
+            <>
+              {insufficientRooms.length > 0 && (
+                <section
+                  data-slot="insufficient-data-summary"
+                  aria-label="Приміщення без достатніх даних"
+                  className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-sm text-slate-700 shadow-xs"
+                >
+                  <p
+                    data-slot="insufficient-data-summary-text"
+                    className="font-medium"
+                  >
+                    {pluralizeRooms(insufficientRooms.length)} без достатніх
+                    даних
+                  </p>
+                  <ul className="space-y-1.5">
+                    {insufficientRooms.map((room, index) => (
+                      <li
+                        key={roomKey(room, index)}
+                        className="flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <span className="min-w-0 break-words">
+                          {roomDisplayName(room, index)}
+                        </span>
+                        <RuleStatusBadge
+                          status="insufficient_data"
+                          reason={
+                            roomRuleReason(room) ?? MISSING_REASON_FALLBACK
+                          }
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+              <DrawingDetail id={id} />
+            </>
+          );
+        })()}
     </div>
   );
 }

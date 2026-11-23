@@ -5,7 +5,9 @@ import type { RoomType } from "@bim/contracts";
 import { cn } from "@/lib/utils";
 import {
   type Room,
+  type RuleVerificationStatus,
   isRoomDataComplete,
+  isInsufficientDataStatus,
   getRoomBlockingReasons,
   pluralizeRooms,
   formatBlockingActions,
@@ -14,6 +16,7 @@ import {
   SourceBadge,
   ConfirmationBadge,
   CompletenessBadge,
+  RuleStatusBadge,
 } from "@/components/rooms/badges";
 import { useRoomTypes, getRoomTypeName } from "@/lib/rooms/room-types-api";
 import {
@@ -44,6 +47,60 @@ function formatHeight(height: number | null | undefined): string | null {
     return null;
   }
   return `${height.toLocaleString("uk-UA", { minimumFractionDigits: 1, maximumFractionDigits: 2 })} м`;
+}
+
+const RULE_STATUS_VALUES: readonly RuleVerificationStatus[] = [
+  "verified",
+  "needs_review",
+  "review_needed",
+  "insufficient_data",
+];
+
+const MISSING_REASON_FALLBACK = "Причина не вказана";
+
+function readRoomString(room: Room, keys: string[]): string | null {
+  const record = room as unknown as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function getRawRuleStatus(room: Room): RuleVerificationStatus | null {
+  const raw = readRoomString(room, [
+    "rule_status",
+    "ruleStatus",
+    "review_status",
+    "reviewStatus",
+    "status",
+  ]);
+  if (raw && RULE_STATUS_VALUES.includes(raw as RuleVerificationStatus)) {
+    return raw as RuleVerificationStatus;
+  }
+  return null;
+}
+
+function getRoomRuleStatus(room: Room): RuleVerificationStatus {
+  const raw = getRawRuleStatus(room);
+  if (raw) return raw;
+  // No explicit rule status from the API: missing height / type / unknown type
+  // (or a backend-supplied reason) means the rule could not be evaluated.
+  if (!isRoomDataComplete(room)) return "insufficient_data";
+  if (getRoomReason(room)) return "insufficient_data";
+  return "verified";
+}
+
+function getRoomReason(room: Room): string | null {
+  return readRoomString(room, [
+    "reason",
+    "status_reason",
+    "statusReason",
+    "rule_reason",
+    "ruleReason",
+  ]);
 }
 
 export function RoomsTable({
@@ -140,13 +197,26 @@ export function RoomsTable({
                 const isConfirmed = Boolean(room.isConfirmed);
                 const typeName = getRoomTypeName(room.roomType, catalog);
                 const heightStr = formatHeight(room.height);
+                const rawRuleStatus = getRawRuleStatus(room);
+                const ruleStatus = getRoomRuleStatus(room);
+                const isInsufficient = isInsufficientDataStatus(ruleStatus);
+                const reason = getRoomReason(room);
+                const displayReason =
+                  isInsufficient && !reason
+                    ? MISSING_REASON_FALLBACK
+                    : reason;
+                const showRuleBadge =
+                  rawRuleStatus !== null || isInsufficient || Boolean(reason);
 
                 return (
                   <TableRow
                     key={room.id ?? room.name}
                     data-room-id={room.id}
                     data-selected={isSelected}
+                    data-rule-status={ruleStatus}
                     className={cn(
+                      isInsufficient &&
+                        "bg-slate-50/60 text-slate-500 opacity-80",
                       isSelected && "bg-blue-50/50 hover:bg-blue-50/70"
                     )}
                   >
@@ -206,7 +276,14 @@ export function RoomsTable({
 
                     {/* Column 6: Дані */}
                     <TableCell>
-                      <CompletenessBadge room={room} />
+                      {showRuleBadge ? (
+                        <RuleStatusBadge
+                          status={ruleStatus}
+                          reason={displayReason}
+                        />
+                      ) : (
+                        <CompletenessBadge room={room} />
+                      )}
                     </TableCell>
 
                     {/* Column 7: Дія */}
