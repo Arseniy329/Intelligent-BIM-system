@@ -722,6 +722,7 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
                     "device_count": len(inserted_devices),
                     "skipped": [],
                     "manual_call_points": call_points,
+                    "sounders": data["sounders"],
                 },
             }
         )

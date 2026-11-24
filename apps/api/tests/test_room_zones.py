@@ -477,6 +477,8 @@ class TestPlaceUsesRoomAndZoneHeight(RoomZonesTestCase):
                 "skipped": posted["skipped"],
                 # BIM-75: стан ручних сповіщувачів і шляхів теж у звіті.
                 "manual_call_points": posted["manual_call_points"],
+                # BIM-76: стан оповіщувачів — завжди окрема секція.
+                "sounders": posted["sounders"],
             },
         )
 
@@ -654,12 +656,65 @@ class TestSounderPlacementInPlace(RoomZonesTestCase):
         ]
         self.assertEqual(report["sounders"], posted["sounders"])
 
-    def test_without_a_sounder_rule_no_sounders_and_no_report_section(self) -> None:
-        # Лише димові правила (як у базовому setUp): оповіщувачів немає.
+    def reload(self) -> dict[str, Any]:
+        """GET без стану POST: що бачить користувач після перезавантаження."""
+        return self.client.get(f"/api/v1/drawings/{self.drawing_id}").json()
+
+    def test_no_sounder_rule_reports_insufficient_data_not_silence(self) -> None:
+        # Випадок 1: димові сповіщувачі є, правила-відстані для оповіщувачів немає.
         body = self.place().json()
 
         self.assertEqual(self.sounder_rows(), [])
-        self.assertNotIn("sounders", body)
+        # Секція оповіщувачів Є (не мовчазний пропуск, який читався б як «усе гаразд»):
+        # статус і причина на рівні типу приладу, окремо від димових сповіщувачів.
+        sounders = body["sounders"]
+        self.assertEqual(sounders["placement_status"], "insufficient_data")
+        self.assertEqual(sounders["device_count"], 0)
+        self.assertFalse(sounders["needs_review"])
+        self.assertEqual(
+            sounders["skipped"][0]["reason"],
+            "Немає правила розміщення для цього типу приладу",
+        )
+        # Димові — окремо й успішно; загальний статус їх не маскує оповіщувачами.
+        self.assertEqual(body["placement_status"], "complete")
+        # Причина лишається після перезавантаження.
+        self.assertEqual(self.reload()["placementReport"]["sounders"], sounders)
+
+    def test_partial_sounder_placement_is_reported(self) -> None:
+        # Випадок 2: розмістились лише в частині (друге приміщення без висоти).
+        self.rules_table.rows.append(self.general)
+        self.rooms_table.rows.append(
+            {
+                "id": str(uuid4()),
+                "drawing_id": self.drawing_id,
+                "name": "Без висоти",
+                "type": "office",
+                "height": None,
+                "area": 40.0,
+                "polygon": rect_mm(0, 0, 8_000, 5_000),
+                "source": "auto",
+            }
+        )
+
+        sounders = self.place().json()["sounders"]
+
+        self.assertEqual(sounders["placement_status"], "partial")
+        self.assertGreater(sounders["device_count"], 0)
+        self.assertTrue(
+            any(item["reason"] == "Не введено висоту" for item in sounders["skipped"])
+        )
+        self.assertEqual(self.reload()["placementReport"]["sounders"], sounders)
+
+    def test_all_placed_by_a_preliminary_rule_flags_needs_review(self) -> None:
+        # Випадок 3: усі розміщені за правилом зі статусом needs_review.
+        self.rules_table.rows.append(self.general)
+
+        sounders = self.place().json()["sounders"]
+
+        self.assertEqual(sounders["placement_status"], "complete")
+        # «Сітку побудовано» — так; «правило підтверджено» — ні: крок попередній.
+        self.assertTrue(sounders["needs_review"])
+        self.assertEqual(self.reload()["placementReport"]["sounders"], sounders)
 
 
 if __name__ == "__main__":

@@ -129,6 +129,37 @@ it("shows why manual call points were not placed and ignores responses without w
   expect(placementReport(clean)).toBeNull();
   expect(clean).toEqual({ drawingId: id, status: "processing" });
 });
+it("surfaces sounder status separately and keeps it after a reload (BIM-76)", () => {
+  // Випадок 1: димові complete, правила-відстані для оповіщувачів немає — причина
+  // на рівні типу приладу, а не мовчазний пропуск.
+  const noRule = {
+    placement_status: "complete", device_count: 4, skipped: [],
+    sounders: { placement_status: "insufficient_data", device_count: 0, needs_review: false,
+      skipped: [{ name: "Hall", reason: "Немає правила розміщення для цього типу приладу" }] },
+  };
+  const warn1 = "Оповіщувачі не розміщено: Немає правила розміщення для цього типу приладу";
+  expect(placementReport(parseDrawingOperation({ drawing_id: id, status: "processed", ...noRule }, id, "processed"))?.warnings).toContain(warn1);
+  // Те саме зі збереженого звіту, який GET повертає після перезавантаження.
+  expect(placementReport(parseDrawing({ ...DEMO_RESULT, placementReport: noRule }, id))?.warnings).toContain(warn1);
+
+  // Випадок 2: розміщено лише в частині приміщень/зон.
+  const partial = {
+    placement_status: "partial", device_count: 3, skipped: [{ name: "X", reason: "Не введено висоту" }],
+    sounders: { placement_status: "partial", device_count: 2, needs_review: true,
+      skipped: [{ name: "X", reason: "Не введено висоту" }] },
+  };
+  expect(placementReport(parseDrawing({ ...DEMO_RESULT, placementReport: partial }, id))?.warnings)
+    .toContain("Оповіщувачі: розміщено не в усіх приміщеннях чи зонах");
+
+  // Випадок 3: усі розміщені, але за попереднім правилом (needs_review): `complete`
+  // не означає, що акустичне покриття перевірено — попередження все одно є.
+  const preliminary = {
+    placement_status: "complete", device_count: 4, skipped: [],
+    sounders: { placement_status: "complete", device_count: 3, skipped: [], needs_review: true },
+  };
+  const warn3 = placementReport(parseDrawing({ ...DEMO_RESULT, placementReport: preliminary }, id))?.warnings ?? [];
+  expect(warn3.some(w => w.includes("крок розміщення попередній"))).toBe(true);
+});
 it("reads the stored placement report that GET returns with a result, so a reload keeps the reasons", () => {
   const stored = {
     placement_status: "partial", device_count: 6,

@@ -617,10 +617,22 @@ async def place_drawing_devices(
             **summarize_outcomes(outcomes),
             "manual_call_points": describe_call_point_outcome(call_points),
         }
-        # BIM-76: стан оповіщувачів у звіті — лише коли їх розміщено (є правило),
-        # щоб звіт креслень без правила-відстані для оповіщувачів не змінювався.
-        if any(outcome.devices for outcome in sounder_outcomes):
-            placement_report["sounders"] = summarize_outcomes(sounder_outcomes)
+        # BIM-76: стан оповіщувачів у звіті — ЗАВЖДИ (оповіщувачі очікуються в
+        # запуску), окремою секцією. Нуль приладів без правила-відстані дає
+        # placement_status=insufficient_data з причиною на рівні типу приладу, а не
+        # мовчазний пропуск, який читався б як «усе гаразд». `needs_review` відділяє
+        # «сітку побудовано» від «правило підтверджено»: крок переведено з рівня
+        # звуку попередньо (BIM-124/BIM-169), тож `complete` НЕ означає, що акустичне
+        # покриття перевірено.
+        applied_sounder_rules = [
+            outcome.rule for outcome in sounder_outcomes if outcome.rule is not None
+        ]
+        placement_report["sounders"] = {
+            **summarize_outcomes(sounder_outcomes),
+            "needs_review": any(
+                rule.status != "verified" for rule in applied_sounder_rules
+            ),
+        }
         stale_layout = _stale_layout_report(drawing_data)
         if stale_layout is not None:
             # Збій оновлення виходів і проходів після останньої обробки лишається
