@@ -294,3 +294,34 @@ begin
 end
 $$;
 rollback;
+
+-- ── BIM-76: правила розміщення оповіщувачів ─────────────────────────────────
+do $$
+declare
+  n integer;
+begin
+  -- Два правила-відстані для оповіщувачів, обидва «треба перевірити» (переведення
+  -- з рівня звуку не підтверджено, BIM-124/BIM-169), value_kind — крок сітки.
+  select count(*) into n from public.rules
+  where rule_id in ('SOUNDER_PLACEMENT_GENERAL', 'SOUNDER_PLACEMENT_SLEEPING_ROOM')
+    and device_type = 'sounder'
+    and value_kind = 'max_grid_spacing_m'
+    and verification_status = 'needs_review';
+  if n <> 2 then
+    raise exception 'expected 2 needs_review sounder placement rules, found %', n;
+  end if;
+  -- Окреме правило саме для спальних приміщень (критерій приймання №2).
+  if not exists (
+    select 1 from public.rules
+    where rule_id = 'SOUNDER_PLACEMENT_SLEEPING_ROOM'
+      and room_types @> array['sleeping_room']
+  ) then
+    raise exception 'sleeping-room sounder rule must target sleeping_room';
+  end if;
+  -- Вимоги до рівня звуку (дБА) з міграції 005 лишаються окремими правилами.
+  if (select count(*) from public.rules
+      where device_type = 'sounder' and value_kind = 'min_sound_level_dba') <> 2 then
+    raise exception 'the two dBA sounder level rules must remain';
+  end if;
+end
+$$;

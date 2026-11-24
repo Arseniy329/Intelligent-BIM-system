@@ -141,14 +141,15 @@ class TestCadWriter(unittest.TestCase):
                 (500.0, "FIRE_DET_SMOKE"),
             ],
         )
-        # BIM-75: ручні сповіщувачі — на власному шарі, решта — на SYS_FIRE_SENSORS.
+        # BIM-75/76: ручні сповіщувачі й оповіщувачі — кожен на власному шарі,
+        # автоматичні сповіщувачі — на SYS_FIRE_SENSORS.
         self.assertEqual(
             [e.dxf.layer for e in inserts],
             [
                 "SYS_FIRE_SENSORS",
                 "SYS_FIRE_SENSORS",
                 "SYS_FIRE_MCP",
-                "SYS_FIRE_SENSORS",
+                "SYS_FIRE_SOUNDERS",
                 "SYS_FIRE_SENSORS",
             ],
         )
@@ -166,9 +167,10 @@ class TestCadWriter(unittest.TestCase):
                 texts = [e for e in entities if e.dxftype() == "TEXT"]
                 self.assertEqual(len(outlines), 1)
                 self.assertEqual([t.dxf.text for t in texts], [label])
-                block_layer = (
-                    "SYS_FIRE_MCP" if block_name == "FIRE_MCP" else "SYS_FIRE_SENSORS"
-                )
+                block_layer = {
+                    "FIRE_MCP": "SYS_FIRE_MCP",
+                    "FIRE_SOUNDER": "SYS_FIRE_SOUNDERS",
+                }.get(block_name, "SYS_FIRE_SENSORS")
                 self.assertTrue(all(e.dxf.layer == block_layer for e in entities))
                 if vertices:
                     self.assertTrue(outlines[0].closed)
@@ -197,6 +199,36 @@ class TestCadWriter(unittest.TestCase):
         self.assertEqual(
             by_name, {"FIRE_DET_SMOKE": "SYS_FIRE_SENSORS", "FIRE_MCP": "SYS_FIRE_MCP"}
         )
+
+    def test_sounders_use_a_separate_layer(self) -> None:
+        """BIM-76: оповіщувачі на SYS_FIRE_SOUNDERS, окремо від шарів сповіщувачів."""
+        devices = [
+            (100.0, 100.0, "smoke_detector"),
+            (200.0, 200.0, "manual_call_point"),
+            (300.0, 300.0, "sounder"),
+        ]
+        add_devices_to_dxf(self.input_dxf, self.output_dxf, devices)
+
+        out_doc = ezdxf.readfile(str(self.output_dxf))
+        self.assertIn("SYS_FIRE_SOUNDERS", out_doc.layers)
+        sounder_color = out_doc.layers.get("SYS_FIRE_SOUNDERS").color
+        # Окремий шар, відмінний від шарів сповіщувачів (критерій приймання №3).
+        self.assertNotEqual(sounder_color, out_doc.layers.get("SYS_FIRE_SENSORS").color)
+        self.assertNotEqual(sounder_color, out_doc.layers.get("SYS_FIRE_MCP").color)
+        by_name = {
+            e.dxf.name: e.dxf.layer
+            for e in out_doc.modelspace()
+            if e.dxftype() == "INSERT"
+        }
+        self.assertEqual(by_name["FIRE_SOUNDER"], "SYS_FIRE_SOUNDERS")
+        self.assertEqual(by_name["FIRE_DET_SMOKE"], "SYS_FIRE_SENSORS")
+
+    def test_sounder_layer_is_not_created_without_sounders(self) -> None:
+        add_devices_to_dxf(
+            self.input_dxf, self.output_dxf, [(100.0, 100.0, "smoke_detector")]
+        )
+        out_doc = ezdxf.readfile(str(self.output_dxf))
+        self.assertNotIn("SYS_FIRE_SOUNDERS", out_doc.layers)
 
     def test_mcp_layer_is_not_created_without_manual_call_points(self) -> None:
         add_devices_to_dxf(

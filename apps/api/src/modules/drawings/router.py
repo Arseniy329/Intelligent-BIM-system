@@ -25,7 +25,7 @@ from src.infrastructure.storage import cleanup_file, download_dxf_to_tmp
 from src.infrastructure.supabase import get_supabase_client
 from src.modules.cad.exits import find_door_points, find_exit_points
 from src.modules.cad.parser import parse_dxf_rooms_with_scale, read_dxf_document
-from src.modules.cad.writer import MCP_LAYER_NAME
+from src.modules.cad.writer import MCP_LAYER_NAME, SOUNDER_LAYER_NAME
 from src.modules.drawings.schemas import (
     CreateDrawingRequest,
     CreateDrawingResponse,
@@ -505,13 +505,15 @@ async def place_drawing_devices(
 
         # BIM-73: правило береться за висотою приміщення або його зони. Немає
         # висоти чи правила — приладів немає, статус «недостатньо даних».
+        unit_scale_m = stored_unit_scale_m(drawing_data)
+        placement_targets = build_placement_targets(
+            [room for room in rooms_data if isinstance(room, dict)], zone_rows
+        )
         outcomes = place_targets(
-            build_placement_targets(
-                [room for room in rooms_data if isinstance(room, dict)], zone_rows
-            ),
+            placement_targets,
             rule_rows,
             device_type="smoke_detector",
-            unit_scale_m=stored_unit_scale_m(drawing_data),
+            unit_scale_m=unit_scale_m,
         )
 
         new_device_rows: list[dict[str, Any]] = [
@@ -528,6 +530,33 @@ async def place_drawing_devices(
             for outcome in outcomes
             for placed in outcome.devices
         ]
+
+        # BIM-76: оповіщувачі (sounder) за правилом із rules — у кожному приміщенні
+        # чи зоні, на ОКРЕМОМУ шарі SYS_FIRE_SOUNDERS, кожен із посиланням на правило.
+        # Сітку розміщення використовуємо повторно (та сама, що для сповіщувачів).
+        # Окреме правило для спальних приміщень обирається за room_type всередині
+        # select_rule_for_room. Немає правила-відстані для оповіщувачів — їх просто
+        # не розміщуємо (у звіті статус «недостатньо даних» з причиною).
+        sounder_outcomes = place_targets(
+            placement_targets,
+            rule_rows,
+            device_type="sounder",
+            unit_scale_m=unit_scale_m,
+        )
+        new_device_rows.extend(
+            {
+                "id": str(uuid4()),
+                "drawing_id": drawing_id,
+                "room_id": outcome.target.room_id,
+                "rule_id": str(placed.rule_id),
+                "type": "sounder",
+                "layer": SOUNDER_LAYER_NAME,
+                "x": float(placed.x),
+                "y": float(placed.y),
+            }
+            for outcome in sounder_outcomes
+            for placed in outcome.devices
+        )
 
         # BIM-75: ручні сповіщувачі біля евакуаційних виходів і на шляхах евакуації.
         # Немає виходів — їх не розміщуємо й повертаємо «Позначте евакуаційні виходи».
@@ -587,6 +616,22 @@ async def place_drawing_devices(
         placement_report: dict[str, Any] = {
             **summarize_outcomes(outcomes),
             "manual_call_points": describe_call_point_outcome(call_points),
+        }
+        # BIM-76: стан оповіщувачів у звіті — ЗАВЖДИ (оповіщувачі очікуються в
+        # запуску), окремою секцією. Нуль приладів без правила-відстані дає
+        # placement_status=insufficient_data з причиною на рівні типу приладу, а не
+        # мовчазний пропуск, який читався б як «усе гаразд». `needs_review` відділяє
+        # «сітку побудовано» від «правило підтверджено»: крок переведено з рівня
+        # звуку попередньо (BIM-124/BIM-169), тож `complete` НЕ означає, що акустичне
+        # покриття перевірено.
+        applied_sounder_rules = [
+            outcome.rule for outcome in sounder_outcomes if outcome.rule is not None
+        ]
+        placement_report["sounders"] = {
+            **summarize_outcomes(sounder_outcomes),
+            "needs_review": any(
+                rule.status != "verified" for rule in applied_sounder_rules
+            ),
         }
         stale_layout = _stale_layout_report(drawing_data)
         if stale_layout is not None:

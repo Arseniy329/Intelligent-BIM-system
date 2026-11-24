@@ -12,6 +12,7 @@ PLACED = "placed"
 INSUFFICIENT_DATA = "insufficient_data"
 
 REASON_NO_HEIGHT = "Не введено висоту"
+REASON_NO_PLACEMENT_RULE = "Немає правила розміщення для цього типу приладу"
 REASON_BAD_OUTLINE = "Некоректний контур"
 REASON_PLACEMENT_FAILED = (
     "Не вдалося розмістити прилади: контур некоректний або сітка надто щільна"
@@ -320,7 +321,20 @@ def resolve_rule_for_height(
         value_kind=value_kind,
     )
     if rule is None:
-        return RuleDecision(None, f"Немає правила для висоти {height_m:g} м")
+        # Відрізняємо «для цього типу приладу правила розміщення взагалі немає»
+        # (напр. немає правила-відстані для оповіщувачів) від «є, але не для цієї
+        # висоти»: причина на рівні типу приладу, а не плутанина про висоту.
+        has_rule_for_type = any(
+            str(row.get("device_type") or "") == device_type
+            and str(row.get("value_kind") or "") == value_kind
+            for row in rules
+        )
+        reason = (
+            f"Немає правила для висоти {height_m:g} м"
+            if has_rule_for_type
+            else REASON_NO_PLACEMENT_RULE
+        )
+        return RuleDecision(None, reason)
     return RuleDecision(rule)
 
 

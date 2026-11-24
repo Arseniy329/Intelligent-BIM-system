@@ -203,6 +203,22 @@ function operationWarnings(value: Record<string, unknown>): string[] {
     for (const message of [reason, text(mcp.route_warning), text(mcp.warning)])
       if (message) warnings.push(`Ручні сповіщувачі: ${message}`);
   }
+  // BIM-76: стан оповіщувачів окремо від димових сповіщувачів. «Сітку побудовано»
+  // (placement_status) відділено від «правило підтверджено» (needs_review): крок
+  // переведено з рівня звуку попередньо, тож навіть `complete` не означає, що
+  // акустичне покриття перевірено.
+  if (record(value.sounders)) {
+    const s = value.sounders;
+    const firstReason = Array.isArray(s.skipped) && record(s.skipped[0]) ? text(s.skipped[0].reason) : null;
+    if (s.placement_status === "insufficient_data")
+      warnings.push(`Оповіщувачі не розміщено${firstReason ? `: ${firstReason}` : ""}`);
+    else if (s.placement_status === "partial")
+      warnings.push("Оповіщувачі: розміщено не в усіх приміщеннях чи зонах");
+    if (s.needs_review)
+      warnings.push(
+        "Оповіщувачі: крок розміщення попередній — переведення з рівня звуку не підтверджено (BIM-124), акустичне покриття не перевірено",
+      );
+  }
   return warnings;
 }
 
