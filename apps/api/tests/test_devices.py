@@ -410,9 +410,10 @@ class TestDeviceEditsResultDxf(unittest.TestCase):
         return {
             (e.dxf.insert.x, e.dxf.insert.y): e.dxf.name
             for e in msp
-            # BIM-75: ручні сповіщувачі лежать на власному шарі SYS_FIRE_MCP.
+            # BIM-75: ручні сповіщувачі — на власному шарі SYS_FIRE_MCP.
+            # BIM-76: оповіщувачі — на власному шарі SYS_FIRE_SOUNDERS.
             if e.dxftype() == "INSERT"
-            and e.dxf.layer in {"SYS_FIRE_SENSORS", "SYS_FIRE_MCP"}
+            and e.dxf.layer in {"SYS_FIRE_SENSORS", "SYS_FIRE_MCP", "SYS_FIRE_SOUNDERS"}
         }
 
     def test_each_device_type_is_exported_with_its_own_block(self) -> None:

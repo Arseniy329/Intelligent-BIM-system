@@ -8,9 +8,19 @@ from ezdxf.enums import TextEntityAlignment
 LAYER_NAME = "SYS_FIRE_SENSORS"
 # BIM-75: ручні сповіщувачі лежать на власному шарі, окремо від автоматичних.
 MCP_LAYER_NAME = "SYS_FIRE_MCP"
+# BIM-76: оповіщувачі (sounder) — теж на окремому шарі, відмінному від шарів
+# сповіщувачів (критерій приймання: окремий шар, не SYS_FIRE_SENSORS).
+SOUNDER_LAYER_NAME = "SYS_FIRE_SOUNDERS"
 DEFAULT_DEVICE_TYPE = "smoke_detector"
-DEVICE_LAYERS: dict[str, str] = {"manual_call_point": MCP_LAYER_NAME}
-LAYER_COLORS: dict[str, int] = {LAYER_NAME: 1, MCP_LAYER_NAME: 5}
+DEVICE_LAYERS: dict[str, str] = {
+    "manual_call_point": MCP_LAYER_NAME,
+    "sounder": SOUNDER_LAYER_NAME,
+}
+LAYER_COLORS: dict[str, int] = {
+    LAYER_NAME: 1,
+    MCP_LAYER_NAME: 5,
+    SOUNDER_LAYER_NAME: 3,
+}
 # Додаток XDATA: кожен прилад посилається на правило (rule_id з таблиці rules).
 RULE_XDATA_APPID = "BIM_FIRE"
 SYMBOL_HALF_SIZE = 150.0
@@ -85,8 +95,9 @@ def add_devices_to_dxf(
 ) -> None:
     """Add fire alarm devices to a DXF file.
 
-    Automatic detectors and sounders go on layer SYS_FIRE_SENSORS, manual call
-    points (BIM-75) on their own layer SYS_FIRE_MCP. Each device type gets its
+    Automatic detectors go on layer SYS_FIRE_SENSORS, manual call points (BIM-75)
+    on layer SYS_FIRE_MCP, and sounders (BIM-76) on layer SYS_FIRE_SOUNDERS, so
+    sounders stay on a layer distinct from the detectors'. Each device type gets its
     own block (see DEVICE_SYMBOLS); unknown types are drawn as smoke detectors.
     A device with a rule code carries it in XDATA (application BIM_FIRE:
     "rule_id", <code>), so the placement can be traced back to the rule.

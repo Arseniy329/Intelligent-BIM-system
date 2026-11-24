@@ -604,5 +604,95 @@ class TestPlaceTargets(unittest.TestCase):
         self.assertEqual(remainder_info["status"], INSUFFICIENT_DATA)
 
 
+def sounder_rule(code: str, step: float, room_types: list[str]) -> dict[str, Any]:
+    """Правило РОЗМІЩЕННЯ оповіщувача (крок у метрах), як у міграції 017."""
+    return {
+        "id": f"uuid-{code}",
+        "rule_id": code,
+        "name": code,
+        "device_type": "sounder",
+        "value_kind": "max_grid_spacing_m",
+        "room_types": room_types,
+        "min_height_m": None,
+        "max_height_m": None,
+        "value": step,
+        "conditions": {},
+        "verification_status": "needs_review",
+    }
+
+
+SOUNDER_RULES = [
+    sounder_rule("SOUNDER_PLACEMENT_GENERAL", 15.0, []),
+    sounder_rule("SOUNDER_PLACEMENT_SLEEPING_ROOM", 10.0, ["sleeping_room"]),
+]
+
+
+class TestSounderPlacement(unittest.TestCase):
+    """BIM-76: оповіщувачі розставляються за правилом із rules, окреме для спалень."""
+
+    def _room(self, room_id: str, room_type: str) -> dict[str, Any]:
+        room = room_row(room_id, 3.0)  # висота потрібна, як і для сповіщувачів
+        room["type"] = room_type
+        return room
+
+    def _place(
+        self, rooms: list[dict[str, Any]], rules: list[dict[str, Any]]
+    ) -> list[Any]:
+        return place_targets(
+            build_placement_targets(rooms, []),
+            rules,
+            device_type="sounder",
+            unit_scale_m=0.001,
+        )
+
+    def test_sounders_are_placed_in_a_room_by_the_general_rule(self) -> None:
+        (outcome,) = self._place([self._room("r", "office")], SOUNDER_RULES)
+
+        self.assertEqual(outcome.status, PLACED)
+        self.assertEqual(outcome.rule.rule_id, "SOUNDER_PLACEMENT_GENERAL")
+        self.assertGreater(len(outcome.devices), 0)
+        # Кожен прилад посилається на правило (rule_id) — критерій приймання №3.
+        self.assertTrue(
+            all(d.rule_id == "uuid-SOUNDER_PLACEMENT_GENERAL" for d in outcome.devices)
+        )
+
+    def test_sleeping_room_uses_its_own_stricter_rule(self) -> None:
+        general = self._place([self._room("r", "office")], SOUNDER_RULES)[0]
+        bedroom = self._place([self._room("r", "sleeping_room")], SOUNDER_RULES)[0]
+
+        self.assertEqual(bedroom.rule.rule_id, "SOUNDER_PLACEMENT_SLEEPING_ROOM")
+        # Менший крок (10 м проти 15 м) → більше приладів у приміщенні тієї ж площі.
+        self.assertGreater(len(bedroom.devices), len(general.devices))
+
+    def test_changing_the_rule_value_changes_placement_without_code(self) -> None:
+        # Критерій приймання №4: зміна значення в таблиці правил змінює розміщення.
+        dense = self._place(
+            [self._room("r", "office")],
+            [sounder_rule("SOUNDER_PLACEMENT_GENERAL", 5.0, [])],
+        )[0]
+        sparse = self._place(
+            [self._room("r", "office")],
+            [sounder_rule("SOUNDER_PLACEMENT_GENERAL", 20.0, [])],
+        )[0]
+        self.assertGreater(len(dense.devices), len(sparse.devices))
+
+    def test_without_a_sounder_rule_nothing_is_placed(self) -> None:
+        # Правила для оповіщувачів немає (лише димове) → приладів немає.
+        (outcome,) = self._place(
+            [self._room("r", "office")],
+            [rule_row("SMOKE", "smoke_detector", None, 3.5, 9.0, 80)],
+        )
+        self.assertEqual(outcome.status, INSUFFICIENT_DATA)
+        self.assertEqual(outcome.devices, [])
+
+    def test_without_height_sounders_are_not_placed(self) -> None:
+        # Сітку й передумову висоти використовуємо повторно, як для сповіщувачів.
+        room = self._room("r", "office")
+        room["height"] = None
+        (outcome,) = self._place([room], SOUNDER_RULES)
+        self.assertEqual(outcome.status, INSUFFICIENT_DATA)
+        self.assertEqual(outcome.reason, REASON_NO_HEIGHT)
+
+
 if __name__ == "__main__":
     unittest.main()
