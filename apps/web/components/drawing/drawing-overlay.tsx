@@ -42,6 +42,7 @@ type Props = {
   showDevices: boolean;
   showRoomLabels?: boolean;
   selectedRoomId?: string | null;
+  selectedDeviceId?: string | null;
 };
 
 export function DrawingOverlay({
@@ -51,7 +52,7 @@ export function DrawingOverlay({
   showRooms,
   showDevices,
   showRoomLabels = true,
-  selectedRoomId, onSelectRoom, onSelectDevice,
+  selectedRoomId, selectedDeviceId, onSelectRoom, onSelectDevice,
   rules = [],
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -122,6 +123,7 @@ export function DrawingOverlay({
             <polygon
               key={room.id}
               data-confirmed={room.confirmed ? "true" : "false"}
+              data-room-state={room.confirmed === true ? "confirmed" : room.confirmed === false ? "review" : "default"}
               data-source={room.source}
               style={{ pointerEvents: onSelectRoom ? "all" : undefined, cursor: onSelectRoom ? "pointer" : undefined }}
               role={onSelectRoom ? "button" : undefined}
@@ -149,6 +151,7 @@ export function DrawingOverlay({
       ))}
       {projected.devices.map(({ device, point }) => (
         <button key={device.id} type="button" className={styles.deviceMarker} data-device-id={device.id}
+          data-selected={selectedDeviceId === device.id || undefined}
           style={{ left: point.x, top: point.y }} aria-label={`${deviceLabel(device.type)} · ${roomName(device)} · ${RULE_STATE_LABELS[deviceRuleState(device, rules)]}`}
           data-rule-state={deviceRuleState(device, rules)}
           aria-describedby={active?.device.id === device.id ? tooltipId : undefined}

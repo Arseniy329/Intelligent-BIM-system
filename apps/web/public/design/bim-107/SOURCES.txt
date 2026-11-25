@@ -10,6 +10,7 @@ sounder.svg = sounder 4.svg (56 x 56, speaker/waves variant)
 room-default.svg = room-default 2.svg (20 x 20)
 room-confirmed.svg = room-confirmed 3.svg (20 x 20)
 room-review.svg = room-needs-review 2.svg (20 x 20)
+logo.svg = intelligent-bim-flame-v2 2.svg (40 x 40)
 
 The UI displays square device assets at 20 CSS pixels, preserving aspect ratio.
 The SVG editor uses SVG image elements; HTML overlays and legends use Next Image.

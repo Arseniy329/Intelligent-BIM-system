@@ -2,12 +2,16 @@
 
 import dynamic from "next/dynamic";
 import type { Device, Room } from "@bim/contracts";
-import { useState, type CSSProperties } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import type { DrawingViewportController } from "@/lib/drawing/viewer-adapter";
 import tokens from "../../../../tokens.json";
 import styles from "./drawing-viewer.module.css";
 
 export type DrawingViewerProps = {
+  layers?: import("./plan-layers").PlanLayers;
+  mode?: "rooms" | "devices";
+  onModeChange?: (mode: "rooms" | "devices") => void;
+  workPanel?: ReactNode;
   rules?: import("@/lib/api/rules").Rule[];
   editor?: import("@/lib/drawing/use-plan-editor").PlanEditor;
   onSelectRoom?: (id: string) => void;

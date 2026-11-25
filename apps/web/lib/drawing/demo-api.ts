@@ -23,6 +23,7 @@ export function createDemoDrawingApi(sourceUrl: string): DemoDrawingApi {
     devices: id === "demo-empty" || id === "demo-no-devices" ? [] : DEMO_RESULT.devices.map(device => ({ ...device, drawingId: id })),
     // No generated DXF exists in this fixture. Do not label its original as a result.
     downloadUrl: null, downloadUrlExpiresAt: null,
+    sourceDownloadUrl: sourceUrl, sourceDownloadUrlExpiresAt: new Date(Date.now() + 3600000).toISOString(),
   });
   const detail = (id: string): DrawingDetailResponse => ({
     id, ownerId: "local-demo", originalFileName: `${id}.dxf`, storagePath: "demo/01_simple_rooms_mm.dxf",
