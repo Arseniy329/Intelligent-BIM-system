@@ -4,9 +4,12 @@ import type { Device, Room } from "@bim/contracts";
 import type { PlanEditor } from "@/lib/drawing/use-plan-editor";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { DEVICE_LABELS } from "./device-symbol";
+import type { Rule } from "@/lib/api/rules";
+import { DeviceRuleDetails } from "./device-rule-details";
 import styles from "./drawing-workspace.module.css";
 
 type EditorProps = {
+  rules?: Rule[];
   editor: PlanEditor; rooms: Room[]; devices: Device[]; selectedRoomId: string | null;
   selectRoom: (id: string | null) => void; devicesEditable: boolean; disabled: boolean;
   mode?: "rooms" | "devices"; onTable?: () => void;
@@ -47,7 +50,7 @@ export function PlanWorkPanel({ editor: e, rooms, devices, selectedRoomId, selec
   </fieldset>;
 }
 
-export function PlanEditorPanel({ editor: e, rooms, devices, selectedRoomId, devicesEditable, disabled, mode = "rooms", onTable }: EditorProps) {
+export function PlanEditorPanel({ editor: e, rooms, devices, selectedRoomId, devicesEditable, disabled, mode = "rooms", onTable, rules }: EditorProps) {
   const room = rooms.find(item => item.id === selectedRoomId);
   const device = devices.find(item => item.id === e.selectedDeviceId);
   const draft = e.draft;
@@ -78,6 +81,7 @@ export function PlanEditorPanel({ editor: e, rooms, devices, selectedRoomId, dev
         <button className={styles.primary} disabled={blocked || !devicesEditable} aria-label="Перемістити прилад" onClick={() => e.beginDevice(device)}>Перемістити</button>
         <button className={styles.danger} disabled={blocked || !devicesEditable} aria-label="Видалити прилад" onClick={() => e.requestDelete("device", device.id)}>Видалити</button>
         <small>Перетягування: миша або стрілки</small>
+        <DeviceRuleDetails device={device} rules={rules} blocked={blocked} />
       </>}
       {draft?.kind === "room" && <>
         <h4>{draft.id ? room?.name : "Нове приміщення"}</h4>

@@ -419,7 +419,7 @@ function DrawingDetailContent({
               selectedRoomId={selectedRoomId} editor={demo ? undefined : editor} onSelectRoom={setSelectedRoomId} onSelectDevice={editor.selectDevice}
               onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
             <aside className={workspaceStyles.inspector}>
-              {result && !demo ? <PlanEditorPanel mode={mode} onTable={() => navigateTab("rooms")} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
+              {result && !demo ? <PlanEditorPanel rules={rules.isError ? undefined : rules.data} mode={mode} onTable={() => navigateTab("rooms")} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
                 selectRoom={setSelectedRoomId} devicesEditable={metadata.status === "processed"} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching} />
                 : <section className={workspaceStyles.detailsCard}><h3>Деталі приміщення</h3><div>
                   {selectedRoomId ? <><strong>{result?.rooms.find(room => room.id === selectedRoomId)?.name}</strong><p>{result?.rooms.find(room => room.id === selectedRoomId)?.area} м²</p></>

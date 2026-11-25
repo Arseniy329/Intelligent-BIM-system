@@ -16,6 +16,19 @@
 .workspace > [role="tablist"] button[aria-selected="true"] { background: #e9f2ff; color: #2563eb; }
 .tabSummary { margin-left: auto; color: #475569; font-size: 12px; line-height: 16px; white-space: nowrap; }
 .footer { padding-bottom: 16px; color: #475569; font-size: 12px; line-height: 16px; }
+.ruleDetails { display: grid; gap: 20px; padding-top: 20px; margin-top: 8px; border-top: 1px solid #e2e8f0; overflow-wrap: anywhere; }
+.ruleDetails dl { display: grid; gap: 12px; font-size: 12px; line-height: 20px; }
+.ruleDetails dl div { display: flex; flex-wrap: wrap; gap: 4px; }
+.ruleDetails dt::after { content: ":"; }
+.ruleDetails dd { margin: 0; }
+.ruleReason { display: grid; gap: 8px; }
+.ruleReason h5 { font-size: 14px; line-height: 20px; font-weight: 500; }
+.ruleReason p { color: #475569; font-size: 14px; line-height: 22px; }
+.ruleDetails .ruleStatus { padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fffbeb; color: #92400e; font-size: 12px; line-height: 16px; }
+.ruleDetails .ruleStatus[data-state="verified"] { background: #ecfdf5; color: #047857; }
+.ruleDetails .ruleStatus[data-state="unknown"] { background: #f8fafc; color: #475569; }
+.ruleDetails a { border-radius: 8px; padding: 10px 12px; background: #2563eb; color: white; font-size: 14px; line-height: 20px; }
+.ruleDetails a[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
 .sectionTitle h2 { font-size: 24px; line-height: 32px; font-weight: 600; }
 .sectionTitle p { margin-top: 4px; font-size: 12px; line-height: 16px; color: #475569; }
 .summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 32px; padding: 16px 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: white; color: #475569; font-size: 12px; line-height: 20px; }
