@@ -1,0 +1,17 @@
+/* Extension for states absent from the exports, using Desktop 10's card/control tokens. */
+.panel {
+  border: 1px solid var(--bim-color-border-default, #e2e8f0);
+  border-radius: 12px;
+  background: var(--bim-color-surface-default, white);
+  color: var(--bim-color-text-primary, #0f172a);
+  overflow: hidden;
+}
+.heading { margin: 0; padding: 20px; font-size: 16px; line-height: 24px; font-weight: 600; border-bottom: 1px solid var(--bim-color-border-default, #e2e8f0); }
+.content { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 20px; font-size: 14px; line-height: 20px; }
+.content p { margin: 0; color: var(--bim-color-text-secondary, #475569); }
+.content ul { width: 100%; margin: 0; padding: 0; list-style: none; }
+.content li { padding: 12px 0; border-bottom: 1px solid var(--bim-color-border-default, #e2e8f0); }
+.button { min-height: 40px; padding: 8px 16px; border: 1px solid #cbd5e1; border-radius: 8px; background: white; font: inherit; color: inherit; cursor: pointer; }
+.button:hover:not(:disabled) { background: #f8fafc; }
+.button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.button:disabled { cursor: not-allowed; color: #94a3b8; background: #e2e8f0; border-color: #e2e8f0; }

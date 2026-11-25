@@ -42,7 +42,7 @@ export function PlanEditOverlay({ controller, editor }: { controller: DrawingVie
       drag.current = null;
     }}>
     {points.length > 1 && <polygon className={styles.editPolygon} points={points.map(p => `${p.x},${p.y}`).join(" ")} />}
-    {points.map((p, index) => <circle key={index} cx={p.x} cy={p.y} r={8} className={styles.editVertex}
+    {points.map((p, index) => <rect key={index} x={p.x - 5} y={p.y - 5} width={10} height={10} className={styles.editVertex}
       role="button" tabIndex={editor.busy ? -1 : 0} aria-label={`Вершина ${index + 1}`}
       onPointerDown={event => beginDrag(event, index, draft.kind === "room" || draft.kind === "zone" ? draft.points[index] : p)}
       onKeyDown={event => {

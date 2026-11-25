@@ -2,15 +2,17 @@
 import type { Room } from "@bim/contracts";
 import type { PlanEditor } from "@/lib/drawing/use-plan-editor";
 import type { PlanExit, RoomZone } from "@/lib/drawing/plan-features-api";
+import styles from "./plan-features-panel.module.css";
 
-const button = "rounded-lg border px-3 py-2 text-sm disabled:opacity-50";
+const button = styles.button;
 export function PlanFeaturesPanel({ editor, room, zones, exits, loading, error, disabled, retry }: {
   editor: PlanEditor; room?: Room; zones: RoomZone[]; exits: PlanExit[];
   loading: boolean; error: boolean; disabled: boolean; retry: () => void;
 }) {
   const blocked = disabled || editor.blocked || loading || error;
-  return <section aria-label="Зони та евакуаційні виходи" className="space-y-3 rounded-xl border p-4">
-    <h2 className="font-semibold">Зони та евакуаційні виходи</h2>
+  return <section aria-label="Зони та евакуаційні виходи" className={styles.panel}>
+    <h2 className={styles.heading}>Зони та евакуаційні виходи</h2>
+    <div className={styles.content}>
     {loading && <p role="status">Завантаження зон і виходів…</p>}
     {error && <div role="alert">Не вдалося завантажити зони й виходи. <button className={button} disabled={loading || editor.blocked} onClick={retry}>Повторити завантаження</button></div>}
     {!loading && !error && <>
@@ -29,5 +31,6 @@ export function PlanFeaturesPanel({ editor, room, zones, exits, loading, error, 
       </li>)}</ul>
       <p className="text-sm">Щоб змінити збережений вихід, приберіть позначення й додайте його на потрібних дверях. Після змін повторіть розміщення приладів.</p>
     </>}
+    </div>
   </section>;
 }
