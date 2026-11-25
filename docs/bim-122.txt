@@ -12,6 +12,9 @@ Implemented
 - Review/unknown indicators and accessible labels/tooltips are distinct from violations.
 - Rules reload with drawing result revisions after processing/placement; API failure shows retry and unknown state.
 - Selected-room border and device/vertex editor geometry adjusted to supplied reference variants.
+- Shared drawing frame uses the exported 1440px/40px/1036px/24px/300px layout, original logo and self-hosted Inter.
+- Room/device modes, per-type layer checkboxes, zoom percentage, in-plan controls and right-hand details replace the generic toolbar/editor stack.
+- Modal deletion uses the existing accessible dialog. Save/cancel and processing locks retain their existing API behavior.
 - No placement algorithm, migration, auth policy or production database changes.
 
 Already existed
@@ -34,13 +37,17 @@ Tests cover status joins, compatibility, API round trips and overlay/legend outp
 
 Validation
 - Web lint and TypeScript: passed.
-- 336 web unit tests and 92 contract tests: passed.
+- 337 web unit tests and 92 contract tests: passed.
 - Full API suite: 404 tests passed with fake DB/storage and real router/placement/parser code.
 - BIM-75/76 integration assertions check placement -> GET -> stored ruleId.
 - git diff --check: passed (generated TS line-ending notice only).
-- Production build compiles, type-checks and generates all 12 pages, then exits 1 with SecurityFatalError
-  for installed Next.js 16.4.2. Development server also exits for this reason.
-- Live authenticated browser, visual overlays/pixel comparisons and staging tests NOT performed.
+- Production build: passed, all 12 pages generated. Lint and type checks also passed after the workspace changes.
+- The earlier Next.js 16.4.2 SecurityFatalError was resolved by updating Next and eslint-config-next to 16.4.5.
+  The patch was independently built/tested on fix/next-visual-verification before inclusion in both task branches.
+- Native Chrome development preview: original four SVGs and legend visible; per-type toggle, room/device modes,
+  zoom and fit tested. Hiding smoke retained the other three types and did not reset zoom; counts remained data-based.
+- A component test additionally verifies one DXF load across layer/mode changes and disposal/subscription cleanup.
+- Live authenticated staging and screenshot pixel-diff with the reference drawing were NOT performed.
 - No BIM-170 dataset was provided or identifiable in Jira; existing repository fixtures were used.
 
 Acceptance status
@@ -48,7 +55,7 @@ Distinct smoke/manual/sounder symbols, retained heat, simultaneous types: implem
 Legend matches symbols and counts: implemented, unit tested.
 Rule needs-review versus verified versus unknown: implemented, unit/API tested.
 Empty devices and missing metadata: handled; empty legend contains zero counts.
-Pan/zoom/reload stability: existing geometry tests pass; live WebGL verification pending.
+Pan/zoom/reload stability: geometry/lifecycle tests pass; browser demo zoom/fit/layer/mode smoke test passed.
 Real backend contract: route/placement tests pass using test storage, no production run.
 Exact design: original assets integrated, but full visual acceptance is NOT complete.
 
@@ -56,8 +63,10 @@ Design scope and remaining work
 The exports are authoritative. Their exactness requirement is not waived by these tests.
 Supplied screens do not define device unknown-rule badges, height zones or exits; these are extensions.
 Original SVG files are preserved; never claim handwritten replacements are exact.
-The pre-existing page header, generic viewer toolbar, editor panel above the viewer and details/layers layout
-still differ from Desktop 6/10-19. The overall drawing workspace is NOT pixel-matched yet.
+The header, toolbar, inspector/layer structure, typography, dimensions and original assets have been implemented.
+The overall workspace is NOT certified pixel-matched: the API fixture differs from the design sample, the rules/report
+tabs remain the pre-existing functionality (BIM-78 excluded), and no matching reference DXF/record set is available.
+Editing states have component coverage; an authenticated browser pass for the real save/delete flows remains required.
 No synthetic control-panel device or violation count was added: the current Device API has no control-panel type.
 Reference sample room/count values must not replace live API data.
 An eventual visual check needs the same 1440px viewport, matching data, loaded font and screenshot overlays.
@@ -75,7 +84,7 @@ Target: dev. Requested reviewer: Arseniy329 (Arseniy).
 Description: Device overlays now use the supplied BIM-107 SVGs and a counted legend. The drawing API
 exposes its stored ruleId so the frontend can distinguish verified, needs-review and unknown provenance
 using the existing rules endpoint. Placement algorithms remain unchanged.
-Validation: lint/type checks, 336 web + 92 contracts + 404 API tests. Build/runtime security failure
-and pending exact visual acceptance must remain explicit in the PR.
+Validation: production build, lint/type checks, 337 web + 92 contracts + 404 API tests, local WebGL smoke test.
+Pending exact visual acceptance and authenticated staging checks must remain explicit in the PR.
 Readiness: code review draft only; not ready to claim design acceptance or merge completion.
 No push, PR creation, merge or Jira status change authorized/performed.
