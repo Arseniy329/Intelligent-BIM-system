@@ -228,6 +228,92 @@ class TestDevicesApi(unittest.TestCase):
 
     # PATCH /devices/{id}
 
+    def get_persisted_device(self) -> dict[str, Any]:
+        self.drawing_row.update({
+            "created_at": "2026-11-15T10:00:00Z",
+            "original_file_name": "source.dxf",
+            "storage_path": "source.dxf",
+        })
+        self.supabase.storage.from_.return_value.create_signed_url.return_value = {
+            "signedUrl": "https://storage.example/source.dxf"
+        }
+        response = self.client.get(f"/api/v1/drawings/{self.drawing_id}")
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["devices"][0]
+
+    def test_relevant_edits_clear_persisted_rule_association(self) -> None:
+        other_room = str(uuid4())
+        self.rooms_table.rows.append({
+            "id": other_room, "drawing_id": self.drawing_id,
+        })
+        original = dict(self.device_row)
+        for payload in (
+            {"type": "sounder"},
+            {"position": {"x": 1001, "y": 2000}},
+            {"position": {"x": 1000, "y": 2001}},
+            {"roomId": other_room},
+            {"roomId": None},
+        ):
+            with self.subTest(payload=payload):
+                self.device_row.update(original)
+                self.assertEqual(
+                    self.get_persisted_device()["ruleId"], original["rule_id"]
+                )
+                response = self.client.patch(
+                    f"/api/v1/devices/{self.device_id}", json=payload
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertIsNone(response.json()["ruleId"])
+                self.assertIsNone(self.device_row["rule_id"])
+                self.assertIsNone(self.devices_table.updates[-1]["rule_id"])
+                self.assertIsNone(self.get_persisted_device()["ruleId"])
+
+    def test_identical_effective_values_preserve_rule(self) -> None:
+        rule_id = self.device_row["rule_id"]
+        for payload in (
+            {"type": "smoke_detector"},
+            {"position": {"x": 1000, "y": 2000}},
+            {"roomId": self.room_id.upper()},
+            {
+                "type": "smoke_detector",
+                "position": {"x": 1000.0, "y": 2000.0},
+                "roomId": self.room_id,
+            },
+        ):
+            with self.subTest(payload=payload):
+                response = self.client.patch(
+                    f"/api/v1/devices/{self.device_id}", json=payload
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["ruleId"], rule_id)
+                self.assertNotIn("rule_id", self.devices_table.updates[-1])
+                self.assertEqual(self.get_persisted_device()["ruleId"], rule_id)
+
+    def test_unrelated_updates_and_null_room_preserve_rule(self) -> None:
+        # PATCH exposes no unrelated editable fields. Export regeneration updates
+        # drawing metadata and must not invalidate the device's association.
+        self.device_row["room_id"] = None
+        rule_id = self.device_row["rule_id"]
+        response = self.client.patch(
+            f"/api/v1/devices/{self.device_id}", json={"roomId": None}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["ruleId"], rule_id)
+        response = self.client.post(
+            f"/api/v1/drawings/{self.drawing_id}/devices/regenerate"
+        )
+        self.assertEqual(response.status_code, 204, response.text)
+        self.assertEqual(self.get_persisted_device()["ruleId"], rule_id)
+
+    def test_edit_device_without_rule_association(self) -> None:
+        self.device_row["rule_id"] = None
+        response = self.client.patch(
+            f"/api/v1/devices/{self.device_id}", json={"type": "sounder"}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["ruleId"])
+        self.assertIsNone(self.get_persisted_device()["ruleId"])
+
     def test_patch_device_deleted_before_update_is_404(self) -> None:
         # SELECT finds the device, but it is gone by the time UPDATE runs.
         update = self.devices_table.update
@@ -254,7 +340,10 @@ class TestDevicesApi(unittest.TestCase):
         self.assertEqual(body["position"], {"x": 3000.0, "y": 4000.0})
         self.assertEqual(body["type"], "smoke_detector")
         self.assertEqual(body["roomId"], self.room_id)
-        self.assertEqual(self.devices_table.updates, [{"x": 3000.0, "y": 4000.0}])
+        self.assertEqual(
+            self.devices_table.updates,
+            [{"x": 3000.0, "y": 4000.0, "rule_id": None}],
+        )
         self.assert_regenerated_once()
 
     def test_change_type_and_detach_room(self) -> None:
@@ -267,7 +356,7 @@ class TestDevicesApi(unittest.TestCase):
         self.assertIsNone(response.json()["roomId"])
         self.assertEqual(
             self.devices_table.updates,
-            [{"type": "manual_call_point", "room_id": None}],
+            [{"type": "manual_call_point", "room_id": None, "rule_id": None}],
         )
 
     def test_patch_device_rejects_invalid_input(self) -> None:
