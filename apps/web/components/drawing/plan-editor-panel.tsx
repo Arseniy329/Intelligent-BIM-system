@@ -114,12 +114,15 @@ export function PlanEditorPanel({ editor: e, rooms, devices, selectedRoomId, dev
       </>}
       {!devicesEditable && mode === "devices" && <small>Редагування приладів доступне після розміщення.</small>}
     </fieldset>
-    {e.busy && <p role="status">Збереження й оновлення плану…</p>}
+    {e.busy && !e.deletion && <p role="status">Збереження й оновлення плану…</p>}
     {e.notice && <p role="status" className={styles.success}>{e.notice}</p>}
-    {e.error && <p role="alert">{e.error}</p>}
-    {e.uncertain && <button disabled={e.busy} onClick={() => void e.reconcile()}>Оновити дані після помилки</button>}
+    {e.error && !e.deletion && <p role="alert">{e.error}</p>}
+    {e.uncertain && !e.deletion && <button disabled={e.busy} onClick={() => void e.reconcile()}>Оновити дані після помилки</button>}
     <Dialog open={!!e.deletion} onOpenChange={open => { if (!open && !e.busy) e.cancelDelete(); }}>
       <DialogContent role="alertdialog" className={styles.deleteDialog} onEscapeKeyDown={event => { if (e.busy) event.preventDefault(); }} onPointerDownOutside={event => event.preventDefault()}>
+        {e.busy && <p role="status">Збереження й оновлення плану…</p>}
+        {e.error && <p role="alert">{e.error}</p>}
+        {e.uncertain && <button disabled={e.busy} onClick={() => void e.reconcile()}>Оновити дані після помилки</button>}
         <DialogTitle>Видалити {e.deletion?.kind === "room" ? "приміщення" : e.deletion?.kind === "zone" ? "зону приміщення" : e.deletion?.kind === "exit" ? "позначення виходу" : "прилад"}?</DialogTitle>
         <DialogDescription>{e.deletion?.kind === "room" ? "Контур і рядок у таблиці буде видалено. Прилади залишаться без прив’язки до нього. Вихідний DXF залишиться без змін." : e.deletion?.kind === "zone" || e.deletion?.kind === "exit" ? "Після видалення повторіть розміщення приладів, щоб оновити DXF результату." : "Прилад буде видалено з плану та DXF результату."}</DialogDescription>
         <div className={styles.actionRow}><button disabled={e.busy} onClick={e.cancelDelete}>Скасувати видалення</button><button className={styles.danger} aria-label="Підтвердити видалення" disabled={e.busy || e.uncertain} onClick={e.deleteSelected}>Видалити</button></div>
