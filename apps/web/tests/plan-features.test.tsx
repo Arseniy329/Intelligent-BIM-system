@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { Room } from "@bim/contracts";
 import { usePlanEditor } from "@/lib/drawing/use-plan-editor";
 import { PlanFeaturesPanel } from "@/components/drawing/plan-features-panel";
+import { PlanEditorPanel } from "@/components/drawing/plan-editor-panel";
 import { planFeaturesApi, type RoomZone, type PlanExit } from "@/lib/drawing/plan-features-api";
 import { ApiHttpError } from "@/lib/api";
 import { getRoomBlockingReasons, mapContractRoomToRoom } from "@/types/rooms";
@@ -24,6 +25,30 @@ function setup() {
   const refresh = vi.fn().mockResolvedValue(undefined);
   return { ...renderHook(() => usePlanEditor({ drawingId: "drawing", rooms: [room], devices: [], refresh, selectRoom: vi.fn(), featuresApi })), featuresApi, refresh };
 }
+it("keeps zone fields and cancel reachable in the redesigned details card", () => {
+  const { result, featuresApi } = setup();
+  act(() => result.current.beginZone(room, zone));
+  const props = { rooms: [room], devices: [], selectedRoomId: room.id, selectRoom: vi.fn(), devicesEditable: false, disabled: false };
+  render(<PlanEditorPanel {...props} editor={result.current} />);
+  fireEvent.change(screen.getByLabelText("Висота зони, м"), { target: { value: "4.5" } });
+  expect(result.current.draft).toMatchObject({ kind: "zone", height: "4.5" });
+  fireEvent.click(screen.getByRole("button", { name: "Скасувати зміни" }));
+  expect(result.current.draft).toBeNull();
+  expect(featuresApi.updateZone).not.toHaveBeenCalled();
+});
+it("keeps exit deletion errors and reconciliation inside the active modal", async () => {
+  const { result, featuresApi } = setup();
+  featuresApi.deleteExit.mockRejectedValueOnce(new Error("network"));
+  act(() => result.current.requestDelete("exit", "exit"));
+  const props = { rooms: [room], devices: [], selectedRoomId: room.id, selectRoom: vi.fn(), devicesEditable: false, disabled: false };
+  const view = render(<PlanEditorPanel {...props} editor={result.current} />);
+  fireEvent.click(screen.getByRole("button", { name: "Підтвердити видалення" }));
+  await waitFor(() => expect(result.current.uncertain).toBe(true));
+  view.rerender(<PlanEditorPanel {...props} editor={result.current} />);
+  expect(screen.getByRole("alertdialog")).toContainElement(screen.getByRole("alert"));
+  expect(screen.getByRole("alertdialog")).toContainElement(screen.getByRole("button", { name: "Оновити дані після помилки" }));
+  expect(screen.getByRole("button", { name: "Підтвердити видалення" })).toBeDisabled();
+});
 it("creates successive zones under the same room with independent heights and no room writes", async () => {
   const {result, featuresApi} = setup();
   for (const height of [2.5, 4]) {
