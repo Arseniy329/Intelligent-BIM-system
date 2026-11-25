@@ -41,6 +41,7 @@ def device_from_row(row: dict[str, Any]) -> Device:
         type=device_type,
         position=Point(x=float(row["x"]), y=float(row["y"])),
         layer=str(row.get("layer") or DEVICE_LAYER),
+        ruleId=str(row["rule_id"]) if row.get("rule_id") else None,
     )
 
 

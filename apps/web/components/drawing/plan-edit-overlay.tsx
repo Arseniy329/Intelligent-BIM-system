@@ -5,7 +5,7 @@ import type { Point } from "@bim/contracts";
 import type { DrawingViewportController } from "@/lib/drawing/viewer-adapter";
 import { observeOverlayViewport } from "@/lib/drawing/overlay-geometry";
 import type { PlanEditor } from "@/lib/drawing/use-plan-editor";
-import { DeviceSymbol } from "./device-symbol";
+import { DEVICE_ASSETS } from "./device-symbol";
 import styles from "./drawing-viewer.module.css";
 
 export function PlanEditOverlay({ controller, editor }: { controller: DrawingViewportController; editor: PlanEditor }) {
@@ -42,7 +42,7 @@ export function PlanEditOverlay({ controller, editor }: { controller: DrawingVie
       drag.current = null;
     }}>
     {points.length > 1 && <polygon className={styles.editPolygon} points={points.map(p => `${p.x},${p.y}`).join(" ")} />}
-    {points.map((p, index) => <circle key={index} cx={p.x} cy={p.y} r={8} className={styles.editVertex}
+    {points.map((p, index) => <rect key={index} x={p.x - 5} y={p.y - 5} width={10} height={10} className={styles.editVertex}
       role="button" tabIndex={editor.busy ? -1 : 0} aria-label={`Вершина ${index + 1}`}
       onPointerDown={event => beginDrag(event, index, draft.kind === "room" ? draft.points[index] : p)}
       onKeyDown={event => {
@@ -55,8 +55,8 @@ export function PlanEditOverlay({ controller, editor }: { controller: DrawingVie
         const delta = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, number[]>)[event.key];
         if (delta) { event.preventDefault(); editor.setPosition(controller.screenToWorld({ x: position.x + delta[0] * (event.shiftKey ? 10 : 1), y: position.y + delta[1] * (event.shiftKey ? 10 : 1) })); }
       }}>
-      <circle r={22} fill="white" stroke="var(--viewer-focus)" strokeWidth={2} />
-      <svg x={-12} y={-12} width={24} height={24}><DeviceSymbol type={draft.type} /></svg>
+      <rect x={-14} y={-14} width={28} height={28} rx={4} fill="white" stroke="var(--viewer-focus)" strokeWidth={2} />
+      <image x={-10} y={-10} width={20} height={20} href={DEVICE_ASSETS[draft.type]} />
     </g>}
   </svg>;
 }

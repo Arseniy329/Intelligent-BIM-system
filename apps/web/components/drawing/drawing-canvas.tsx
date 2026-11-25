@@ -7,6 +7,7 @@ import type { DrawingViewerProps } from "./drawing-viewer";
 import { DrawingToolbar } from "./drawing-toolbar";
 import { PlanEditOverlay } from "./plan-edit-overlay";
 import { DrawingOverlay } from "./drawing-overlay";
+import { DeviceLegend } from "./device-legend";
 import styles from "./drawing-viewer.module.css";
 
 type LoadState =
@@ -16,7 +17,7 @@ type LoadState =
 
 export default function DrawingCanvas({
   url, onReady, onRetry, retryPending = false, rooms, devices, initialRoomLabelsVisible = true,
-  selectedRoomId, editor, onSelectRoom, onSelectDevice,
+  selectedRoomId, editor, onSelectRoom, onSelectDevice, rules,
 }: DrawingViewerProps & { onRetry: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const adapterRef = useRef<DrawingViewerAdapter | null>(null);
@@ -101,6 +102,7 @@ export default function DrawingCanvas({
         <div ref={hostRef} className={styles.canvas} aria-label="Полотно DXF" />
         {state.status === "ready" && (rooms?.length || devices?.length) ? (
           <DrawingOverlay controller={state.controller}
+            rules={rules}
             rooms={rooms?.filter(room => editor?.draft?.kind !== "room" || editor.draft.id !== room.id)}
             devices={devices?.filter(device => editor?.draft?.kind !== "device" || editor.draft.id !== device.id)}
             showRooms={showRooms} showDevices={showDevices} showRoomLabels={showRoomLabels}
@@ -119,6 +121,7 @@ export default function DrawingCanvas({
           </div>
         )}
       </div>
+      {state.status === "ready" && <DeviceLegend devices={devices} rules={rules} />}
       {state.status === "ready" && showRooms && !!rooms?.length && (
         <ul className={styles.roomSummary} aria-label="Назви та площі приміщень">
           {rooms.map((room) => <li key={room.id}>

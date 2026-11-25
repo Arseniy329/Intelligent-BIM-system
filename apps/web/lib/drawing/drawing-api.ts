@@ -266,7 +266,8 @@ export function parseDrawing(value: unknown, id: string): DrawingResponse {
         Array.isArray(room.polygon) && room.polygon.length >= 3 && room.polygon.every(validPoint)) ||
       !value.devices.every(device => record(device) && device.drawingId === id && typeof device.id === "string" &&
         (device.roomId === null || typeof device.roomId === "string") && typeof device.layer === "string" &&
-        ["smoke_detector", "heat_detector", "sounder", "manual_call_point"].includes(String(device.type)) && validPoint(device.position)))
+        typeof device.type === "string" && device.type.length > 0 &&
+        (device.ruleId === undefined || device.ruleId === null || typeof device.ruleId === "string" && device.ruleId.length > 0) && validPoint(device.position)))
       throw new Error("Invalid drawing result.");
     if ("placementReport" in value) {
       // The stored report is optional (null before the first placement): a missing

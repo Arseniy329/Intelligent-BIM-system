@@ -1,0 +1,81 @@
+BIM-122 - Device overlay and rule provenance
+Base: origin/dev 3ef7714. Branch: feature/BIM-122-device-overlay.
+
+Implemented
+- Existing WCS/camera overlay reused for smoke, heat, manual call points and sounders.
+- Original user-supplied BIM-107 SVG assets replace handwritten symbol approximations.
+- Plan and legend share the same source assets; compact Ukrainian labels and live counts.
+- Room-state legend uses original exports. Unknown device types retain a visible fallback.
+- Optional Device.ruleId forwarded from stored devices.rule_id in drawing GET and device mutation responses.
+- Existing GET /api/v1/rules resolves the exact id. verified is the only verified state;
+  needs_review and needs_verification show review; absent, unmatched, pending or future status stays unknown.
+- Review/unknown indicators and accessible labels/tooltips are distinct from violations.
+- Rules reload with drawing result revisions after processing/placement; API failure shows retry and unknown state.
+- Selected-room border and device/vertex editor geometry adjusted to supplied reference variants.
+- No placement algorithm, migration, auth policy or production database changes.
+
+Already existed
+- Four contract device types, BIM-75 manual placement, BIM-76 sounder placement, stored rule_id.
+- Authenticated drawing/rules API adapters, camera projection and keyboard editing.
+- Drawing response previously discarded rule_id. The user approved this optional contract extension.
+
+Changed files and purpose
+packages/contracts/schemas/contracts.schema.json and generated TS/Python: optional nullable ruleId.
+apps/api/src/modules/drawings/router.py, modules/devices/router.py: expose existing provenance.
+apps/web/lib/drawing/device-rule-status.ts: pure exact-id/status resolution.
+apps/web/lib/drawing/drawing-api.ts: validate ruleId and allow visible fallback for future device types.
+components/drawing/drawing-detail.tsx: authenticated rules query, refresh/error/retry.
+drawing-viewer.tsx, drawing-canvas.tsx: pass rules and live counts.
+drawing-overlay.tsx: status marker, accessible description and tooltip.
+device-symbol.tsx, device-legend.tsx, drawing-viewer.module.css: exported assets and presentation.
+plan-edit-overlay.tsx: SVG image context and square editing handles.
+public/design/bim-107: original assets and source mapping.
+Tests cover status joins, compatibility, API round trips and overlay/legend output.
+
+Validation
+- Web lint and TypeScript: passed.
+- 336 web unit tests and 92 contract tests: passed.
+- Full API suite: 404 tests passed with fake DB/storage and real router/placement/parser code.
+- BIM-75/76 integration assertions check placement -> GET -> stored ruleId.
+- git diff --check: passed (generated TS line-ending notice only).
+- Production build compiles, type-checks and generates all 12 pages, then exits 1 with SecurityFatalError
+  for installed Next.js 16.4.2. Development server also exits for this reason.
+- Live authenticated browser, visual overlays/pixel comparisons and staging tests NOT performed.
+- No BIM-170 dataset was provided or identifiable in Jira; existing repository fixtures were used.
+
+Acceptance status
+Distinct smoke/manual/sounder symbols, retained heat, simultaneous types: implemented, unit tested.
+Legend matches symbols and counts: implemented, unit tested.
+Rule needs-review versus verified versus unknown: implemented, unit/API tested.
+Empty devices and missing metadata: handled; empty legend contains zero counts.
+Pan/zoom/reload stability: existing geometry tests pass; live WebGL verification pending.
+Real backend contract: route/placement tests pass using test storage, no production run.
+Exact design: original assets integrated, but full visual acceptance is NOT complete.
+
+Design scope and remaining work
+The exports are authoritative. Their exactness requirement is not waived by these tests.
+Supplied screens do not define device unknown-rule badges, height zones or exits; these are extensions.
+Original SVG files are preserved; never claim handwritten replacements are exact.
+The pre-existing page header, generic viewer toolbar, editor panel above the viewer and details/layers layout
+still differ from Desktop 6/10-19. The overall drawing workspace is NOT pixel-matched yet.
+No synthetic control-panel device or violation count was added: the current Device API has no control-panel type.
+Reference sample room/count values must not replace live API data.
+An eventual visual check needs the same 1440px viewport, matching data, loaded font and screenshot overlays.
+
+Manual checks still required
+Open an actual BIM-75/76 processed drawing with all device types, review/verified/missing rule links.
+Compare each icon to Desktop 6 and verify counts, keyboard focus and tooltips.
+Pan/zoom/resize; re-place; reload; simulate rules API failure/retry without moving the camera.
+Move a device and ensure the original SVG remains visible inside the SVG editing overlay.
+Check loading/empty/no-rule results on authenticated staging.
+
+PR draft
+Title: BIM-122: render original device symbols and expose rule verification status
+Target: dev. Requested reviewer: Arseniy329 (Arseniy).
+Description: Device overlays now use the supplied BIM-107 SVGs and a counted legend. The drawing API
+exposes its stored ruleId so the frontend can distinguish verified, needs-review and unknown provenance
+using the existing rules endpoint. Placement algorithms remain unchanged.
+Validation: lint/type checks, 336 web + 92 contracts + 404 API tests. Build/runtime security failure
+and pending exact visual acceptance must remain explicit in the PR.
+Readiness: code review draft only; not ready to claim design acceptance or merge completion.
+No push, PR creation, merge or Jira status change authorized/performed.

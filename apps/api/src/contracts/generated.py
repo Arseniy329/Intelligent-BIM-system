@@ -163,6 +163,10 @@ class Device(BaseModel):
     type: Type
     position: Point
     layer: constr(min_length=1)
+    ruleId: constr(min_length=1) | None = Field(
+        None,
+        description="Ідентифікатор застосованого правила (devices.rule_id → GET /rules items[].id). null або відсутнє — правило невідоме або прилад додано вручну.",
+    )
 
 
 class DeviceCreateRequest(BaseModel):

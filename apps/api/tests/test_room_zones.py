@@ -629,6 +629,9 @@ class TestSounderPlacementInPlace(RoomZonesTestCase):
         # Окремий шар, тип sounder, посилання на правило (критерії приймання №1, №3).
         self.assertTrue(all(r["layer"] == "SYS_FIRE_SOUNDERS" for r in sounders))
         self.assertTrue(all(r["rule_id"] == self.general["id"] for r in sounders))
+        returned_sounders = [d for d in self.reload()["devices"] if d["type"] == "sounder"]
+        self.assertEqual(len(returned_sounders), len(sounders))
+        self.assertTrue(all(d["ruleId"] == self.general["id"] for d in returned_sounders))
         # Поряд із детекторами, що лишаються на своєму шарі.
         smoke = [r for r in self.devices_table.inserts if r["type"] == "smoke_detector"]
         self.assertGreater(len(smoke), 0)
