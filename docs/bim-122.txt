@@ -153,6 +153,9 @@ were unavailable; this search is not proof that the files do not exist.
 Connected Drive queries BIM-170, BIM and Research returned no accessible results;
 GitHub code search BIM-170 in Arseniy329/Intelligent-BIM-system returned none.
 Repository files/docs and all local commit messages were searched.
+The sibling Intelligent-BIM-system.zip filename inventory was checked too:
+679 entries, four older DXFs, no BIM-170-named material or workbook. No drawing
+content from that archive was opened.
 Older fixtures test_drawing_dxf and test_drawing_dxf2 exist. The v4 expected-results
 workbook (Untitled!A1:F16) lists room names/areas/layers/contour states, not zone
 heights, exits, device expectations or intentional violations. Its Nov 3 history
@@ -161,7 +164,8 @@ establishes delivery of the Sprint 4 acceptance data. No customer data was opene
 
 Validation rerun on this branch
 - After final footer/count corrections: web tests, lint and production build rerun;
-  logs tmp/acceptance-bim122-final-{web,lint,build}.log.
+  337 web tests, lint and production build PASS (including TypeScript validation).
+  Logs tmp/acceptance-bim122-final-{web,lint,build}.log.
 - npm.cmd test: 337 web + 92 contract tests PASS after regression addition.
 - Targeted drawing-editor-integration.test.tsx: 2 PASS after final test typing fix.
 - npm.cmd run lint: PASS after final changes.
@@ -202,7 +206,8 @@ Body: Smoke detectors, manual call points and sounders now use the supplied SVG
 symbols consistently on the plan and in its counted legend. Optional Device.ruleId
 preserves stored provenance for exact-id status lookup via the existing rules API.
 The shared workspace adds per-type layer controls; audit fixes keep new breadcrumb
-navigation from discarding an active draft. Placement algorithms are unchanged.
+navigation from discarding an active draft, restore the footer and place the
+localized live room count at the right of the tab row. Placement algorithms unchanged.
 Validation: 337 web / 92 contracts / 409 API tests pass (1 API skip, test doubles),
 lint and production build pass; native Chrome layer/zoom smoke checks pass.
 Real test API: synthetic upload/process/room edits/placement/reload passes with
