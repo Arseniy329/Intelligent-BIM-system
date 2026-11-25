@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DrawingStatus, DrawingDetailStatus } from "@bim/contracts";
 import { DrawingViewer, type DrawingViewerProps } from "./drawing-viewer";
@@ -186,7 +186,13 @@ function DrawingDetailContent({
 
   return (
     <div className={workspaceStyles.workspace} data-drawing-workspace="">
-      <nav aria-label="Шлях до креслення" className={workspaceStyles.breadcrumb}><Link href="/drawings">Робочий простір</Link><span>/</span><Link href="/drawings">Креслення</Link><span>/</span><span>{metadata.originalFileName}</span></nav>
+      <nav aria-label="Шлях до креслення" className={workspaceStyles.breadcrumb}>
+        {["Робочий простір", "Креслення"].map(label => <Fragment key={label}>
+          <Link href="/drawings" aria-disabled={editor.blocked || undefined}
+            onClick={event => { if (editor.blocked) event.preventDefault(); }}>{label}</Link><span>/</span>
+        </Fragment>)}
+        <span>{metadata.originalFileName}</span>
+      </nav>
       {demo && <p role="status" className="rounded-lg border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-subtle)] p-3">Демонстраційний режим. Локальний тестовий DXF та ілюстративні дані; реальна обробка не виконується.</p>}
       <div className={workspaceStyles.heading}>
         <div className="min-w-0 space-y-2">

@@ -35,8 +35,14 @@ it("keeps save/cancel reachable when the placement banner is clicked during a dr
   expect(screen.getByRole("tab", { name: "План" })).toHaveAttribute("aria-selected", "true");
   expect(screen.getByRole("button", { name: "Зберегти зміни" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Кімнати" })).toBeDisabled();
+  for (const name of ["Робочий простір", "Креслення"]) {
+    const link = screen.getByRole("link", { name });
+    expect(link).toHaveAttribute("aria-disabled", "true");
+    expect(fireEvent.click(link)).toBe(false);
+  }
   fireEvent.click(screen.getByRole("button", { name: "Скасувати всі зміни" }));
   expect(screen.getByRole("button", { name: "Додати прилад" })).toBeEnabled();
+  expect(screen.getByRole("link", { name: "Робочий простір" })).not.toHaveAttribute("aria-disabled");
 });
 
 it("blocks a previously opened reprocessing confirmation until the draft is cancelled", async () => {
