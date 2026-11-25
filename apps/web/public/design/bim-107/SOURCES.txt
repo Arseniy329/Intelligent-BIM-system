@@ -1,0 +1,5 @@
+Original Figma export supplied by the project owner on 2026-11-25.
+Figma file: I9LwN7XZgyliKP6yhJwYOT
+Source folder: Design materials figma 1
+logo.svg = intelligent-bim-flame-v2 2.svg (40 x 40), unmodified.
+Device symbols and rule-provenance work are isolated on feature/BIM-122-device-overlay.

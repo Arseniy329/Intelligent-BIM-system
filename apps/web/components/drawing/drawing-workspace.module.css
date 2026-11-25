@@ -1,0 +1,71 @@
+.workspace { min-width: 0; display: flex; flex-direction: column; gap: 24px; }
+.breadcrumb { display: flex; align-items: center; gap: 12px; color: #475569; font-size: 12px; line-height: 16px; }
+.breadcrumb > span:nth-child(even) { color: #94a3b8; }
+.heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.heading h1 { font-size: 24px; line-height: 32px; font-weight: 600; }
+.headingActions { display: flex; align-items: center; gap: 8px; }
+.eyebrow { font-size: 12px; font-weight: 600; letter-spacing: .08em; color: #475569; }
+.fileName { color: #475569; font-size: 12px; line-height: 16px; }
+.operations { position: relative; font-size: 14px; }
+.operations summary { padding: 9px 12px; border: 1px solid #cbd5e1; background: white; border-radius: 8px; cursor: pointer; list-style: none; }
+.operations summary::-webkit-details-marker { display: none; }
+.operations p { width: 100%; }
+.operations > div { position: absolute; top: 48px; right: 0; z-index: 20; width: min(480px, 80vw); padding: 16px; border: 1px solid #e2e8f0; border-radius: 12px; background: white; box-shadow: 0 4px 16px #0f172a18; }
+.workspace > [role="tablist"] { display: flex; align-items: center; gap: 20px; padding: 12px 24px; min-height: 70px; border: 1px solid #e2e8f0; border-radius: 12px; background: white; }
+.workspace > [role="tablist"] button { border: 0; margin: 0; padding: 12px 16px; border-radius: 10px; color: #475569; font-size: 16px; line-height: 20px; font-weight: 600; }
+.workspace > [role="tablist"] button[aria-selected="true"] { background: #e9f2ff; color: #2563eb; }
+.sectionTitle h2 { font-size: 24px; line-height: 32px; font-weight: 600; }
+.sectionTitle p { margin-top: 4px; font-size: 12px; line-height: 16px; color: #475569; }
+.summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 32px; padding: 16px 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: white; color: #475569; font-size: 12px; line-height: 20px; }
+.summary strong { font-size: 24px; line-height: 32px; color: #0f172a; font-weight: 600; margin-right: 8px; }
+.planLayout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; align-items: start; }
+.inspector { min-width: 0; display: grid; gap: 16px; }
+.inspector > section { background: white; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }
+.inspector label { display: grid; gap: 6px; }
+.inspector select { width: 100%; min-width: 0; }
+.detailsCard h3 { font-size: 16px; font-weight: 600; padding: 20px; border-bottom: 1px solid #e2e8f0; }
+.detailsCard > div { display: grid; gap: 12px; padding: 32px 16px 24px; text-align: center; }
+.detailsCard p { color: #475569; font-size: 12px; line-height: 16px; }
+.layers h3, .editorCard h3 { display: flex; justify-content: space-between; align-items: center; min-height: 64px; padding: 20px; border-bottom: 1px solid #e2e8f0; font-size: 16px; line-height: 24px; font-weight: 600; }
+.layers h3 > span { border-radius: 20px; padding: 4px 8px; background: #f1f5f9; color: #475569; font-size: 12px; line-height: 16px; font-weight: 400; }
+.layers > div { padding: 0 16px; }
+.layers label { display: flex; align-items: center; gap: 12px; min-height: 64px; border-bottom: 1px solid #e2e8f0; font-size: 14px; line-height: 20px; cursor: pointer; }
+.layers label:last-child { border-bottom: 0; }
+.layers label > img, .layers label > svg { width: 20px; height: 20px; flex-shrink: 0; }
+.layers label > span:nth-child(2) { flex: 1; }
+.layers input { width: 18px; height: 18px; accent-color: #2563eb; margin-left: auto; cursor: pointer; }
+.layers small { padding: 0 4px; border-radius: 4px; background: #f1f5f9; color: #475569; font-size: 12px; }
+.layers details { padding: 8px 16px; border-top: 1px solid #e2e8f0; color: #475569; font-size: 12px; }
+.layers details summary { cursor: pointer; }
+.roomLayerSymbol { width: 17px; height: 14px; margin: 0 1.5px; border: 1px solid #64748b; background: #e2e8f014; }
+.editorCard fieldset { display: grid; gap: 8px; min-width: 0; padding: 16px; }
+.editorCard h4 { font-size: 16px; line-height: 24px; font-weight: 500; }
+.editorCard p, .editorCard small, .workControls p, .workControls small { font-size: 12px; line-height: 16px; }
+.editorCard small, .secondary, .workControls small { color: #475569; }
+.editorCard > p, .editorCard > button { margin: 0 16px 16px; }
+.editorCard button, .workControls button, .deleteDialog button { min-height: 40px; padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 12px; background: white; font-size: 14px; line-height: 20px; cursor: pointer; }
+.editorCard button:hover:not(:disabled), .workControls button:hover:not(:disabled) { background: #f1f5f9; }
+.editorCard button:focus-visible, .workControls button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.editorCard input, .editorCard select { border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 12px; min-width: 0; width: 100%; background: white; }
+.editorCard .primary, .workControls .primary { background: #2563eb; color: white; border-color: #2563eb; }
+.editorCard .primary:hover:not(:disabled), .workControls .primary:hover:not(:disabled) { background: #1d4ed8; }
+.editorCard .danger, .deleteDialog .danger { border-color: #dc2626; color: #dc2626; }
+.editorCard button:disabled, .workControls button:disabled { cursor: not-allowed; opacity: .5; }
+.workControls .primary:disabled { opacity: 1; color: #94a3b8; background: #e2e8f0; border-color: #e2e8f0; }
+.actionRow { display: flex; gap: 8px; margin-top: 8px; }
+.actionRow > button { flex: 1; min-width: 0; }
+.emptyDetails { display: grid; gap: 12px; padding: 16px 0 8px; text-align: center; }
+.emptyDetails p { color: #475569; }
+.emptyIcon { display: grid; place-items: center; width: 48px; height: 48px; margin: 0 auto 8px; border-radius: 12px; background: #f1f5f9; color: #475569; font-size: 28px; }
+.workControls { display: grid; gap: 10px; min-width: 0; padding: 20px 30px; border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc; }
+.workControls h3 { font-size: 12px; line-height: 16px; font-weight: 600; margin-bottom: 4px; }
+.workControls .selectControl { position: relative; display: grid; place-items: center; min-height: 40px; border-radius: 12px; background: #e9f2ff; color: #2563eb; font-size: 14px; }
+.selectControl select { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; }
+.selectControl:focus-within { outline: 2px solid #2563eb; outline-offset: 2px; }
+.success { color: #15803d; }
+.pending { color: #b45309; }
+.processingDetails { margin-top: 24px; color: #475569; font-size: 12px; }
+.processingDetails summary { cursor: pointer; }
+.deleteDialog { padding: 24px; border-radius: 12px; max-width: 480px; }
+@media(max-width: 1000px) { .planLayout { grid-template-columns: minmax(0, 1fr); } }
+@media(max-width: 767px) { .workspace > [role="tablist"] { gap: 4px; padding: 8px; flex-wrap: wrap; } .workspace > [role="tablist"] button { font-size: 14px; padding: 10px; } .heading { flex-wrap: wrap; } }

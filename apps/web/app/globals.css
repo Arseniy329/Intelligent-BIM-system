@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@font-face { font-family: "Inter"; src: url("/fonts/inter/Inter-Variable.ttf") format("truetype"); font-weight: 100 900; font-style: normal; font-display: swap; }
+
 :root {
   color-scheme: light;
 
@@ -67,4 +69,23 @@ body {
   font-family: var(--bim-typography-font-family-base);
   font-size: var(--bim-typography-text-style-body-font-size);
   line-height: var(--bim-typography-text-style-body-line-height);
+}
+
+/* Drawing-workspace frame: measurements from Desktop 6/10-19 at 1440px. */
+main:has([data-drawing-workspace]) { max-width: 1440px; padding: 32px 40px 40px; }
+.drawing-workspace-header { min-height: 76px; padding: 16px max(40px, calc((100vw - 1360px) / 2)); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e2e8f0; background: #f8fafc; }
+.drawing-workspace-brand { display: flex; align-items: center; gap: 12px; }
+.drawing-workspace-brand strong { display: block; font-size: 18px; line-height: 24px; font-weight: 600; }
+.drawing-workspace-brand small { display: block; color: #475569; font-size: 12px; line-height: 16px; }
+.drawing-workspace-account { display: flex; align-items: center; gap: 12px; }
+.drawing-workspace-new { border: 1px solid #cbd5e1; border-radius: 8px; padding: 9px 16px; font-size: 14px; line-height: 20px; }
+.drawing-workspace-account details { position: relative; }
+.drawing-workspace-account summary { width: 40px; height: 40px; border-radius: 50%; background: #cfd1d4; list-style: none; cursor: pointer; }
+.drawing-workspace-account summary::-webkit-details-marker { display: none; }
+.drawing-workspace-account nav { position: absolute; right: 0; top: 48px; z-index: 30; width: 220px; display: grid; gap: 12px; padding: 16px; background: white; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 4px 16px #0f172a18; }
+@media (max-width: 767px) {
+  main:has([data-drawing-workspace]) { padding: 24px 16px; }
+  .drawing-workspace-header { padding: 16px; gap: 12px; }
+  .drawing-workspace-brand strong { font-size: 14px; }
+  .drawing-workspace-new { padding: 8px; }
 }
