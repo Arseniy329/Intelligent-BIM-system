@@ -4,6 +4,8 @@ Branch: feature/BIM-122-device-overlay. Implementation c7cae44, continuing from 
 
 Decision: NOT ACCEPTED for release. Local device presentation and rule-provenance behavior verified; actual all-type positive-status API integration and exact design acceptance remain unverified.
 
+Latest user decision: skip isolated backend setup and defer authenticated integration until after the later dev merge. These checks remain NOT VERIFIED; no push or merge is authorized by that deferral.
+
 Implemented
 - Original supplied BIM-107 SVGs consistently represent smoke, heat, manual call points and sounders on the plan and legend. Live counts and independent layers retained.
 - Optional nullable Device.ruleId preserves stored rule_id in drawing/device responses. Exact-id GET /rules lookup; only verified counts as verified. Missing/unmatched/pending/future status remains unknown; both review spellings supported.
