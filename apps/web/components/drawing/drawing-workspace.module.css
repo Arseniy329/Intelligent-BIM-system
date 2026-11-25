@@ -14,6 +14,8 @@
 .workspace > [role="tablist"] { display: flex; align-items: center; gap: 20px; padding: 12px 24px; min-height: 70px; border: 1px solid #e2e8f0; border-radius: 12px; background: white; }
 .workspace > [role="tablist"] button { border: 0; margin: 0; padding: 12px 16px; border-radius: 10px; color: #475569; font-size: 16px; line-height: 20px; font-weight: 600; }
 .workspace > [role="tablist"] button[aria-selected="true"] { background: #e9f2ff; color: #2563eb; }
+.tabSummary { margin-left: auto; color: #475569; font-size: 12px; line-height: 16px; white-space: nowrap; }
+.footer { padding-bottom: 16px; color: #475569; font-size: 12px; line-height: 16px; }
 .sectionTitle h2 { font-size: 24px; line-height: 32px; font-weight: 600; }
 .sectionTitle p { margin-top: 4px; font-size: 12px; line-height: 16px; color: #475569; }
 .summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 32px; padding: 16px 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: white; color: #475569; font-size: 12px; line-height: 20px; }

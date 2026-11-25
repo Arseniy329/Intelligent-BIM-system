@@ -294,11 +294,6 @@ function DrawingDetailContent({
           )}
         >
           <span>Приміщення</span>
-          {mappedRooms.length > 0 && (
-            <span className="text-xs px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700">
-              {mappedRooms.length}
-            </span>
-          )}
         </button>
         <button
           disabled={editor.blocked}
@@ -330,6 +325,7 @@ function DrawingDetailContent({
         >
           Звіт
         </button>
+        {result && <span className={workspaceStyles.tabSummary}>{mappedRooms.length} кімнат</span>}
       </div>
 
       {activeTab === "plan" && (
@@ -541,6 +537,7 @@ function DrawingDetailContent({
           </p>
         </section>
       )}
+      <footer className={workspaceStyles.footer}>Інтелектуальна BIM · Пожежна безпека</footer>
     </div>
   );
 }
