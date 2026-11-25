@@ -151,7 +151,10 @@ export function DrawingOverlay({
             <polygon points={points.map(p => `${p.x},${p.y}`).join(" ")} style={{ fill: "none", stroke: "var(--viewer-focus)", strokeDasharray: "6 3", strokeWidth: 2 }} vectorEffect="non-scaling-stroke">
               <title>{zone.name || `Зона ${index + 1}`} · {zone.height == null ? "Висоту не вказано" : `${zone.height} м`}</title>
             </polygon>
-            {label && <text x={label.x} y={label.y} textAnchor="middle" className={styles.zoneHeight}>{zone.height == null ? "Висоту не вказано" : `${zone.height} м`}</text>}
+            {label && <text x={label.x} y={label.y} textAnchor="middle" className={styles.zoneHeight}>
+              <tspan x={label.x} dy="-0.6em">{zone.name || `Зона ${index + 1}`}</tspan>
+              <tspan x={label.x} dy="1.5em" fill={zone.height == null ? "#92400e" : "#475569"}>{zone.height == null ? "Висоту не задано" : `${zone.height.toLocaleString("uk-UA", { minimumFractionDigits: 2 })} м`}</tspan>
+            </text>}
           </g>;
         })}
         {exits.filter(exit => isFinitePoint(exit.position)).map((exit, index) => {
@@ -163,7 +166,7 @@ export function DrawingOverlay({
           </g>;
         })}
       </svg>
-      {showRoomLabels && projected.rooms.map(({ room, label }) => label && (
+      {showRoomLabels && projected.rooms.map(({ room, label }) => label && !zones.some(zone => zone.roomId === room.id) && (
         <div key={room.id} data-room-label={room.id} className={styles.roomLabel}
           style={{ left: label.x, top: label.y, width: label.width, height: label.height }}>
           <span>{room.name?.trim() || "Приміщення без назви"}</span>

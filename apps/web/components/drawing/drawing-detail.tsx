@@ -493,6 +493,11 @@ function DrawingDetailContent({
             </div>
           ) : (
             <RoomsTable
+              zoneEditor={editor}
+              onEditZone={zone => {
+                const room = result?.rooms.find(item => item.id === zone.roomId);
+                if (room) editor.beginZone(room, zone);
+              }}
               zones={features.data?.zones}
               rooms={mappedRooms}
               selectedRoomId={selectedRoomId}
@@ -502,9 +507,9 @@ function DrawingDetailContent({
                 setSelectedRoomId(room.id ?? null);
                 navigateTab("plan");
               }}
-              onEditRoom={(room) => setEditingRoom(room)}
+              onEditRoom={(room) => { if (!editor.blocked) setEditingRoom(room); }}
               onConfirmRoom={async (room) => {
-                if (!room.id) return;
+                if (!room.id || editor.blocked) return;
                 await updateRoomMutation.mutateAsync({
                   roomId: room.id,
                   patch: { confirmed: true },

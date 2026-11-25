@@ -1,4 +1,5 @@
-/* Extension for states absent from the exports, using Desktop 10's card/control tokens. */
+/* BIM-131 state cards; content is supplied by the existing zones/exits API. */
+.panels { display: grid; gap: 16px; min-width: 0; }
 .panel {
   border: 1px solid var(--bim-color-border-default, #e2e8f0);
   border-radius: 12px;
@@ -15,3 +16,13 @@
 .button:hover:not(:disabled) { background: #f8fafc; }
 .button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .button:disabled { cursor: not-allowed; color: #94a3b8; background: #e2e8f0; border-color: #e2e8f0; }
+.content h3 { font-size: 16px; line-height: 24px; font-weight: 600; }
+.content li { border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.content li strong, .content li > span { width: 100%; }
+.content li > span, .source { font-size: 12px; line-height: 18px; color: #475569; }
+.sectionHeading { width: 100%; padding-top: 20px; border-top: 1px solid #e2e8f0; }
+.warning, .content .warning { color: #92400e; background: #fffbeb; padding: 4px 8px; border-radius: 6px; }
+.emptyState { display: grid; gap: 12px; width: 100%; padding: 16px; border: 1px solid #fde68a; background: #fffbeb; border-radius: 8px; }
+.emptyState h4 { font-weight: 600; }
+.emptyState ol { margin: 0; padding-left: 20px; list-style: decimal; }
+.emptyState li { border: 0; padding: 0; margin: 0 0 4px; }

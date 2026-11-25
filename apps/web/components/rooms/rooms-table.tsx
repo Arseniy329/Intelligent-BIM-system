@@ -3,6 +3,7 @@
 import * as React from "react";
 import type { RoomType } from "@bim/contracts";
 import type { RoomZone } from "@/lib/drawing/plan-features-api";
+import type { PlanEditor } from "@/lib/drawing/use-plan-editor";
 import { cn } from "@/lib/utils";
 import {
   type Room,
@@ -27,6 +28,8 @@ import {
 } from "@/components/ui/table";
 
 export interface RoomsTableProps {
+  zoneEditor?: PlanEditor;
+  onEditZone?: (zone: RoomZone) => void;
   zones?: RoomZone[];
   rooms: Room[];
   roomTypes?: RoomType[];
@@ -49,6 +52,8 @@ function formatHeight(height: number | null | undefined): string | null {
 }
 
 export function RoomsTable({
+  zoneEditor,
+  onEditZone,
   zones = [],
   rooms,
   roomTypes: propRoomTypes,
@@ -64,19 +69,24 @@ export function RoomsTable({
 }: RoomsTableProps) {
   const { data: fetchedRoomTypes } = useRoomTypes(propRoomTypes);
   const catalog = propRoomTypes ?? fetchedRoomTypes;
+  const roomDataComplete = (room: Room) => {
+    const roomZones = zones.filter(zone => zone.roomId === room.id);
+    return roomZones.length ? Boolean(room.roomType && room.roomType !== "unknown" && roomZones.every(zone => zone.height != null && zone.height > 0)) : isRoomDataComplete(room);
+  };
 
   // Dynamic counts for sub-header
   const total = rooms.length;
   const unconfirmedCount = rooms.filter(
     (r) => r.isConfirmed === false || r.status === "unconfirmed"
   ).length;
-  const incompleteCount = rooms.filter((r) => !isRoomDataComplete(r)).length;
+  const incompleteCount = rooms.filter((r) => !roomDataComplete(r)).length;
 
   // Check blocking reasons for the bottom warning banner
   const blockingReasons = getRoomBlockingReasons(rooms, hasUnsavedChanges, new Set(zones.map(zone => zone.roomId)));
   const hasBlocking = blockingReasons.length > 0;
 
   const handleRoomClick = (room: Room) => {
+    if (zoneEditor?.blocked) return;
     onSelectRoom?.(room);
     onNavigateToPlan?.(room);
   };
@@ -103,6 +113,7 @@ export function RoomsTable({
         {unconfirmedCount > 0 && onConfirmAllRooms && (
           <button
             type="button"
+            disabled={zoneEditor?.blocked}
             onClick={onConfirmAllRooms}
             className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 cursor-pointer self-start sm:self-auto shadow-2xs"
           >
@@ -139,13 +150,13 @@ export function RoomsTable({
             ) : (
               rooms.map((room) => {
                 const isSelected = selectedRoomId === room.id;
-                const isComplete = isRoomDataComplete(room);
+                const isComplete = roomDataComplete(room);
                 const isConfirmed = Boolean(room.isConfirmed);
                 const typeName = getRoomTypeName(room.roomType, catalog);
                 const heightStr = formatHeight(room.height);
 
                 return (
-                  <TableRow
+                  <React.Fragment key={room.id ?? room.name}><TableRow
                     key={room.id ?? room.name}
                     data-room-id={room.id}
                     data-selected={isSelected}
@@ -183,12 +194,9 @@ export function RoomsTable({
 
                     {/* Column 3: Висота */}
                     <TableCell>
-                      {zones.filter(zone => zone.roomId === room.id).map((zone, index) => <div key={zone.id} data-zone-id={zone.id} className="text-xs">
-                        {zone.name || `Зона ${index + 1}`}: {formatHeight(zone.height) || "Недостатньо даних: немає висоти"}
-                      </div>)}
-                      {heightStr ? (
+                      {zones.some(zone => zone.roomId === room.id) ? <span>За зонами</span> : heightStr ? (
                         <span className="text-slate-800 font-mono text-xs">
-                          {heightStr}
+                        {heightStr}
                         </span>
                       ) : (
                         <span
@@ -212,7 +220,7 @@ export function RoomsTable({
 
                     {/* Column 6: Дані */}
                     <TableCell>
-                      <CompletenessBadge room={room} />
+                      {zones.some(zone => zone.roomId === room.id) ? <span className={isComplete ? "text-xs text-emerald-700" : "text-xs text-amber-800"}>{isComplete ? "Висоти зон задано" : "Недостатньо даних зон"}</span> : <CompletenessBadge room={room} />}
                     </TableCell>
 
                     {/* Column 7: Дія */}
@@ -277,6 +285,17 @@ export function RoomsTable({
                       </div>
                     </TableCell>
                   </TableRow>
+                  {zones.filter(zone => zone.roomId === room.id).map((zone, index) => {
+                    const draft = zoneEditor?.draft?.kind === "zone" && zoneEditor.draft.id === zone.id ? zoneEditor.draft : null;
+                    return <TableRow key={zone.id} data-zone-id={zone.id} className="bg-slate-50/50">
+                      <TableCell className="pl-8 font-medium">↳ {zone.name || `Зона ${index + 1}`}</TableCell>
+                      <TableCell><span className="text-xs text-slate-600">Частина {room.name} · {zone.area.toLocaleString("uk-UA")} м²</span></TableCell>
+                      <TableCell>{draft ? <input aria-label={`Висота ${zone.name || `зони ${index + 1}`}, м`} type="number" min="0.01" max="100" step="any" placeholder="Введіть висоту" className="w-28 rounded-lg border border-slate-300 bg-white p-2 text-sm" value={draft.height} disabled={zoneEditor?.busy || zoneEditor?.uncertain} onChange={event => zoneEditor?.setHeight(event.target.value)} /> : formatHeight(zone.height) || "Введіть висоту"}</TableCell>
+                      <TableCell colSpan={3}><span className={zone.height == null ? "rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800" : "text-xs text-slate-600"}>{zone.height == null ? "Недостатньо даних: немає висоти" : "Висоту задано"}</span></TableCell>
+                      <TableCell className="text-right">{draft ? <div className="flex gap-2"><button type="button" disabled={zoneEditor?.busy || zoneEditor?.uncertain} onClick={zoneEditor?.save} className="text-sm text-blue-600">Зберегти</button><button type="button" disabled={zoneEditor?.busy} onClick={zoneEditor?.cancel} className="text-sm text-slate-600">Скасувати</button></div> : <button type="button" disabled={zoneEditor?.blocked} onClick={() => onEditZone?.(zone)} className="text-sm text-blue-600">Змінити</button>}</TableCell>
+                    </TableRow>;
+                  })}
+                  </React.Fragment>
                 );
               })
             )}
@@ -292,6 +311,9 @@ export function RoomsTable({
       </div>
 
       {/* 3. Bottom Blocking Banner matching 02-rooms */}
+      {zones.length > 0 && <p className="text-sm text-slate-600">Зони створюються на плані; тут редагується висота. Зони належать одному приміщенню.</p>}
+      {zoneEditor?.draft?.kind === "zone" && zoneEditor.error && <p role="alert" className="rounded-lg bg-amber-50 p-3 text-amber-900">{zoneEditor.error}</p>}
+      {zoneEditor?.uncertain && <button type="button" disabled={zoneEditor.busy} onClick={() => void zoneEditor.reconcile()}>Оновити дані після помилки</button>}
       {hasBlocking && (
         <div
           role="alert"
@@ -313,7 +335,8 @@ export function RoomsTable({
             data-slot="blocking-description"
             className="text-sm text-amber-900/90 pl-7"
           >
-            {formatBlockingActions(rooms, { hasUnsavedChanges })}
+            {formatBlockingActions(rooms.filter(room => !zones.some(zone => zone.roomId === room.id)), { hasUnsavedChanges })}
+            {zones.some(zone => zone.height == null) && " Для зон без висоти введіть висоту в окремому рядку. Решта зон обробляються незалежно."}
           </p>
         </div>
       )}

@@ -9,8 +9,25 @@ import { PlanEditorPanel } from "@/components/drawing/plan-editor-panel";
 import { planFeaturesApi, type RoomZone, type PlanExit } from "@/lib/drawing/plan-features-api";
 import { ApiHttpError } from "@/lib/api";
 import { getRoomBlockingReasons, mapContractRoomToRoom } from "@/types/rooms";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { RoomsTable } from "@/components/rooms/rooms-table";
 
 afterEach(cleanup);
+it("edits a zone height in its own table row without changing its polygon or parent room", async () => {
+  const updateZone = vi.fn().mockResolvedValue({ ...zone, height: 4.5 });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  function Harness() {
+    const editor = usePlanEditor({ drawingId: "drawing", rooms: [room], devices: [], selectRoom: vi.fn(), refresh: async () => {}, featuresApi: { ...planFeaturesApi, updateZone } });
+    return <RoomsTable rooms={[mapContractRoomToRoom(room)]} roomTypes={[]} zones={[zone]} zoneEditor={editor} onEditZone={item => editor.beginZone(room, item)} />;
+  }
+  render(<QueryClientProvider client={queryClient}><Harness /></QueryClientProvider>);
+  expect(screen.getByText("За зонами")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Змінити" }));
+  fireEvent.change(screen.getByLabelText("Висота Низька, м"), { target: { value: "4.5" } });
+  fireEvent.click(screen.getByRole("button", { name: "Зберегти" }));
+  await waitFor(() => expect(updateZone).toHaveBeenCalledWith(zone.id, { name: zone.name, height: 4.5, polygon: zone.polygon }));
+  await waitFor(() => expect(screen.queryByLabelText("Висота Низька, м")).toBeNull());
+});
 it("uses zone heights without inventing a parent height or bypassing confirmation/type checks", () => {
   const mapped = mapContractRoomToRoom({...room, height:null});
   expect(getRoomBlockingReasons([mapped])).not.toEqual([]);
@@ -121,5 +138,5 @@ it("distinguishes no exits from loading/error and displays restored automatic ex
   view.rerender(<PlanFeaturesPanel {...props} loading />);
   expect(screen.queryByText("Позначте евакуаційні виходи")).toBeNull();
   view.rerender(<PlanFeaturesPanel {...props} exits={[{id:"exit", drawingId:"drawing", roomId:null, name:"Вихід", position:{x:0,y:0}, source:"dxf"}]} />);
-  expect(screen.getByText(/Знайдено в DXF/)).toBeVisible();
+  expect(screen.getByText(/Автоматично · EXITS/)).toBeVisible();
 });
