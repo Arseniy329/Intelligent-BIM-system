@@ -624,19 +624,57 @@ def _extract_walls_and_bridge_gaps(
 
         if is_ortho_rect and dist > 1e-4:
             closing_line = LineString([p_end, p0])
-            has_opening_on_edge = any(
-                closing_line.distance(Point(op.coords[0])) < 1e-3
-                and closing_line.distance(Point(op.coords[-1])) < 1e-3
-                for op in opening_segments
-            )
+            ux = (p0[0] - p_end[0]) / dist
+            uy = (p0[1] - p_end[1]) / dist
+            covered: list[tuple[float, float]] = []
+            for op in opening_segments:
+                if (
+                    closing_line.distance(Point(op.coords[0])) < 1e-3
+                    and closing_line.distance(Point(op.coords[-1])) < 1e-3
+                ):
+                    t1 = (op.coords[0][0] - p_end[0]) * ux + (
+                        op.coords[0][1] - p_end[1]
+                    ) * uy
+                    t2 = (op.coords[-1][0] - p_end[0]) * ux + (
+                        op.coords[-1][1] - p_end[1]
+                    ) * uy
+                    lo = max(0.0, min(t1, t2))
+                    hi = min(dist, max(t1, t2))
+                    if hi - lo > 1e-4:
+                        covered.append((lo, hi))
+
             k_end = (round(p_end[0], 3), round(p_end[1], 3))
             k0 = (round(p0[0], 3), round(p0[1], 3))
             touches_other_contour = (
                 endpoint_counts.get(k_end, 0) >= 2 or endpoint_counts.get(k0, 0) >= 2
             )
-            if has_opening_on_edge or (
-                touches_other_contour and dist <= 3.1 / length_scale
-            ):
+
+            if covered:
+                covered.sort()
+                merged: list[tuple[float, float]] = []
+                for lo, hi in covered:
+                    if merged and lo <= merged[-1][1] + 1e-4:
+                        merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+                    else:
+                        merged.append((lo, hi))
+
+                uncovered: list[tuple[float, float]] = []
+                cursor = 0.0
+                for lo, hi in merged:
+                    if lo - cursor > 1e-4:
+                        uncovered.append((cursor, lo))
+                    cursor = max(cursor, hi)
+                if dist - cursor > 1e-4:
+                    uncovered.append((cursor, dist))
+
+                max_uncovered = max((hi - lo for lo, hi in uncovered), default=0.0)
+                allowed_gap = 3.1 / length_scale if touches_other_contour else max_gap
+                if max_uncovered <= allowed_gap:
+                    for lo, hi in uncovered:
+                        sp = (p_end[0] + lo * ux, p_end[1] + lo * uy)
+                        ep = (p_end[0] + hi * ux, p_end[1] + hi * uy)
+                        segments.append(LineString([sp, ep]))
+            elif touches_other_contour and dist <= 3.1 / length_scale:
                 segments.append(closing_line)
 
     snap_tol = min(max_gap, 0.35 / length_scale)

@@ -1271,6 +1271,51 @@ class TestCadParser(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertEqual(suggest_room_type(label), code)
 
+    def test_open_loop_door_closes_small_gap_but_not_long_open_wall(self) -> None:
+        """BIM-181: A 1m door closes a 1m gap, not a 10m open wall."""
+        # Positive: U-shaped contour missing a 1m side filled by a 1m door
+        pos_path = self.temp_dir / "u_shape_small_door_gap.dxf"
+        pos_doc = ezdxf.new("R2010")
+        pos_doc.header["$INSUNITS"] = 6
+        pos_doc.layers.add("WALLS")
+        pos_doc.layers.add("DOORS")
+        pos_doc.layers.add("TEXT")
+        pos_msp = pos_doc.modelspace()
+        pos_msp.add_lwpolyline(
+            [(0.0, 0.0), (5.0, 0.0), (5.0, 1.0), (0.0, 1.0)],
+            close=False,
+            dxfattribs={"layer": "WALLS"},
+        )
+        pos_msp.add_line((0.0, 1.0), (0.0, 0.0), dxfattribs={"layer": "DOORS"})
+        pos_msp.add_text(
+            "Комора", dxfattribs={"insert": (2.5, 0.5, 0.0), "layer": "TEXT"}
+        )
+        pos_doc.saveas(str(pos_path))
+
+        pos_rooms = parse_dxf_rooms(pos_path)
+        self.assertEqual(len(pos_rooms), 1)
+        self.assertEqual(pos_rooms[0].name, "Комора")
+        self.assertAlmostEqual(pos_rooms[0].area, 5.0, places=1)
+
+        # Negative: 10x5m open U-shaped contour with a 1m door in the middle of
+        # the 10m open edge leaves 4.5m uncovered gaps on each side -> must NOT close.
+        neg_path = self.temp_dir / "u_shape_long_open_wall_with_door.dxf"
+        neg_doc = ezdxf.new("R2010")
+        neg_doc.header["$INSUNITS"] = 6
+        neg_doc.layers.add("WALLS")
+        neg_doc.layers.add("DOORS")
+        neg_msp = neg_doc.modelspace()
+        neg_msp.add_lwpolyline(
+            [(0.0, 0.0), (0.0, 5.0), (10.0, 5.0), (10.0, 0.0)],
+            close=False,
+            dxfattribs={"layer": "WALLS"},
+        )
+        neg_msp.add_line((4.5, 0.0), (5.5, 0.0), dxfattribs={"layer": "DOORS"})
+        neg_doc.saveas(str(neg_path))
+
+        with self.assertRaises(CADParsingError):
+            parse_dxf_rooms(neg_path)
+
 
 class TestStorageUtility(unittest.TestCase):
     def setUp(self) -> None:
