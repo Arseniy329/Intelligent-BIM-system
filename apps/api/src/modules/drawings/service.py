@@ -48,9 +48,7 @@ def _parse_timestamp(value: object) -> datetime:
     return parsed
 
 
-def _has_stored_result(
-    supabase: Client, drawing_id: str, row: dict
-) -> bool:
+def _has_stored_result(supabase: Client, drawing_id: str, row: dict) -> bool:
     explicit = row.get("has_result")
     if isinstance(explicit, bool):
         return explicit
@@ -126,8 +124,6 @@ async def list_drawings_for_user(
         )
 
     return drawings
-
-
 
 
 def stored_unit_scale_m(drawing: dict[str, Any]) -> float | None:

@@ -61,6 +61,72 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def _is_missing_schema_error(exc: Exception) -> bool:
+    """Return True if exc indicates a missing table or column in PostgREST."""
+    parts = [str(exc)]
+    for attr in ("code", "message", "details", "hint"):
+        val = getattr(exc, attr, None)
+        if val is not None:
+            parts.append(str(val))
+    for arg in getattr(exc, "args", ()):
+        parts.append(str(arg))
+    haystack = " ".join(parts).upper()
+    return (
+        "PGRST204" in haystack or "PGRST205" in haystack or "SCHEMA CACHE" in haystack
+    )
+
+
+def _select_drawing_rows_or_empty(
+    supabase: Client, table_name: str, drawing_id: str
+) -> list[dict[str, Any]]:
+    """Select rows for drawing_id, returning [] if the table is not migrated yet."""
+    try:
+        response = (
+            supabase.table(table_name)
+            .select("*")
+            .eq("drawing_id", drawing_id)
+            .execute()
+        )
+    except Exception as exc:
+        if not _is_missing_schema_error(exc):
+            raise
+        logger.warning(
+            "Table %s missing in schema cache for drawing %s; using []: %s",
+            table_name,
+            drawing_id,
+            exc,
+        )
+        return []
+    return (
+        [row for row in response.data if isinstance(row, dict)]
+        if isinstance(response.data, list)
+        else []
+    )
+
+
+def _update_drawing_with_schema_fallback(
+    supabase: Client,
+    drawing_id: str,
+    full_payload: dict[str, Any],
+    fallback_status: str,
+) -> None:
+    """Update drawing row, falling back to status-only if new columns are missing."""
+    try:
+        supabase.table("drawings").update(full_payload).eq("id", drawing_id).execute()
+    except Exception as exc:
+        if not _is_missing_schema_error(exc):
+            raise
+        logger.warning(
+            "Drawing %s update falling back to status=%s (missing schema): %s",
+            drawing_id,
+            fallback_status,
+            exc,
+        )
+        supabase.table("drawings").update({"status": fallback_status}).eq(
+            "id", drawing_id
+        ).execute()
+
+
 def _map_db_to_drawing(drawing_data: dict[str, Any]) -> Drawing:
     units_raw = drawing_data.get("resolved_units") or drawing_data.get("units")
     resolved_units = None
@@ -405,7 +471,9 @@ async def process_drawing(
         # чинність. Замість нього лишається лише збій кроку «виходи й проходи»:
         # він не повинен зникнути після перезавантаження, і /place переносить його
         # у свій звіт, доки обробку не виконано успішно.
-        supabase.table("drawings").update(
+        _update_drawing_with_schema_fallback(
+            supabase,
+            drawing_id,
             {
                 "status": "processing",
                 "unit_scale_m": unit_scale_m,
@@ -414,8 +482,9 @@ async def process_drawing(
                     if exit_detection["status"] == EXIT_DETECTION_OK
                     else {"exit_detection": exit_detection}
                 ),
-            }
-        ).eq("id", drawing_id).execute()
+            },
+            fallback_status="processing",
+        )
 
         return {
             "drawing_id": drawing_id,
@@ -491,17 +560,7 @@ async def place_drawing_devices(
                 detail="No fire safety rules available",
             )
 
-        zones_response = (
-            supabase.table("room_zones")
-            .select("*")
-            .eq("drawing_id", drawing_id)
-            .execute()
-        )
-        zone_rows = (
-            [row for row in zones_response.data if isinstance(row, dict)]
-            if isinstance(zones_response.data, list)
-            else []
-        )
+        zone_rows = _select_drawing_rows_or_empty(supabase, "room_zones", drawing_id)
 
         # BIM-73: правило береться за висотою приміщення або його зони. Немає
         # висоти чи правила — приладів немає, статус «недостатньо даних».
@@ -560,27 +619,10 @@ async def place_drawing_devices(
 
         # BIM-75: ручні сповіщувачі біля евакуаційних виходів і на шляхах евакуації.
         # Немає виходів — їх не розміщуємо й повертаємо «Позначте евакуаційні виходи».
-        exits_response = (
-            supabase.table("exits").select("*").eq("drawing_id", drawing_id).execute()
-        )
-        exit_rows = (
-            [row for row in exits_response.data if isinstance(row, dict)]
-            if isinstance(exits_response.data, list)
-            else []
-        )
+        exit_rows = _select_drawing_rows_or_empty(supabase, "exits", drawing_id)
         # Проходи (двері з DXF і підтверджені інженером) — єдине, що з'єднує
         # приміщення в маршруті евакуації: близькі контури проходу не доводять.
-        passages_response = (
-            supabase.table("passages")
-            .select("*")
-            .eq("drawing_id", drawing_id)
-            .execute()
-        )
-        passage_rows = (
-            [row for row in passages_response.data if isinstance(row, dict)]
-            if isinstance(passages_response.data, list)
-            else []
-        )
+        passage_rows = _select_drawing_rows_or_empty(supabase, "passages", drawing_id)
         call_points = place_manual_call_points(
             rooms=rooms_from_rows([r for r in rooms_data if isinstance(r, dict)]),
             exits=exits_from_rows(exit_rows),
@@ -638,9 +680,12 @@ async def place_drawing_devices(
             # Збій оновлення виходів і проходів після останньої обробки лишається
             # видимим, доки обробку не виконано успішно.
             placement_report["exit_detection"] = stale_layout
-        supabase.table("drawings").update(
-            {"status": "processed", "placement_report": placement_report}
-        ).eq("id", drawing_id).execute()
+        _update_drawing_with_schema_fallback(
+            supabase,
+            drawing_id,
+            {"status": "processed", "placement_report": placement_report},
+            fallback_status="processed",
+        )
 
         result_storage_path = generate_and_upload_result_dxf(drawing_id, supabase)
 

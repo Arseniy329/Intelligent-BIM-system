@@ -278,11 +278,7 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
         from src.services.norms.provider import parse_llm_json_response
 
         # Markdown fences with json tag
-        fenced = (
-            "```json\n"
-            "{\"document\": \"ДБН В.2.5-56:2014\", \"clause\": \"6.2.23\"}\n"
-            "```"
-        )
+        fenced = '```json\n{"document": "ДБН В.2.5-56:2014", "clause": "6.2.23"}\n```'
         self.assertEqual(
             parse_llm_json_response(fenced).get("document"),
             "ДБН В.2.5-56:2014",
@@ -291,9 +287,9 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
         # Surrounding conversational prose
         prose = (
             "Ось норма згідно з реєстром:\n"
-            "{\"document\": \"ДСТУ EN 54\", \"clause\": \"5.1\", "
-            "\"source_url\": \"https://zakon.rada.gov.ua/test\", "
-            "\"raw_snippet\": \"цитата\"}\n"
+            '{"document": "ДСТУ EN 54", "clause": "5.1", '
+            '"source_url": "https://zakon.rada.gov.ua/test", '
+            '"raw_snippet": "цитата"}\n'
             "Зверніть увагу на обмеження."
         )
         parsed = parse_llm_json_response(prose)
@@ -380,6 +376,7 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
     # --------------------------------------------------------------------------
     async def test_non_json_plain_text_response_handled_cleanly(self) -> None:
         """Provider returning text 'OK' must be handled without JSONDecodeError."""
+
         def plain_text_transport(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 status_code=200,
@@ -387,9 +384,7 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
                 text="OK\r\n",
             )
 
-        client = httpx.AsyncClient(
-            transport=httpx.MockTransport(plain_text_transport)
-        )
+        client = httpx.AsyncClient(transport=httpx.MockTransport(plain_text_transport))
         provider = LLMDomainRestrictedSearchProvider(
             api_key="mock-key",
             base_url="https://models.github.ai/inference/chat/completions",
@@ -452,9 +447,7 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
         # 1. Single JSON object
         plain_single = '{"summary": "ok", "document": "ДБН В.2.5-56:2014"}'
         fenced_single = (
-            "```json\n"
-            '{"summary": "ok", "document": "ДБН В.2.5-56:2014"}\n'
-            "```"
+            '```json\n{"summary": "ok", "document": "ДБН В.2.5-56:2014"}\n```'
         )
         res_plain = parse_llm_json_response(plain_single)
         res_fenced = parse_llm_json_response(fenced_single)
@@ -463,9 +456,7 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
 
         # 2. Single JSON object + surrounding prose (prefix & suffix)
         plain_surrounding = (
-            "Початок аналізу:\n"
-            '{"summary": "ok", "clause": "6.2.23"}\n'
-            "Кінець аналізу."
+            'Початок аналізу:\n{"summary": "ok", "clause": "6.2.23"}\nКінець аналізу.'
         )
         fenced_surrounding = (
             "Початок аналізу:\n"
@@ -485,16 +476,9 @@ class TestNormsRegression(unittest.IsolatedAsyncioTestCase):
 
         # 3. Multiple JSON objects -> must reject to {} in both representations
         plain_multi = '{"a": 1} {"b": 2}'
-        fenced_multi = "```json\n{\"a\": 1}\n```\n```json\n{\"b\": 2}\n```"
+        fenced_multi = '```json\n{"a": 1}\n```\n```json\n{"b": 2}\n```'
         fenced_multi_with_prose = (
-            "Перший блок:\n"
-            "```json\n"
-            '{"a": 1}\n'
-            "```\n"
-            "Другий блок:\n"
-            "```json\n"
-            '{"b": 2}\n'
-            "```"
+            'Перший блок:\n```json\n{"a": 1}\n```\nДругий блок:\n```json\n{"b": 2}\n```'
         )
         mixed_multi = '```json\n{"a": 1}\n```\nТакож див {"b": 2}'
 
