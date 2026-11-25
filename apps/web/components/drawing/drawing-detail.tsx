@@ -325,7 +325,7 @@ function DrawingDetailContent({
         >
           Звіт
         </button>
-        {result && <span className={workspaceStyles.tabSummary}>{mappedRooms.length} кімнат</span>}
+        {result && <span className={workspaceStyles.tabSummary}>{mappedRooms.length} {new Intl.PluralRules("uk").select(mappedRooms.length) === "one" ? "кімната" : new Intl.PluralRules("uk").select(mappedRooms.length) === "few" ? "кімнати" : "кімнат"}</span>}
       </div>
 
       {activeTab === "plan" && (
