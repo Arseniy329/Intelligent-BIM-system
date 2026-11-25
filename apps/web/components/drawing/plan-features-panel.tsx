@@ -20,7 +20,7 @@ export function PlanFeaturesPanel({ editor, room, zones, exits, loading, error, 
       <button className={button} disabled={blocked || !room} onClick={() => room && editor.beginZone(room)}>Додати зону багатокутником</button>
       {room && <ul className="space-y-2">{zones.filter(z => z.roomId === room.id).map((z, i) => <li key={z.id} className="flex flex-wrap items-center gap-2">
         <strong>{z.name || `Зона ${i + 1}`}</strong>
-        <label className={styles.heightField}>Висота стелі, м<input aria-label={`Висота ${z.name || `зони ${i + 1}`} на плані, м`} type="number" min="0.01" max="100" step="any" placeholder="Введіть висоту"
+        <label className={styles.heightField}>Висота стелі, м<input aria-label={`Висота ${z.name || `зони ${i + 1}`} на плані, м`} type="number" min="0.01" max="100" step="any" placeholder="Введіть висоту" onWheel={event => event.currentTarget.blur()}
           disabled={disabled || editor.busy || editor.uncertain || !!editor.draft && !(editor.draft.kind === "zone" && editor.draft.id === z.id)}
           value={editor.draft?.kind === "zone" && editor.draft.id === z.id ? editor.draft.height : z.height ?? ""}
           onChange={event => { if (!editor.draft) editor.beginZone(room, z); editor.setHeight(event.target.value); }} /></label>

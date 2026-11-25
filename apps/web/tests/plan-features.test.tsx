@@ -21,6 +21,11 @@ it("starts a guarded zone draft from the panel height field and saves its origin
   }
   render(<Harness />);
   fireEvent.change(screen.getByLabelText("Висота Низька на плані, м"), { target: { value: "4.2" } });
+  const height = screen.getByLabelText("Висота Низька на плані, м");
+  height.focus();
+  fireEvent.wheel(height, { deltaY: 100 });
+  expect(height).not.toHaveFocus();
+  expect(height).toHaveValue(4.2);
   expect(screen.getByRole("button", { name: "Позначити евакуаційний вихід" })).toBeDisabled();
   fireEvent.click(screen.getByRole("button", { name: "Зберегти зону" }));
   await waitFor(() => expect(updateZone).toHaveBeenCalledWith(zone.id, { name: zone.name, height: 4.2, polygon: zone.polygon }));

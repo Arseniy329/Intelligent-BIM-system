@@ -99,7 +99,7 @@ export function PlanEditorPanel({ editor: e, rooms, devices, selectedRoomId, dev
       {draft?.kind === "zone" && <>
         <p>Обведіть частину вибраного приміщення багатокутником. Додайте решту зон окремо. Перетягування вершин уточнює межі.</p>
         <label>Назва зони<input maxLength={200} value={draft.name} onChange={event => e.setName(event.target.value)} /></label>
-        <label>Висота зони, м<input type="number" min="0.01" max="100" step="any" value={draft.height} onChange={event => e.setHeight(event.target.value)} /></label>
+        <label>Висота зони, м<input type="number" min="0.01" max="100" step="any" value={draft.height} onWheel={event => event.currentTarget.blur()} onChange={event => e.setHeight(event.target.value)} /></label>
         <small>Порожня висота — «Недостатньо даних»: ця зона не бере участі в розміщенні.</small>
         {!draft.id && <button disabled={!draft.points.length || e.uncertain} onClick={e.undoPoint}>Прибрати останню вершину</button>}
       </>}
