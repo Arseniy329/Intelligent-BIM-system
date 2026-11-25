@@ -341,9 +341,15 @@ class TestPlaceManualCallPoints(ExitsTestCase):
         rows = self.call_point_rows()
         self.assertEqual(len(rows), 3)
         reopened = self.client.get(f"/api/v1/drawings/{self.drawing_id}").json()
-        returned = [device for device in reopened["devices"] if device["type"] == "manual_call_point"]
+        returned = [
+            device
+            for device in reopened["devices"]
+            if device["type"] == "manual_call_point"
+        ]
         self.assertEqual(len(returned), len(rows))
-        self.assertTrue(all(device["ruleId"] == self.dstu_rule["id"] for device in returned))
+        self.assertTrue(
+            all(device["ruleId"] == self.dstu_rule["id"] for device in returned)
+        )
         for row in rows:
             self.assertEqual(row["layer"], "SYS_FIRE_MCP")
             self.assertEqual(row["rule_id"], self.dstu_rule["id"])
