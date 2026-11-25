@@ -105,12 +105,14 @@ class TestDevicesApi(unittest.TestCase):
         self.regenerate.assert_not_called()
 
     def test_stale_export_is_not_offered_by_drawing_detail(self) -> None:
-        self.drawing_row.update({
-            "error_message": "Device changes saved; result DXF needs regeneration",
-            "created_at": "2026-11-15T10:00:00Z",
-            "original_file_name": "source.dxf",
-            "storage_path": "source.dxf",
-        })
+        self.drawing_row.update(
+            {
+                "error_message": "Device changes saved; result DXF needs regeneration",
+                "created_at": "2026-11-15T10:00:00Z",
+                "original_file_name": "source.dxf",
+                "storage_path": "source.dxf",
+            }
+        )
         self.supabase.storage.from_.return_value.create_signed_url.return_value = {
             "signedUrl": "https://storage.example/source.dxf"
         }

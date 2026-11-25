@@ -48,9 +48,7 @@ def _parse_timestamp(value: object) -> datetime:
     return parsed
 
 
-def _has_stored_result(
-    supabase: Client, drawing_id: str, row: dict
-) -> bool:
+def _has_stored_result(supabase: Client, drawing_id: str, row: dict) -> bool:
     explicit = row.get("has_result")
     if isinstance(explicit, bool):
         return explicit
@@ -128,6 +126,19 @@ async def list_drawings_for_user(
     return drawings
 
 
+def is_missing_schema_error(exc: Exception) -> bool:
+    """Return True if exc indicates a missing table or column in PostgREST."""
+    parts = [str(exc)]
+    for attr in ("code", "message", "details", "hint"):
+        val = getattr(exc, attr, None)
+        if val is not None:
+            parts.append(str(val))
+    for arg in getattr(exc, "args", ()):
+        parts.append(str(arg))
+    haystack = " ".join(parts).upper()
+    return (
+        "PGRST204" in haystack or "PGRST205" in haystack or "SCHEMA CACHE" in haystack
+    )
 
 
 def stored_unit_scale_m(drawing: dict[str, Any]) -> float | None:
@@ -170,9 +181,13 @@ def get_unit_scale_m(drawing: dict[str, Any], supabase: Client) -> float:
     finally:
         cleanup_file(tmp_path)
 
-    supabase.table("drawings").update({"unit_scale_m": scale}).eq(
-        "id", str(drawing["id"])
-    ).execute()
+    try:
+        supabase.table("drawings").update({"unit_scale_m": scale}).eq(
+            "id", str(drawing["id"])
+        ).execute()
+    except Exception as exc:
+        if not is_missing_schema_error(exc):
+            raise
     drawing["unit_scale_m"] = scale
     return scale
 
