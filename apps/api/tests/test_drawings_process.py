@@ -1842,7 +1842,7 @@ class TestSchemaFallback(unittest.TestCase):
         self,
         mock_export: MagicMock,
     ) -> None:
-        """PGRST204 on placement_report aborts with 503 before deleting devices."""
+        """PGRST204 or 42703 on placement_report aborts with 503 without mutating."""
         drawing_id = str(uuid4())
         room_id = str(uuid4())
         existing_device_id = str(uuid4())
@@ -1853,7 +1853,7 @@ class TestSchemaFallback(unittest.TestCase):
             "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
             "units": "mm",
             "unit_scale_m": 0.001,
-            "status": "processing",
+            "status": "processed",
             "created_at": "2026-10-31T12:00:00Z",
         }
         room_row = {
@@ -1883,54 +1883,72 @@ class TestSchemaFallback(unittest.TestCase):
             "conditions": {"max_protected_area_m2": 80.0},
             "verification_status": "verified",
         }
-        devices_table = FakeTable(
-            [
-                {
-                    "id": existing_device_id,
-                    "drawing_id": drawing_id,
-                    "room_id": room_id,
-                    "type": "smoke_detector",
-                    "x": 2000.0,
-                    "y": 2500.0,
-                }
-            ]
+
+        cases = (
+            (
+                "PGRST204",
+                "PGRST204: Could not find the 'placement_report' column",
+            ),
+            (
+                "42703",
+                '{"code": "42703", "message": "column drawings.placement_report '
+                'does not exist"}',
+            ),
         )
 
-        mock_drawings_table = MagicMock()
-
-        def mock_select(*cols: str) -> MagicMock:
-            q = MagicMock()
-            q.eq.return_value = q
-            q.limit.return_value = q
-            q.single.return_value = q
-            if cols == ("placement_report",):
-                q.execute.side_effect = Exception(
-                    "PGRST204: Could not find the 'placement_report' column"
+        for error_code, error_msg in cases:
+            with self.subTest(error_code=error_code):
+                mock_export.reset_mock()
+                devices_table = FakeTable(
+                    [
+                        {
+                            "id": existing_device_id,
+                            "drawing_id": drawing_id,
+                            "room_id": room_id,
+                            "type": "smoke_detector",
+                            "x": 2000.0,
+                            "y": 2500.0,
+                        }
+                    ]
                 )
-            else:
-                q.execute.return_value = MagicMock(data=drawing_record)
-            return q
 
-        mock_drawings_table.select.side_effect = mock_select
+                mock_drawings_table = MagicMock()
 
-        tables = {
-            "drawings": mock_drawings_table,
-            "rooms": FakeTable([room_row]),
-            "rules": FakeTable([rule_row]),
-            "devices": devices_table,
-            "room_zones": FakeTable([]),
-            "exits": FakeTable([]),
-            "passages": FakeTable([]),
-        }
-        self.mock_supabase.table.side_effect = lambda name: tables[name]
+                def mock_select(
+                    *cols: str,
+                    _err: str = error_msg,
+                ) -> MagicMock:
+                    q = MagicMock()
+                    q.eq.return_value = q
+                    q.limit.return_value = q
+                    q.single.return_value = q
+                    if cols == ("placement_report",):
+                        q.execute.side_effect = Exception(_err)
+                    else:
+                        q.execute.return_value = MagicMock(data=drawing_record)
+                    return q
 
-        response = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+                mock_drawings_table.select.side_effect = mock_select
 
-        self.assertEqual(response.status_code, 503, response.text)
-        self.assertEqual(len(devices_table.rows), 1)
-        self.assertEqual(devices_table.deleted, [])
-        mock_export.assert_not_called()
-        mock_drawings_table.update.assert_not_called()
+                tables = {
+                    "drawings": mock_drawings_table,
+                    "rooms": FakeTable([room_row]),
+                    "rules": FakeTable([rule_row]),
+                    "devices": devices_table,
+                    "room_zones": FakeTable([]),
+                    "exits": FakeTable([]),
+                    "passages": FakeTable([]),
+                }
+                self.mock_supabase.table.side_effect = lambda name, t=tables: t[name]
+
+                response = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertEqual(len(devices_table.rows), 1)
+                self.assertEqual(devices_table.rows[0]["id"], existing_device_id)
+                self.assertEqual(devices_table.deleted, [])
+                mock_export.assert_not_called()
+                mock_drawings_table.update.assert_not_called()
 
     @patch(
         "src.modules.drawings.router.generate_and_upload_result_dxf",

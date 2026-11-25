@@ -94,6 +94,18 @@ def _select_drawing_rows_strict(
     )
 
 
+def _is_undefined_column_error(exc: Exception) -> bool:
+    """Return True if exc carries PostgreSQL SQLSTATE 42703 (undefined_column)."""
+    parts = [str(exc)]
+    for attr in ("code", "message", "details", "hint"):
+        val = getattr(exc, attr, None)
+        if val is not None:
+            parts.append(str(val))
+    for arg in getattr(exc, "args", ()):
+        parts.append(str(arg))
+    return "42703" in " ".join(parts)
+
+
 def _ensure_column_exists(
     supabase: Client, table_name: str, column_name: str, drawing_id: str
 ) -> None:
@@ -103,7 +115,7 @@ def _ensure_column_exists(
             1
         ).execute()
     except Exception as exc:
-        if _is_missing_schema_error(exc):
+        if _is_missing_schema_error(exc) or _is_undefined_column_error(exc):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
