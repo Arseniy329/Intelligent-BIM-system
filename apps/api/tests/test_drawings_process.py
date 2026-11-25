@@ -1576,5 +1576,582 @@ class TestStaleLayoutAfterFailedReprocess(unittest.TestCase):
         self.assertNotIn("exit_detection", self.place(good).json())
 
 
+class TestSchemaFallback(unittest.TestCase):
+    """Verify Sprint 4 schema fallback when PostgREST reports PGRST204/PGRST205."""
+
+    def setUp(self) -> None:
+        self.user_id = str(uuid4())
+        self.current_user = CurrentUser(id=self.user_id, role="engineer")
+        self.mock_supabase = MagicMock()
+        app.dependency_overrides[get_current_user] = lambda: self.current_user
+        app.dependency_overrides[get_supabase_client] = lambda: self.mock_supabase
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        app.dependency_overrides.clear()
+
+    def test_process_drawing_falls_back_on_pgrst204_missing_columns(self) -> None:
+        """process_drawing succeeds with status=processing when PGRST204 occurs."""
+        drawing_id = str(uuid4())
+        fixture_path = FIXTURES_DIR / "01_simple_rooms_mm.dxf"
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "01_simple_rooms_mm.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "status": "uploaded",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+
+        update_payloads: list[dict[str, Any]] = []
+
+        mock_drawings_table = MagicMock()
+        mock_select_query = MagicMock()
+        mock_select_query.eq.return_value = mock_select_query
+        mock_select_query.single.return_value = mock_select_query
+        mock_select_query.execute.return_value = MagicMock(data=drawing_record)
+        mock_drawings_table.select.return_value = mock_select_query
+
+        def mock_update(payload: dict[str, Any]) -> MagicMock:
+            update_payloads.append(payload)
+            q = MagicMock()
+            q.eq.return_value = q
+            if "unit_scale_m" in payload or "placement_report" in payload:
+                q.execute.side_effect = Exception(
+                    "{'code': 'PGRST204', 'message': "
+                    "\"Could not find the 'unit_scale_m' column of 'drawings' "
+                    'in the schema cache"}'
+                )
+            else:
+                q.execute.return_value = MagicMock(data=[drawing_record])
+            return q
+
+        mock_drawings_table.update.side_effect = mock_update
+
+        mock_rooms_table = MagicMock()
+        mock_rooms_q = MagicMock()
+        mock_rooms_q.eq.return_value = mock_rooms_q
+        mock_rooms_q.execute.return_value = MagicMock(data=[])
+        mock_rooms_table.delete.return_value = mock_rooms_q
+        mock_rooms_table.insert.return_value = mock_rooms_q
+
+        def table_side_effect(name: str) -> MagicMock:
+            if name == "drawings":
+                return mock_drawings_table
+            if name == "rooms":
+                return mock_rooms_table
+            return MagicMock()
+
+        self.mock_supabase.table.side_effect = table_side_effect
+        mock_bucket = MagicMock()
+        mock_bucket.download.return_value = fixture_path.read_bytes()
+        self.mock_supabase.storage.from_.return_value = mock_bucket
+
+        response = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "processing")
+        self.assertEqual(len(update_payloads), 3)
+        self.assertIn("unit_scale_m", update_payloads[0])
+        self.assertIn("placement_report", update_payloads[0])
+        self.assertEqual(
+            update_payloads[1],
+            {"status": "processing", "unit_scale_m": 0.001},
+        )
+        self.assertEqual(update_payloads[2], {"status": "processing"})
+
+    def test_process_drawing_preserves_unit_scale_m_on_placement_report_pgrst204(
+        self,
+    ) -> None:
+        """When only placement_report is missing (PGRST204), unit_scale_m is kept."""
+        drawing_id = str(uuid4())
+        fixture_path = FIXTURES_DIR / "01_simple_rooms_mm.dxf"
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "01_simple_rooms_mm.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "status": "uploaded",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+
+        update_payloads: list[dict[str, Any]] = []
+        mock_drawings_table = MagicMock()
+        mock_select_query = MagicMock()
+        mock_select_query.eq.return_value = mock_select_query
+        mock_select_query.single.return_value = mock_select_query
+        mock_select_query.execute.return_value = MagicMock(data=drawing_record)
+        mock_drawings_table.select.return_value = mock_select_query
+
+        def mock_update(payload: dict[str, Any]) -> MagicMock:
+            update_payloads.append(payload)
+            q = MagicMock()
+            q.eq.return_value = q
+            if "placement_report" in payload:
+                q.execute.side_effect = Exception(
+                    "PGRST204: Could not find the 'placement_report' column"
+                )
+            else:
+                q.execute.return_value = MagicMock(data=[drawing_record])
+            return q
+
+        mock_drawings_table.update.side_effect = mock_update
+
+        mock_rooms_table = MagicMock()
+        mock_rooms_q = MagicMock()
+        mock_rooms_q.eq.return_value = mock_rooms_q
+        mock_rooms_q.execute.return_value = MagicMock(data=[])
+        mock_rooms_table.delete.return_value = mock_rooms_q
+        mock_rooms_table.insert.return_value = mock_rooms_q
+
+        def table_side_effect(name: str) -> MagicMock:
+            if name == "drawings":
+                return mock_drawings_table
+            if name == "rooms":
+                return mock_rooms_table
+            return MagicMock()
+
+        self.mock_supabase.table.side_effect = table_side_effect
+        mock_bucket = MagicMock()
+        mock_bucket.download.return_value = fixture_path.read_bytes()
+        self.mock_supabase.storage.from_.return_value = mock_bucket
+
+        response = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "processing")
+        self.assertEqual(len(update_payloads), 2)
+        self.assertIn("placement_report", update_payloads[0])
+        self.assertEqual(
+            update_payloads[1],
+            {"status": "processing", "unit_scale_m": 0.001},
+        )
+
+    @patch("src.modules.drawings.router.generate_and_upload_result_dxf")
+    def test_place_aborts_on_pgrst205_without_wiping_devices(
+        self,
+        mock_export: MagicMock,
+    ) -> None:
+        """PGRST205 on Sprint 4 tables aborts with 503 before deleting devices."""
+        drawing_id = str(uuid4())
+        room_id = str(uuid4())
+        existing_device_id = str(uuid4())
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "plan.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "unit_scale_m": 0.001,
+            "status": "processing",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+        room_row = {
+            "id": room_id,
+            "drawing_id": drawing_id,
+            "name": "Office",
+            "type": "office",
+            "height": 3.0,
+            "area": 20.0,
+            "polygon": [
+                {"x": 0.0, "y": 0.0},
+                {"x": 4000.0, "y": 0.0},
+                {"x": 4000.0, "y": 5000.0},
+                {"x": 0.0, "y": 5000.0},
+            ],
+        }
+        rule_row = {
+            "id": str(uuid4()),
+            "rule_id": "SMOKE_GRID_HEIGHT_3_5",
+            "name": "SMOKE_GRID_HEIGHT_3_5",
+            "device_type": "smoke_detector",
+            "value_kind": "max_grid_spacing_m",
+            "room_types": [],
+            "min_height_m": None,
+            "max_height_m": 3.5,
+            "value": 9.0,
+            "conditions": {"max_protected_area_m2": 80.0},
+            "verification_status": "verified",
+        }
+        existing_device = {
+            "id": existing_device_id,
+            "drawing_id": drawing_id,
+            "room_id": room_id,
+            "type": "manual_call_point",
+            "x": 100.0,
+            "y": 100.0,
+        }
+
+        drawings_table = FakeTable([dict(drawing_record)])
+        rooms_table = FakeTable([room_row])
+        rules_table = FakeTable([rule_row])
+        devices_table = FakeTable([dict(existing_device)])
+
+        def make_missing_table(table_name: str) -> MagicMock:
+            tbl = MagicMock()
+            q = MagicMock()
+            q.eq.return_value = q
+            q.execute.side_effect = Exception(
+                f"PGRST205: Could not find the table 'public.{table_name}' "
+                "in the schema cache"
+            )
+            tbl.select.return_value = q
+            return tbl
+
+        # Case 1: PGRST205 on exits -> 503, devices preserved, no export, not processed
+        tables_missing = {
+            "drawings": drawings_table,
+            "rooms": rooms_table,
+            "rules": rules_table,
+            "devices": devices_table,
+            "room_zones": FakeTable([]),
+            "exits": make_missing_table("exits"),
+            "passages": FakeTable([]),
+        }
+        self.mock_supabase.table.side_effect = lambda name: tables_missing[name]
+
+        resp_err = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+        self.assertEqual(resp_err.status_code, 503, resp_err.text)
+        self.assertEqual(len(devices_table.rows), 1)
+        self.assertEqual(devices_table.rows[0]["id"], existing_device_id)
+        self.assertEqual(devices_table.deleted, [])
+        mock_export.assert_not_called()
+        self.assertNotEqual(drawings_table.rows[0]["status"], "processed")
+
+        # Case 2: Valid empty [] tables -> 200 and status=processed
+        mock_export.return_value = f"{self.user_id}/{drawing_id}/result.dxf"
+        tables_ok = {
+            "drawings": drawings_table,
+            "rooms": rooms_table,
+            "rules": rules_table,
+            "devices": devices_table,
+            "room_zones": FakeTable([]),
+            "exits": FakeTable([]),
+            "passages": FakeTable([]),
+        }
+        self.mock_supabase.table.side_effect = lambda name: tables_ok[name]
+
+        resp_ok = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+        self.assertEqual(resp_ok.status_code, 200, resp_ok.text)
+        self.assertEqual(resp_ok.json()["status"], "processed")
+
+    @patch("src.modules.drawings.router.generate_and_upload_result_dxf")
+    def test_place_aborts_on_pgrst204_placement_report_without_wiping_devices(
+        self,
+        mock_export: MagicMock,
+    ) -> None:
+        """PGRST204 or 42703 on placement_report aborts with 503 without mutating."""
+        drawing_id = str(uuid4())
+        room_id = str(uuid4())
+        existing_device_id = str(uuid4())
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "plan.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "unit_scale_m": 0.001,
+            "status": "processed",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+        room_row = {
+            "id": room_id,
+            "drawing_id": drawing_id,
+            "name": "Office",
+            "type": "office",
+            "height": 3.0,
+            "area": 20.0,
+            "polygon": [
+                {"x": 0.0, "y": 0.0},
+                {"x": 4000.0, "y": 0.0},
+                {"x": 4000.0, "y": 5000.0},
+                {"x": 0.0, "y": 5000.0},
+            ],
+        }
+        rule_row = {
+            "id": str(uuid4()),
+            "rule_id": "SMOKE_GRID_HEIGHT_3_5",
+            "name": "SMOKE_GRID_HEIGHT_3_5",
+            "device_type": "smoke_detector",
+            "value_kind": "max_grid_spacing_m",
+            "room_types": [],
+            "min_height_m": None,
+            "max_height_m": 3.5,
+            "value": 9.0,
+            "conditions": {"max_protected_area_m2": 80.0},
+            "verification_status": "verified",
+        }
+
+        cases = (
+            (
+                "PGRST204",
+                "PGRST204: Could not find the 'placement_report' column",
+            ),
+            (
+                "42703",
+                '{"code": "42703", "message": "column drawings.placement_report '
+                'does not exist"}',
+            ),
+        )
+
+        for error_code, error_msg in cases:
+            with self.subTest(error_code=error_code):
+                mock_export.reset_mock()
+                devices_table = FakeTable(
+                    [
+                        {
+                            "id": existing_device_id,
+                            "drawing_id": drawing_id,
+                            "room_id": room_id,
+                            "type": "smoke_detector",
+                            "x": 2000.0,
+                            "y": 2500.0,
+                        }
+                    ]
+                )
+
+                mock_drawings_table = MagicMock()
+
+                def mock_select(
+                    *cols: str,
+                    _err: str = error_msg,
+                ) -> MagicMock:
+                    q = MagicMock()
+                    q.eq.return_value = q
+                    q.limit.return_value = q
+                    q.single.return_value = q
+                    if cols == ("placement_report",):
+                        q.execute.side_effect = Exception(_err)
+                    else:
+                        q.execute.return_value = MagicMock(data=drawing_record)
+                    return q
+
+                mock_drawings_table.select.side_effect = mock_select
+
+                tables = {
+                    "drawings": mock_drawings_table,
+                    "rooms": FakeTable([room_row]),
+                    "rules": FakeTable([rule_row]),
+                    "devices": devices_table,
+                    "room_zones": FakeTable([]),
+                    "exits": FakeTable([]),
+                    "passages": FakeTable([]),
+                }
+                self.mock_supabase.table.side_effect = lambda name, t=tables: t[name]
+
+                response = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertEqual(len(devices_table.rows), 1)
+                self.assertEqual(devices_table.rows[0]["id"], existing_device_id)
+                self.assertEqual(devices_table.deleted, [])
+                mock_export.assert_not_called()
+                mock_drawings_table.update.assert_not_called()
+
+    @patch(
+        "src.modules.drawings.router.generate_and_upload_result_dxf",
+        return_value="user/drawing/result.dxf",
+    )
+    def test_place_resolves_inches_unit_scale_from_source_dxf_when_null(
+        self,
+        _mock_export: MagicMock,
+    ) -> None:
+        """When drawings.unit_scale_m is NULL/unmigrated, /place reads $INSUNITS."""
+        drawing_id = str(uuid4())
+        room_id = str(uuid4())
+
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 1  # inches -> 0.0254 m/unit
+        dxf_buf = io.StringIO()
+        doc.write(dxf_buf)
+        dxf_bytes = dxf_buf.getvalue().encode("utf-8")
+
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "inches.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "unit_scale_m": None,
+            "status": "processing",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+        room_row = {
+            "id": room_id,
+            "drawing_id": drawing_id,
+            "name": "Office",
+            "type": "office",
+            "height": 3.0,
+            "area": 25.8,
+            "polygon": [
+                {"x": 0.0, "y": 0.0},
+                {"x": 200.0, "y": 0.0},
+                {"x": 200.0, "y": 200.0},
+                {"x": 0.0, "y": 200.0},
+            ],
+        }
+        rule_row = {
+            "id": str(uuid4()),
+            "rule_id": "SMOKE_GRID_HEIGHT_3_5",
+            "name": "SMOKE_GRID_HEIGHT_3_5",
+            "device_type": "smoke_detector",
+            "value_kind": "max_grid_spacing_m",
+            "room_types": [],
+            "min_height_m": None,
+            "max_height_m": 3.5,
+            "value": 9.0,
+            "conditions": {"max_protected_area_m2": 80.0},
+            "verification_status": "verified",
+        }
+
+        drawings_table = FakeTable([dict(drawing_record)])
+        orig_update = drawings_table.update
+
+        def update_with_missing_unit_scale(values: dict[str, Any]) -> Any:
+            q = orig_update(values)
+            if "unit_scale_m" in values:
+                mock_q = MagicMock()
+                mock_q.eq.return_value = mock_q
+                mock_q.execute.side_effect = Exception(
+                    "PGRST204: Could not find the 'unit_scale_m' column"
+                )
+                return mock_q
+            return q
+
+        drawings_table.update = update_with_missing_unit_scale  # type: ignore[method-assign]
+        devices_table = FakeTable([])
+
+        tables = {
+            "drawings": drawings_table,
+            "rooms": FakeTable([room_row]),
+            "rules": FakeTable([rule_row]),
+            "devices": devices_table,
+            "room_zones": FakeTable([]),
+            "exits": FakeTable([]),
+            "passages": FakeTable([]),
+        }
+        self.mock_supabase.table.side_effect = lambda name: tables[name]
+        mock_bucket = MagicMock()
+        mock_bucket.download.return_value = dxf_bytes
+        self.mock_supabase.storage.from_.return_value = mock_bucket
+
+        with patch(
+            "src.modules.drawings.router.place_targets",
+            wraps=__import__(
+                "src.modules.placement.service", fromlist=["place_targets"]
+            ).place_targets,
+        ) as spy_place_targets:
+            response = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertAlmostEqual(
+            spy_place_targets.call_args.kwargs["unit_scale_m"], 0.0254, places=6
+        )
+
+    def test_full_process_place_get_integration(self) -> None:
+        """Full POST /process -> POST /place -> GET /drawings/{id} flow."""
+        drawing_id = str(uuid4())
+        fixture_path = FIXTURES_DIR / "01_simple_rooms_mm.dxf"
+        dxf_bytes = fixture_path.read_bytes()
+
+        drawings_table = FakeTable(
+            [
+                {
+                    "id": drawing_id,
+                    "owner_id": self.user_id,
+                    "original_file_name": "01_simple_rooms_mm.dxf",
+                    "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+                    "units": "mm",
+                    "status": "uploaded",
+                    "created_at": "2026-10-31T12:00:00Z",
+                }
+            ]
+        )
+        rooms_table = FakeTable([])
+        exits_table = FakeTable([])
+        passages_table = FakeTable([])
+        room_zones_table = FakeTable([])
+        devices_table = FakeTable([])
+        rules_table = FakeTable(
+            [
+                {
+                    "id": str(uuid4()),
+                    "rule_id": "SMOKE_GRID_HEIGHT_3_5",
+                    "name": "SMOKE_GRID_HEIGHT_3_5",
+                    "device_type": "smoke_detector",
+                    "value_kind": "max_grid_spacing_m",
+                    "room_types": [],
+                    "min_height_m": None,
+                    "max_height_m": 3.5,
+                    "value": 9.0,
+                    "conditions": {"max_protected_area_m2": 80.0},
+                    "verification_status": "verified",
+                }
+            ]
+        )
+
+        tables = {
+            "drawings": drawings_table,
+            "rooms": rooms_table,
+            "exits": exits_table,
+            "passages": passages_table,
+            "room_zones": room_zones_table,
+            "devices": devices_table,
+            "rules": rules_table,
+        }
+        rpc = {
+            "replace_dxf_layout": fake_replace_dxf_layout(exits_table, passages_table)
+        }
+        fake_client = fake_supabase(tables, rpc=rpc)
+
+        uploaded_files: dict[str, bytes] = {}
+        mock_bucket = MagicMock()
+        mock_bucket.download.return_value = dxf_bytes
+
+        def mock_upload(path: str, file: str | bytes, file_options: dict) -> dict:
+            uploaded_files[path] = (
+                Path(file).read_bytes() if isinstance(file, str) else file
+            )
+            return {"Key": path}
+
+        mock_bucket.upload.side_effect = mock_upload
+        mock_bucket.create_signed_url.return_value = {
+            "signedURL": "https://mock.supabase.co/signed/result.dxf"
+        }
+        fake_client.storage.from_.return_value = mock_bucket
+        app.dependency_overrides[get_supabase_client] = lambda: fake_client
+
+        proc_resp = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
+        self.assertEqual(proc_resp.status_code, 200, proc_resp.text)
+        self.assertEqual(proc_resp.json()["status"], "processing")
+        self.assertEqual(len(rooms_table.rows), 3)
+
+        for row in rooms_table.rows:
+            row["height"] = 3.0
+
+        place_resp = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+        self.assertEqual(place_resp.status_code, 200, place_resp.text)
+        place_body = place_resp.json()
+        self.assertEqual(place_body["status"], "processed")
+        self.assertGreater(len(devices_table.rows), 0)
+        self.assertIn(f"{self.user_id}/{drawing_id}/result.dxf", uploaded_files)
+
+        get_resp = self.client.get(f"/api/v1/drawings/{drawing_id}")
+        self.assertEqual(get_resp.status_code, 200, get_resp.text)
+        detail = get_resp.json()
+        self.assertEqual(len(detail["rooms"]), 3)
+        self.assertEqual(len(detail["devices"]), len(devices_table.rows))
+        self.assertEqual(
+            detail["downloadUrl"], "https://mock.supabase.co/signed/result.dxf"
+        )
+        self.assertEqual(
+            detail["placementReport"]["manual_call_points"],
+            place_body["manual_call_points"],
+        )
+        self.assertEqual(detail["placementReport"]["sounders"], place_body["sounders"])
+
+
 if __name__ == "__main__":
     unittest.main()

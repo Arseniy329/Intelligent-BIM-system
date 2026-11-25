@@ -36,6 +36,8 @@ from src.modules.drawings.schemas import (
 )
 from src.modules.drawings.service import (
     generate_and_upload_result_dxf,
+    get_unit_scale_m,
+    is_missing_schema_error,
     list_drawings_for_user,
     stored_unit_scale_m,
 )
@@ -59,6 +61,113 @@ from src.modules.rooms.service import room_from_row, row_points
 router = APIRouter(prefix="/drawings", tags=["drawings"])
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+_is_missing_schema_error = is_missing_schema_error
+
+
+def _select_drawing_rows_strict(
+    supabase: Client, table_name: str, drawing_id: str
+) -> list[dict[str, Any]]:
+    """Select rows for drawing_id, raising 503 if Sprint 4 schema is missing."""
+    try:
+        response = (
+            supabase.table(table_name)
+            .select("*")
+            .eq("drawing_id", drawing_id)
+            .execute()
+        )
+    except Exception as exc:
+        if _is_missing_schema_error(exc):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    f"Database table '{table_name}' is unavailable "
+                    "(apply Sprint 4 migrations)."
+                ),
+            ) from exc
+        raise
+    return (
+        [row for row in response.data if isinstance(row, dict)]
+        if isinstance(response.data, list)
+        else []
+    )
+
+
+def _is_undefined_column_error(exc: Exception) -> bool:
+    """Return True if exc carries PostgreSQL SQLSTATE 42703 (undefined_column)."""
+    parts = [str(exc)]
+    for attr in ("code", "message", "details", "hint"):
+        val = getattr(exc, attr, None)
+        if val is not None:
+            parts.append(str(val))
+    for arg in getattr(exc, "args", ()):
+        parts.append(str(arg))
+    return "42703" in " ".join(parts)
+
+
+def _ensure_column_exists(
+    supabase: Client, table_name: str, column_name: str, drawing_id: str
+) -> None:
+    """Verify a migrated column exists before mutating devices or result DXF."""
+    try:
+        supabase.table(table_name).select(column_name).eq("id", drawing_id).limit(
+            1
+        ).execute()
+    except Exception as exc:
+        if _is_missing_schema_error(exc) or _is_undefined_column_error(exc):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    f"Database column '{table_name}.{column_name}' is unavailable "
+                    "(apply Sprint 4 migrations)."
+                ),
+            ) from exc
+        raise
+
+
+def _update_processing_drawing_status(
+    supabase: Client,
+    drawing_id: str,
+    unit_scale_m: float,
+    placement_report: dict[str, Any] | None,
+) -> None:
+    """Persist processing status, preserving unit_scale_m when possible."""
+    try:
+        supabase.table("drawings").update(
+            {
+                "status": "processing",
+                "unit_scale_m": unit_scale_m,
+                "placement_report": placement_report,
+            }
+        ).eq("id", drawing_id).execute()
+        return
+    except Exception as exc:
+        if not _is_missing_schema_error(exc):
+            raise
+        logger.warning(
+            "Drawing %s update retrying without placement_report: %s",
+            drawing_id,
+            exc,
+        )
+
+    try:
+        supabase.table("drawings").update(
+            {"status": "processing", "unit_scale_m": unit_scale_m}
+        ).eq("id", drawing_id).execute()
+        return
+    except Exception as exc:
+        if not _is_missing_schema_error(exc):
+            raise
+        logger.warning(
+            "Drawing %s update falling back to status=processing (missing schema): %s",
+            drawing_id,
+            exc,
+        )
+
+    supabase.table("drawings").update({"status": "processing"}).eq(
+        "id", drawing_id
+    ).execute()
 
 
 def _map_db_to_drawing(drawing_data: dict[str, Any]) -> Drawing:
@@ -405,17 +514,16 @@ async def process_drawing(
         # чинність. Замість нього лишається лише збій кроку «виходи й проходи»:
         # він не повинен зникнути після перезавантаження, і /place переносить його
         # у свій звіт, доки обробку не виконано успішно.
-        supabase.table("drawings").update(
-            {
-                "status": "processing",
-                "unit_scale_m": unit_scale_m,
-                "placement_report": (
-                    None
-                    if exit_detection["status"] == EXIT_DETECTION_OK
-                    else {"exit_detection": exit_detection}
-                ),
-            }
-        ).eq("id", drawing_id).execute()
+        _update_processing_drawing_status(
+            supabase,
+            drawing_id,
+            unit_scale_m,
+            (
+                None
+                if exit_detection["status"] == EXIT_DETECTION_OK
+                else {"exit_detection": exit_detection}
+            ),
+        )
 
         return {
             "drawing_id": drawing_id,
@@ -425,12 +533,16 @@ async def process_drawing(
             "exit_detection": exit_detection,
         }
     except Exception as exc:
-        try:
-            supabase.table("drawings").update({"status": "error"}).eq(
-                "id", drawing_id
-            ).execute()
-        except Exception:
-            pass
+        if not (
+            isinstance(exc, HTTPException)
+            and exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        ):
+            try:
+                supabase.table("drawings").update({"status": "error"}).eq(
+                    "id", drawing_id
+                ).execute()
+            except Exception:
+                pass
 
         if isinstance(exc, (HTTPException, BIMException)):
             raise
@@ -491,21 +603,16 @@ async def place_drawing_devices(
                 detail="No fire safety rules available",
             )
 
-        zones_response = (
-            supabase.table("room_zones")
-            .select("*")
-            .eq("drawing_id", drawing_id)
-            .execute()
-        )
-        zone_rows = (
-            [row for row in zones_response.data if isinstance(row, dict)]
-            if isinstance(zones_response.data, list)
-            else []
-        )
+        zone_rows = _select_drawing_rows_strict(supabase, "room_zones", drawing_id)
+        exit_rows = _select_drawing_rows_strict(supabase, "exits", drawing_id)
+        passage_rows = _select_drawing_rows_strict(supabase, "passages", drawing_id)
+        _ensure_column_exists(supabase, "drawings", "placement_report", drawing_id)
 
         # BIM-73: правило береться за висотою приміщення або його зони. Немає
         # висоти чи правила — приладів немає, статус «недостатньо даних».
         unit_scale_m = stored_unit_scale_m(drawing_data)
+        if unit_scale_m is None:
+            unit_scale_m = get_unit_scale_m(drawing_data, supabase)
         placement_targets = build_placement_targets(
             [room for room in rooms_data if isinstance(room, dict)], zone_rows
         )
@@ -558,34 +665,11 @@ async def place_drawing_devices(
             for placed in outcome.devices
         )
 
-        # BIM-75: ручні сповіщувачі біля евакуаційних виходів і на шляхах евакуації.
-        # Немає виходів — їх не розміщуємо й повертаємо «Позначте евакуаційні виходи».
-        exits_response = (
-            supabase.table("exits").select("*").eq("drawing_id", drawing_id).execute()
-        )
-        exit_rows = (
-            [row for row in exits_response.data if isinstance(row, dict)]
-            if isinstance(exits_response.data, list)
-            else []
-        )
-        # Проходи (двері з DXF і підтверджені інженером) — єдине, що з'єднує
-        # приміщення в маршруті евакуації: близькі контури проходу не доводять.
-        passages_response = (
-            supabase.table("passages")
-            .select("*")
-            .eq("drawing_id", drawing_id)
-            .execute()
-        )
-        passage_rows = (
-            [row for row in passages_response.data if isinstance(row, dict)]
-            if isinstance(passages_response.data, list)
-            else []
-        )
         call_points = place_manual_call_points(
             rooms=rooms_from_rows([r for r in rooms_data if isinstance(r, dict)]),
             exits=exits_from_rows(exit_rows),
             rule_rows=rule_rows,
-            unit_scale_m=stored_unit_scale_m(drawing_data),
+            unit_scale_m=unit_scale_m,
             passages=passages_from_rows(passage_rows),
         )
         if call_points.rule is not None:
@@ -652,12 +736,16 @@ async def place_drawing_devices(
             **placement_report,
         }
     except Exception as exc:
-        try:
-            supabase.table("drawings").update({"status": "error"}).eq(
-                "id", drawing_id
-            ).execute()
-        except Exception:
-            pass
+        if not (
+            isinstance(exc, HTTPException)
+            and exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        ):
+            try:
+                supabase.table("drawings").update({"status": "error"}).eq(
+                    "id", drawing_id
+                ).execute()
+            except Exception:
+                pass
 
         if isinstance(exc, (HTTPException, BIMException)):
             raise

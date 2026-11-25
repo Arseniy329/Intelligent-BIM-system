@@ -56,9 +56,7 @@ class FakeQuery:
 
 class FakeSupabase:
     def __init__(self, rows_by_table: dict[str, list[dict]] | None = None):
-        self.tables = {
-            name: list(rows) for name, rows in (rows_by_table or {}).items()
-        }
+        self.tables = {name: list(rows) for name, rows in (rows_by_table or {}).items()}
         self.queries: list[FakeQuery] = []
 
     def table(self, name):
@@ -147,15 +145,11 @@ class TestDrawingsList(unittest.TestCase):
 
     def test_list_drawings_maps_every_contract_status(self) -> None:
         self.fake_supabase.tables["drawings"] = [
-            drawing_row(
-                "uploaded-row", "user-a", "2026-04-01T00:00:00Z", "uploaded"
-            ),
+            drawing_row("uploaded-row", "user-a", "2026-04-01T00:00:00Z", "uploaded"),
             drawing_row(
                 "processing-row", "user-a", "2026-03-01T00:00:00Z", "processing"
             ),
-            drawing_row(
-                "processed-row", "user-a", "2026-02-01T00:00:00Z", "processed"
-            ),
+            drawing_row("processed-row", "user-a", "2026-02-01T00:00:00Z", "processed"),
             drawing_row(
                 "failed-row",
                 "user-a",
@@ -175,20 +169,14 @@ class TestDrawingsList(unittest.TestCase):
         self.assertEqual(by_id["processed-row"]["status"], "processed")
         self.assertEqual(by_id["failed-row"]["status"], "failed")
         self.assertTrue(by_id["failed-row"]["error_message"])
-        self.assertEqual(
-            by_id["failed-row"]["error_message"], "DXF parsing failed"
-        )
+        self.assertEqual(by_id["failed-row"]["error_message"], "DXF parsing failed")
         for non_failed in ("uploaded-row", "processing-row", "processed-row"):
             self.assertIsNone(by_id[non_failed]["error_message"])
 
     def test_list_drawings_has_result_reflects_stored_placement(self) -> None:
         self.fake_supabase.tables["drawings"] = [
-            drawing_row(
-                "with-result", "user-a", "2026-02-01T00:00:00Z", "processed"
-            ),
-            drawing_row(
-                "without-result", "user-a", "2026-01-01T00:00:00Z", "uploaded"
-            ),
+            drawing_row("with-result", "user-a", "2026-02-01T00:00:00Z", "processed"),
+            drawing_row("without-result", "user-a", "2026-01-01T00:00:00Z", "uploaded"),
         ]
         self.fake_supabase.tables["rooms"] = [
             {"id": "room-1", "drawing_id": "with-result"},
@@ -212,9 +200,7 @@ class TestDrawingsList(unittest.TestCase):
         ]
         self.authenticate("user-a")
 
-        response = self.client.get(
-            "/api/v1/drawings", params={"user_id": "user-b"}
-        )
+        response = self.client.get("/api/v1/drawings", params={"user_id": "user-b"})
 
         self.assertEqual(response.status_code, 200)
         ids = {item["id"] for item in response.json()}
@@ -223,9 +209,7 @@ class TestDrawingsList(unittest.TestCase):
 
     def test_list_drawings_uses_snake_case_contract_keys(self) -> None:
         self.fake_supabase.tables["drawings"] = [
-            drawing_row(
-                "a-only", "user-a", "2026-02-01T00:00:00Z", "uploaded"
-            ),
+            drawing_row("a-only", "user-a", "2026-02-01T00:00:00Z", "uploaded"),
         ]
         self.authenticate("user-a")
 

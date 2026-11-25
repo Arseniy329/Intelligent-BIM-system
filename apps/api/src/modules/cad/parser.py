@@ -18,7 +18,7 @@ from src.contracts.generated import Room, Source
 from src.core.exceptions import (
     CADParsingError,
 )
-from src.modules.rooms.service import suggest_room_type
+from src.modules.rooms.service import UNKNOWN_ROOM_TYPE, suggest_room_type
 
 # Scale factors from INSUNITS to meters (length)
 INSUNITS_SCALE_TO_METERS: dict[int, float] = {
@@ -55,10 +55,35 @@ AREA_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_HEIGHT_EXPR = r"(?:[HhНн]\s*[=:\-]\s*\d+(?:[.,]\d+)?\s*(?:м|m)?\.?)"
+_HEIGHT_WORD = (
+    r"(?:висота|высота|height)"
+    r"(?:\s+(?:стелі|потолка|приміщення|помещения|ceiling|room))?"
+    r"\s*[=:\-]?\s*\d+(?:[.,]\d+)?\s*(?:м|m)?\.?"
+)
+_ZONE_MARKER = (
+    r"(?:зона|zone)"
+    r"(?:\s+(?:\d+[a-zA-Zа-яА-ЯіІїЇєЄ]?|[A-ZА-ЯІЇЄ]))"
+    rf"(?:\s*[,:\-\s]?\s*[\(\[]?\s*(?:{_HEIGHT_EXPR}|{_HEIGHT_WORD})\s*[\)\]]?)?"
+)
+_ZONE_HEIGHT_ONLY = (
+    r"(?:зона|zone)\s*[,:\-\s]?\s*[\(\[]?\s*"
+    rf"(?:{_HEIGHT_EXPR}|{_HEIGHT_WORD})\s*[\)\]]?"
+)
+HEIGHT_PATTERN = re.compile(
+    rf"^\s*(?:\(\s*{_HEIGHT_EXPR}\s*\)|{_HEIGHT_EXPR}"
+    rf"|{_HEIGHT_WORD}|{_ZONE_MARKER}|{_ZONE_HEIGHT_ONLY})\s*$",
+    re.IGNORECASE,
+)
+
 WALL_KEYWORDS = ("WALL", "СТІН", "ПЕРЕГОР", "СТЕН", "PARTITION")
 OPENING_KEYWORDS = (
     "DOOR",
     "ДВЕР",
+    "ДВІР",
+    "EXIT",
+    "ВИХІД",
+    "ВИХОД",
     "WINDOW",
     "ВІКН",
     "ОКН",
@@ -184,6 +209,14 @@ def _is_area_string(text: str) -> bool:
     return bool(AREA_PATTERN.fullmatch(stripped))
 
 
+def _is_height_annotation(text: str) -> bool:
+    """Return True when text is a ceiling height or zone marker annotation."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    return bool(HEIGHT_PATTERN.fullmatch(stripped))
+
+
 def _parse_explication(msp: Any) -> dict[str, str]:
     """Extract text entities and map room numbers to names using regex."""
     explication_map: dict[str, str] = {}
@@ -204,7 +237,7 @@ def _parse_explication(msp: Any) -> dict[str, str]:
         content = content.replace(r"\P", "\n").replace(r"\p", "\n")
         for line in content.splitlines():
             line = line.strip()
-            if not line or _is_area_string(line):
+            if not line or _is_area_string(line) or _is_height_annotation(line):
                 continue
             m = EXPLICATION_PATTERN.match(line)
             if m:
@@ -218,10 +251,16 @@ def _parse_explication(msp: Any) -> dict[str, str]:
     return explication_map
 
 
-def _bridge_gaps(segments: list[LineString], max_gap: float) -> list[LineString]:
+def _bridge_gaps(
+    segments: list[LineString],
+    max_gap: float,
+    snap_tol: float | None = None,
+) -> list[LineString]:
     """Bridge gaps between dangling endpoints, vertices, and nearby segments."""
     if not segments or max_gap <= 0:
         return segments
+
+    pass23_tol = max_gap if snap_tol is None else min(max_gap, snap_tol)
 
     def pt_key(pt: tuple[float, float]) -> tuple[float, float]:
         return (round(pt[0], 3), round(pt[1], 3))
@@ -291,7 +330,7 @@ def _bridge_gaps(segments: list[LineString], max_gap: float) -> list[LineString]
         if i in bridged_indices:
             continue
         best_v: tuple[float, float] | None = None
-        best_dist = max_gap
+        best_dist = pass23_tol
         for v in all_vertices:
             if pt_key(p) == pt_key(v):
                 continue
@@ -312,7 +351,7 @@ def _bridge_gaps(segments: list[LineString], max_gap: float) -> list[LineString]
             continue
         pt = Point(p)
         best_proj: tuple[float, float] | None = None
-        best_dist = max_gap
+        best_dist = pass23_tol
         for s in segments:
             dist = s.distance(pt)
             if 1e-4 < dist <= best_dist:
@@ -329,7 +368,7 @@ def _bridge_gaps(segments: list[LineString], max_gap: float) -> list[LineString]
 
 
 def _extract_text_entries(msp: Any) -> list[tuple[Point, str]]:
-    """Extract (Point, first_line_text) entries from TEXT and MTEXT entities."""
+    """Extract (Point, line_text) entries from TEXT and MTEXT entities."""
     text_entries: list[tuple[Point, str]] = []
     if msp is None:
         return text_entries
@@ -348,10 +387,8 @@ def _extract_text_entries(msp: Any) -> list[tuple[Point, str]]:
             continue
 
         content = content.replace(r"\P", "\n").replace(r"\p", "\n")
-        first_line = next(
-            (line.strip() for line in content.splitlines() if line.strip()), ""
-        )
-        if not first_line:
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        if not lines:
             continue
 
         insert = getattr(entity.dxf, "insert", (0.0, 0.0, 0.0))
@@ -361,7 +398,8 @@ def _extract_text_entries(msp: Any) -> list[tuple[Point, str]]:
         else:
             pt = Point(float(insert[0]), float(insert[1]))
 
-        text_entries.append((pt, first_line))
+        for line in lines:
+            text_entries.append((pt, line))
 
     return text_entries
 
@@ -369,7 +407,7 @@ def _extract_text_entries(msp: Any) -> list[tuple[Point, str]]:
 def _has_room_label(texts: list[str]) -> bool:
     """Check if any text in the list represents a room name or identifier."""
     for t in texts:
-        if _is_area_string(t):
+        if _is_area_string(t) or _is_height_annotation(t):
             continue
         if EXPLICATION_PATTERN.match(t):
             return True
@@ -380,11 +418,156 @@ def _has_room_label(texts: list[str]) -> bool:
     return False
 
 
+_IGNORED_FALLBACK_LAYERS = (
+    "DEFPOINTS",
+    "TEXT",
+    "DIM",
+    "DIMENSION",
+    "HATCH",
+    "TITLE",
+    "BORDER",
+    "FRAME",
+)
+
+
+def _is_relevant_geometry_layer(layer: str, has_wall_layer: bool) -> bool:
+    """Return True when geometry on ``layer`` should contribute to room contours."""
+    if has_wall_layer:
+        return _is_wall_layer(layer) or _is_opening_layer(layer)
+    layer_upper = layer.upper()
+    return not any(ign in layer_upper for ign in _IGNORED_FALLBACK_LAYERS)
+
+
+def _is_ortho_three_sides(pts: list[tuple[float, float]]) -> bool:
+    """Return True when 4 points form 3 perpendicular sides of a rectangle."""
+    if len(pts) != 4:
+        return False
+    edges = [
+        (pts[(i + 1) % 4][0] - pts[i][0], pts[(i + 1) % 4][1] - pts[i][1])
+        for i in range(4)
+    ]
+    lengths = [math.hypot(dx, dy) for dx, dy in edges]
+    if any(length <= 1e-4 for length in lengths):
+        return False
+    for i in range(4):
+        ax, ay = edges[i]
+        bx, by = edges[(i + 1) % 4]
+        cos_theta = abs(ax * bx + ay * by) / (lengths[i] * lengths[(i + 1) % 4])
+        if cos_theta > 1e-3:
+            return False
+    return True
+
+
+def _append_polyline_segments(
+    pts: list[tuple[float, float]],
+    is_closed: bool,
+    segments: list[LineString],
+    open_loops: list[tuple[tuple[float, float], tuple[float, float], float, bool]],
+) -> None:
+    """Append consecutive segments from polyline vertices and track unclosed ends."""
+    for i in range(len(pts) - 1):
+        p1, p2 = pts[i], pts[i + 1]
+        if math.hypot(p2[0] - p1[0], p2[1] - p1[1]) > 1e-4:
+            segments.append(LineString([p1, p2]))
+    if len(pts) >= 3:
+        p0, p_end = pts[0], pts[-1]
+        dist = math.hypot(p_end[0] - p0[0], p_end[1] - p0[1])
+        if is_closed:
+            if dist > 1e-4:
+                segments.append(LineString([p_end, p0]))
+        else:
+            open_loops.append((p_end, p0, dist, _is_ortho_three_sides(pts)))
+
+
+def _append_entity_segments(
+    entity: Any,
+    layer: str,
+    has_wall_layer: bool,
+    segments: list[LineString],
+    opening_segments: list[LineString],
+    open_loops: list[tuple[tuple[float, float], tuple[float, float], float, bool]],
+    *,
+    depth: int = 0,
+) -> None:
+    """Extract LineString segments from a CAD entity, expanding INSERT blocks."""
+    dxftype = entity.dxftype()
+    if dxftype == "INSERT":
+        if depth >= 5:
+            return
+        if not (
+            _is_relevant_geometry_layer(layer, has_wall_layer) or layer in ("", "0")
+        ):
+            return
+        try:
+            virtual_entities = list(entity.virtual_entities())
+        except Exception:
+            return
+        for sub_entity in virtual_entities:
+            raw_sub_layer = str(getattr(sub_entity.dxf, "layer", "") or "")
+            sub_layer = layer if raw_sub_layer in ("", "0") else raw_sub_layer
+            _append_entity_segments(
+                sub_entity,
+                sub_layer,
+                has_wall_layer,
+                segments,
+                opening_segments,
+                open_loops,
+                depth=depth + 1,
+            )
+        return
+
+    if not _is_relevant_geometry_layer(layer, has_wall_layer):
+        return
+
+    is_opening = _is_opening_layer(layer)
+    before_count = len(segments)
+
+    if dxftype == "LINE":
+        p1 = (float(entity.dxf.start.x), float(entity.dxf.start.y))
+        p2 = (float(entity.dxf.end.x), float(entity.dxf.end.y))
+        if math.hypot(p2[0] - p1[0], p2[1] - p1[1]) > 1e-4:
+            segments.append(LineString([p1, p2]))
+
+    elif dxftype == "LWPOLYLINE":
+        pts = [(float(x), float(y)) for x, y in entity.get_points(format="xy")]
+        _append_polyline_segments(
+            pts, bool(getattr(entity, "is_closed", False)), segments, open_loops
+        )
+
+    elif dxftype == "POLYLINE":
+        pts = [
+            (float(v.dxf.location.x), float(v.dxf.location.y)) for v in entity.vertices
+        ]
+        _append_polyline_segments(
+            pts, bool(getattr(entity, "is_closed", False)), segments, open_loops
+        )
+
+    elif dxftype == "ARC":
+        if is_opening:
+            p1 = (float(entity.start_point.x), float(entity.start_point.y))
+            p2 = (float(entity.end_point.x), float(entity.end_point.y))
+            if math.hypot(p2[0] - p1[0], p2[1] - p1[1]) > 1e-4:
+                segments.append(LineString([p1, p2]))
+        else:
+            try:
+                arc_pts = list(entity.flattening(0.05))
+                for i in range(len(arc_pts) - 1):
+                    p1 = (float(arc_pts[i][0]), float(arc_pts[i][1]))
+                    p2 = (float(arc_pts[i + 1][0]), float(arc_pts[i + 1][1]))
+                    if math.hypot(p2[0] - p1[0], p2[1] - p1[1]) > 1e-4:
+                        segments.append(LineString([p1, p2]))
+            except Exception:
+                pass
+
+    if is_opening and len(segments) > before_count:
+        opening_segments.extend(segments[before_count:])
+
+
 def _extract_walls_and_bridge_gaps(
     msp: Any,
     max_gap: float | None = None,
 ) -> list[LineString]:
-    """Fetch entities from WALL layers, extract segments, and bridge gaps."""
+    """Fetch entities from WALL/opening layers, extract segments, and bridge gaps."""
     all_layers: set[str] = set()
     doc = getattr(msp, "doc", None)
     if doc is not None:
@@ -394,92 +577,19 @@ def _extract_walls_and_bridge_gaps(
     length_scale = get_length_scale(doc)
 
     segments: list[LineString] = []
-    open_loops: list[tuple[tuple[float, float], tuple[float, float], float]] = []
+    opening_segments: list[LineString] = []
+    open_loops: list[tuple[tuple[float, float], tuple[float, float], float, bool]] = []
 
-    for entity in msp.query("LINE LWPOLYLINE POLYLINE ARC"):
-        layer = getattr(entity.dxf, "layer", "")
-        if has_wall_layer:
-            if not (_is_wall_layer(layer) or _is_opening_layer(layer)):
-                continue
-        else:
-            layer_upper = layer.upper()
-            if any(
-                ign in layer_upper
-                for ign in (
-                    "DEFPOINTS",
-                    "TEXT",
-                    "DIM",
-                    "DIMENSION",
-                    "HATCH",
-                    "TITLE",
-                    "BORDER",
-                    "FRAME",
-                )
-            ):
-                continue
-
-        dxftype = entity.dxftype()
-        if dxftype == "LINE":
-            p1 = (float(entity.dxf.start.x), float(entity.dxf.start.y))
-            p2 = (float(entity.dxf.end.x), float(entity.dxf.end.y))
-            if math.hypot(p2[0] - p1[0], p2[1] - p1[1]) > 1e-4:
-                segments.append(LineString([p1, p2]))
-
-        elif dxftype == "LWPOLYLINE":
-            pts = list(entity.get_points(format="xy"))
-            for i in range(len(pts) - 1):
-                p1 = (float(pts[i][0]), float(pts[i][1]))
-                p2 = (float(pts[i + 1][0]), float(pts[i + 1][1]))
-                if math.hypot(p2[0] - p1[0], p2[1] - p1[1]) > 1e-4:
-                    segments.append(LineString([p1, p2]))
-            is_closed = getattr(entity, "is_closed", False)
-            if len(pts) >= 3:
-                p0 = (float(pts[0][0]), float(pts[0][1]))
-                p_end = (float(pts[-1][0]), float(pts[-1][1]))
-                dist = math.hypot(p_end[0] - p0[0], p_end[1] - p0[1])
-                if is_closed:
-                    if dist > 1e-4:
-                        segments.append(LineString([p_end, p0]))
-                else:
-                    open_loops.append((p_end, p0, dist))
-
-        elif dxftype == "POLYLINE":
-            v_pts = [
-                (float(v.dxf.location.x), float(v.dxf.location.y))
-                for v in entity.vertices
-            ]
-            for i in range(len(v_pts) - 1):
-                p1 = v_pts[i]
-                p2 = v_pts[i + 1]
-                if math.hypot(p2[0] - p1[0], p2[1] - p1[1]) > 1e-4:
-                    segments.append(LineString([p1, p2]))
-            is_closed = getattr(entity, "is_closed", False)
-            if len(v_pts) >= 3:
-                p0 = v_pts[0]
-                p_end = v_pts[-1]
-                dist = math.hypot(p_end[0] - p0[0], p_end[1] - p0[1])
-                if is_closed:
-                    if dist > 1e-4:
-                        segments.append(LineString([p_end, p0]))
-                else:
-                    open_loops.append((p_end, p0, dist))
-
-        elif dxftype == "ARC":
-            if _is_opening_layer(layer):
-                p1 = (float(entity.start_point.x), float(entity.start_point.y))
-                p2 = (float(entity.end_point.x), float(entity.end_point.y))
-                if math.hypot(p2[0] - p1[0], p2[1] - p1[1]) > 1e-4:
-                    segments.append(LineString([p1, p2]))
-            else:
-                try:
-                    arc_pts = list(entity.flattening(0.05))
-                    for i in range(len(arc_pts) - 1):
-                        p1 = (float(arc_pts[i][0]), float(arc_pts[i][1]))
-                        p2 = (float(arc_pts[i + 1][0]), float(arc_pts[i + 1][1]))
-                        if math.hypot(p2[0] - p1[0], p2[1] - p1[1]) > 1e-4:
-                            segments.append(LineString([p1, p2]))
-                except Exception:
-                    pass
+    for entity in msp.query("LINE LWPOLYLINE POLYLINE ARC INSERT"):
+        layer = str(getattr(entity.dxf, "layer", "") or "")
+        _append_entity_segments(
+            entity,
+            layer,
+            has_wall_layer,
+            segments,
+            opening_segments,
+            open_loops,
+        )
 
     if not segments:
         return []
@@ -493,19 +603,82 @@ def _extract_walls_and_bridge_gaps(
         length_scale = 1.0
 
     if max_gap is None:
-        max_gap = 3.1 / length_scale
+        max_gap = 1.2 / length_scale
 
     if max_gap <= 0:
         return segments
 
-    for p_end, p0, dist in open_loops:
+    endpoint_counts: dict[tuple[float, float], int] = {}
+    for s in segments:
+        for pt in (s.coords[0], s.coords[-1]):
+            k = (round(pt[0], 3), round(pt[1], 3))
+            endpoint_counts[k] = endpoint_counts.get(k, 0) + 1
+
+    for p_end, p0, dist, is_ortho_rect in open_loops:
         is_collinear = abs(p0[0] - p_end[0]) < 1e-3 or abs(p0[1] - p_end[1]) < 1e-3
         if (is_collinear and 1e-4 < dist <= max_gap) or (
             1e-4 < dist <= min(max_gap, 0.1 / length_scale)
         ):
             segments.append(LineString([p_end, p0]))
+            continue
 
-    return _bridge_gaps(segments, max_gap)
+        if is_ortho_rect and dist > 1e-4:
+            closing_line = LineString([p_end, p0])
+            ux = (p0[0] - p_end[0]) / dist
+            uy = (p0[1] - p_end[1]) / dist
+            covered: list[tuple[float, float]] = []
+            for op in opening_segments:
+                if (
+                    closing_line.distance(Point(op.coords[0])) < 1e-3
+                    and closing_line.distance(Point(op.coords[-1])) < 1e-3
+                ):
+                    t1 = (op.coords[0][0] - p_end[0]) * ux + (
+                        op.coords[0][1] - p_end[1]
+                    ) * uy
+                    t2 = (op.coords[-1][0] - p_end[0]) * ux + (
+                        op.coords[-1][1] - p_end[1]
+                    ) * uy
+                    lo = max(0.0, min(t1, t2))
+                    hi = min(dist, max(t1, t2))
+                    if hi - lo > 1e-4:
+                        covered.append((lo, hi))
+
+            k_end = (round(p_end[0], 3), round(p_end[1], 3))
+            k0 = (round(p0[0], 3), round(p0[1], 3))
+            touches_other_contour = (
+                endpoint_counts.get(k_end, 0) >= 2 or endpoint_counts.get(k0, 0) >= 2
+            )
+
+            if covered:
+                covered.sort()
+                merged: list[tuple[float, float]] = []
+                for lo, hi in covered:
+                    if merged and lo <= merged[-1][1] + 1e-4:
+                        merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+                    else:
+                        merged.append((lo, hi))
+
+                uncovered: list[tuple[float, float]] = []
+                cursor = 0.0
+                for lo, hi in merged:
+                    if lo - cursor > 1e-4:
+                        uncovered.append((cursor, lo))
+                    cursor = max(cursor, hi)
+                if dist - cursor > 1e-4:
+                    uncovered.append((cursor, dist))
+
+                max_uncovered = max((hi - lo for lo, hi in uncovered), default=0.0)
+                allowed_gap = 3.1 / length_scale if touches_other_contour else max_gap
+                if max_uncovered <= allowed_gap:
+                    for lo, hi in uncovered:
+                        sp = (p_end[0] + lo * ux, p_end[1] + lo * uy)
+                        ep = (p_end[0] + hi * ux, p_end[1] + hi * uy)
+                        segments.append(LineString([sp, ep]))
+            elif touches_other_contour and dist <= 3.1 / length_scale:
+                segments.append(closing_line)
+
+    snap_tol = min(max_gap, 0.35 / length_scale)
+    return _bridge_gaps(segments, max_gap, snap_tol=snap_tol)
 
 
 def _polygonize_and_filter(
@@ -514,13 +687,18 @@ def _polygonize_and_filter(
     area_multiplier: float = 1.0,
     msp: Any = None,
     text_entries: list[tuple[Point, str]] | None = None,
+    length_scale: float | None = None,
 ) -> list[Polygon]:
-    """Polygonize segments, discard largest bounding polygon and small artifacts."""
+    """Polygonize segments, discard slivers, bounding envelope, and small artifacts."""
     if not segments:
         return []
 
     if text_entries is None and msp is not None:
         text_entries = _extract_text_entries(msp)
+
+    resolved_length_scale = (
+        length_scale if length_scale is not None else math.sqrt(area_multiplier)
+    )
 
     noded = unary_union(segments)
     raw_polys = list(polygonize(noded))
@@ -534,6 +712,20 @@ def _polygonize_and_filter(
         area_m2 = poly.area * area_multiplier
         if area_m2 < min_area_m2:
             continue
+        has_label = bool(
+            text_entries
+            and _has_room_label(
+                [text for pt, text in text_entries if poly.contains(pt)]
+            )
+        )
+        if not has_label:
+            min_width_m = (
+                (2.0 * poly.area / poly.length) * resolved_length_scale
+                if poly.length > 0
+                else 0.0
+            )
+            if min_width_m < 0.6:
+                continue
         valid_polys.append(poly)
 
     if not valid_polys:
@@ -1052,28 +1244,31 @@ def _build_auto_rooms(
     rooms = ParsedRoomsList(source="auto")
     for poly in polygons:
         texts_in_poly = [text for pt, text in text_entries if poly.contains(pt)]
+        candidate_texts = [
+            t
+            for t in texts_in_poly
+            if not _is_area_string(t) and not _is_height_annotation(t)
+        ]
 
         matched_name: str | None = None
 
         # 1. Direct explication pattern (e.g. "101 | Office")
-        for t in texts_in_poly:
-            if _is_area_string(t):
-                continue
+        for t in candidate_texts:
             m = EXPLICATION_PATTERN.match(t)
             if m:
                 matched_name = m.group(3).strip()
                 break
 
-        # 2. Check if any text is an explicit room name (NOT only a number, NOT an area)
+        # 2. Explicit room name matching a known catalog room type
         if not matched_name:
-            for t in texts_in_poly:
-                if not _is_only_number(t) and not _is_area_string(t):
+            for t in candidate_texts:
+                if not _is_only_number(t) and suggest_room_type(t) != UNKNOWN_ROOM_TYPE:
                     matched_name = t
                     break
 
-        # 3. If only numbers were found, look up in explication_map
+        # 3. Room number resolved via explication_map
         if not matched_name:
-            for t in texts_in_poly:
+            for t in candidate_texts:
                 if _is_only_number(t):
                     norm = _normalize_room_number(t)
                     if norm in explication_map:
@@ -1082,6 +1277,13 @@ def _build_auto_rooms(
                     if norm.lower() in explication_map:
                         matched_name = explication_map[norm.lower()]
                         break
+
+        # 4. Any other valid non-area, non-height text label
+        if not matched_name:
+            for t in candidate_texts:
+                if not _is_only_number(t):
+                    matched_name = t
+                    break
 
         if matched_name:
             name: str | None = matched_name
@@ -1162,6 +1364,7 @@ def parse_dxf_rooms(
         min_area_m2=0.5,
         area_multiplier=area_multiplier,
         text_entries=text_entries,
+        length_scale=get_length_scale(doc),
     )
     if not filtered_polygons:
         raise CADParsingError("Приміщення не знайдено")
@@ -1190,7 +1393,8 @@ def read_length_scale(file_path: str | Path) -> float:
 
 
 def parse_dxf_rooms_with_scale(
-    file_path: str | Path, drawing_id: UUID | None = None,
+    file_path: str | Path,
+    drawing_id: UUID | None = None,
 ) -> tuple[list[Room], float]:
     """Preserve automatic recognition and return the persisted area scale."""
     return parse_dxf_rooms(file_path, drawing_id), read_length_scale(file_path)

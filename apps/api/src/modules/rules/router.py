@@ -105,9 +105,7 @@ def _rule_from_row(row: dict[str, Any]) -> RuleResponse:
         room_type=_as_room_type(row.get("room_types")),
         room_height_min=_as_float(row.get("min_height_m")),
         room_height_max=_as_float(row.get("max_height_m")),
-        document=(
-            str(row["document"]) if row.get("document") is not None else None
-        ),
+        document=(str(row["document"]) if row.get("document") is not None else None),
         clause=str(row["clause"]) if row.get("clause") is not None else None,
         link=str(row["source_url"]) if row.get("source_url") is not None else None,
         status=_as_status(row),

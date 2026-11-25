@@ -120,9 +120,7 @@ class TestRulesRouter(unittest.TestCase):
         self.assertEqual(len(contract.items), 1)
 
         item = contract.items[0]
-        self.assertEqual(
-            item.rule, "Крок сітки та площа захисту димових сповіщувачів"
-        )
+        self.assertEqual(item.rule, "Крок сітки та площа захисту димових сповіщувачів")
         self.assertEqual(item.value, "9")
         self.assertEqual(item.room_type, "sleeping_room")
         self.assertIsNone(item.room_height_min)
