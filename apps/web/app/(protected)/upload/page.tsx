@@ -5,7 +5,7 @@ export default function UploadPage() {
     <div className="space-y-[var(--bim-spacing-6)]">
       <div>
         <h1 className="text-2xl font-semibold text-[var(--bim-color-text-primary)]">
-          Завантаження креслень
+          Додайте план поверху
         </h1>
         <p className="mt-[var(--bim-spacing-2)] text-sm text-[var(--bim-color-text-secondary)]">
           Виберіть DXF-креслення для аналізу та подальшого розміщення пожежних пристроїв.

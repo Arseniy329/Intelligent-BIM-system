@@ -16,3 +16,5 @@ The UI displays square device assets at 20 CSS pixels, preserving aspect ratio.
 The SVG editor uses SVG image elements; HTML overlays and legends use Next Image.
 Root SVG dimensions/path geometry have not been edited.
 Other supplied variants are intentionally not substituted for these reference slots.
+
+auth-plan.svg = standalone Frame 117.svg (520 x 357), copied byte-for-byte. Decorative authentication illustration only; never used as the functional viewer.

@@ -39,7 +39,7 @@ function StatusBadge({ status }: { status: string }) {
   if (status === "needs_verification") {
     return (
       <Badge className="border-[var(--bim-color-semantic-warning-border)] bg-[var(--bim-color-badge-warning-bg)] text-[var(--bim-color-badge-warning-text)]">
-        Треба перевірити
+        <span aria-hidden="true">?</span><span>Треба перевірити</span>
       </Badge>
     );
   }

@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { DrawingResultDemo } from "@/components/drawing/drawing-result-demo";
 import { isDrawingDemoEnabled } from "@/lib/drawing/demo-mode";
 
-export default async function DrawingPreviewPage({ searchParams }: { searchParams?: Promise<{ result?: string }> } = {}) {
+export default async function DrawingPreviewPage({ searchParams }: { searchParams?: Promise<{ result?: string }> }) {
   // Match the proxy's local-only exception without bypassing other protected routes.
   if (process.env.NODE_ENV !== "development") {
     const supabase = await createClient();

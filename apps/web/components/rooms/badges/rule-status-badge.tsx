@@ -20,7 +20,7 @@ export function RuleStatusBadge({
       role="status"
       data-slot="rule-status-badge"
       className={cn(
-        "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap",
+        "inline-flex items-center gap-1 rounded-md px-2.5 py-0.5 text-xs font-medium whitespace-nowrap",
         isVerified
           ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
           : "bg-amber-50 text-amber-800 border border-amber-200",

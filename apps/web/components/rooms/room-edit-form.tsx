@@ -114,7 +114,7 @@ export function RoomEditForm({
     >
       {/* View Header matching 03-data */}
       <div className="space-y-1">
-        <h2 className="text-2xl font-bold tracking-tight text-[var(--bim-color-text-primary)]">
+        <h2 className="text-2xl font-semibold text-[var(--bim-color-text-primary)]">
           {title}
         </h2>
         <p
@@ -129,7 +129,7 @@ export function RoomEditForm({
         {/* 2-Column Grid Layout matching 03-data */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
           {/* Left Column: Card "Дані приміщення" */}
-          <div className="rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-6 space-y-5 shadow-xs">
+          <div className="rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-6 space-y-5">
             <h3 className="font-semibold text-lg text-[var(--bim-color-text-primary)]">
               Дані приміщення
             </h3>

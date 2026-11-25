@@ -99,7 +99,7 @@ export function RoomsTable({
       {/* 1. Sub-header Counters & Dynamic Summary matching 02-rooms */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="space-y-1">
-          <h2 className="text-2xl font-bold tracking-tight text-[var(--bim-color-text-primary)]">
+          <h2 className="text-2xl font-semibold text-[var(--bim-color-text-primary)]">
             Приміщення
           </h2>
           <p
@@ -115,7 +115,7 @@ export function RoomsTable({
             type="button"
             disabled={zoneEditor?.blocked}
             onClick={onConfirmAllRooms}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 cursor-pointer self-start sm:self-auto shadow-2xs"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 cursor-pointer self-start sm:self-auto shadow-none"
           >
             <span aria-hidden="true">✓</span>
             <span>Підтвердити всі ({unconfirmedCount})</span>

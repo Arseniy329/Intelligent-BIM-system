@@ -26,7 +26,7 @@
 .emptyState h4 { font-weight: 600; }
 .emptyState ol { margin: 0; padding-left: 20px; list-style: decimal; }
 .emptyState li { border: 0; padding: 0; margin: 0 0 4px; }
-.heightField { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 16px; color: #475569; font-size: 12px; }
+.content .heightField { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 16px; color: #475569; font-size: 12px; }
 .heightField input { width: 148px; min-width: 0; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; background: white; color: #0f172a; }
 .heightField input:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .saveActions { display: grid; gap: 12px; width: 100%; }

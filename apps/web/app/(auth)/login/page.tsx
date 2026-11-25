@@ -10,9 +10,9 @@ export default async function LoginPage({
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold">Вхід</h1>
+      <h1 className="text-2xl font-semibold">Раді бачити вас знову</h1>
       <p className="mt-2 text-sm text-[var(--bim-color-text-secondary)]">
-        Увійдіть, щоб продовжити роботу з кресленнями.
+        Увійдіть у свій робочий простір.
       </p>
 
       {error === "callback" && (

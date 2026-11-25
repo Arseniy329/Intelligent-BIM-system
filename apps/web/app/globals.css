@@ -2,6 +2,42 @@
 
 @font-face { font-family: "Inter"; src: url("/fonts/inter/Inter-Variable.ttf") format("truetype"); font-weight: 100 900; font-style: normal; font-display: swap; }
 
+/* Approved Desktop 1/2 authentication layout. Existing form validation is retained. */
+.auth-layout { min-height: 100dvh; display: grid; grid-template-columns: 52.2% 47.8%; }
+.auth-story { display: flex; align-items: center; padding: 64px; background: #0f172a; color: #f8fafc; }
+.auth-story > div { width: 100%; max-width: 520px; }
+.auth-eyebrow { font-size: 14px; line-height: 20px; margin-bottom: 28px; }
+.auth-story h2 { font-size: 32px; line-height: 40px; font-weight: 600; }
+.auth-description { max-width: 390px; margin: 24px 0; color: #cbd5e1; font-size: 14px; line-height: 20px; }
+.auth-plan { display: block; width: 100%; height: auto; border-radius: 8px; background: white; }
+.auth-steps { margin-top: 24px; color: #94a3b8; font-size: 12px; line-height: 20px; }
+.auth-content { display: grid; place-items: center; padding: 48px 32px; }
+.auth-form-card { width: 100%; max-width: 360px; }
+.auth-form-card > img { margin-bottom: 20px; }
+.auth-form-card h1 { font-size: 24px; line-height: 32px; }
+.auth-form-card input { background: transparent; }
+.auth-password { position: relative; }
+.auth-password input { padding-right: 88px; }
+.auth-password button { position: absolute; right: 12px; top: 0; height: 40px; font-size: 12px; color: #0f172a; cursor: pointer; }
+.auth-password button:disabled { cursor: not-allowed; opacity: .5; }
+.app-footer { width: 100%; max-width: 1440px; margin: auto; padding: 16px 40px 32px; color: #475569; font-size: 12px; }
+body:has([data-drawing-workspace]) .app-footer { display: none; }
+.app-main { min-width: 0; }
+.app-main h1 { font-size: 24px; line-height: 32px; font-weight: 600; }
+:where(button, a, input, select, textarea, summary):focus-visible { outline: 2px solid var(--bim-color-border-focus); outline-offset: 3px; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--bim-color-brand-primary); }
+.drawing-workspace-account summary:focus-visible { outline-offset: 4px; }
+.upload-card { width: min(100%, 760px); margin-inline: auto; }
+.upload-card > section { padding: 24px; box-shadow: none; border-radius: 12px; }
+.upload-card [data-dropzone] { min-height: 320px; border-width: 1px; border-style: solid; background: #f8fafc; }
+.upload-card [data-dropzone] button { color: white; background: #2563eb; border-color: #2563eb; }
+.upload-card [data-dropzone] button:hover { background: #1d4ed8; }
+.upload-card fieldset { border-color: #e2e8f0; }
+.upload-card-heading { display: flex; justify-content: space-between; padding-bottom: 20px; margin-bottom: 24px; border-bottom: 1px solid #e2e8f0; font-weight: 600; }
+.upload-card-heading span { font-size: 12px; font-weight: 400; color: #475569; }
+@media(max-width: 1000px) { .auth-story { padding: 40px; } .auth-story h2 { font-size: 28px; line-height: 36px; } }
+@media(max-width: 767px) { .auth-layout { grid-template-columns: minmax(0, 1fr); } .auth-story { display: none; } .auth-content { padding: 40px 24px; } .app-footer { padding-inline: 16px; } .upload-card > section { padding: 16px; } }
+
 :root {
   color-scheme: light;
 
