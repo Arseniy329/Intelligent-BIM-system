@@ -40,19 +40,29 @@ export function PlanEditorPanel({ editor: e, rooms, devices, selectedRoomId, sel
         {!devicesEditable && <p className="text-sm">Редагування приладів доступне після розміщення.</p>}
       </>}
       {e.draft && <div className="space-y-3">
-        <p role="status">Зміни не збережено. {e.draft.kind === "room" ? e.draft.id ? "Перетягніть вершини контуру. Після збереження підтвердьте змінений контур." : "Клацайте по кутах нового приміщення." : "Клацніть на плані або перетягніть прилад. Стрілки пересувають вибраний прилад або вершину."}</p>
+        <p role="status">Зміни не збережено. {e.draft.kind === "room" ? e.draft.id ? "Перетягніть вершини контуру. Після збереження підтвердьте змінений контур." : "Клацайте по кутах нового приміщення." : "Клацніть на плані або перетягніть позначку. Стрілки пересувають вибрану позначку або вершину."}</p>
         {e.draft.kind === "room" && !e.draft.id && <label>Назва приміщення <input aria-label="Назва нового приміщення" className={button} value={e.draft.name} onChange={event => e.setName(event.target.value)} /></label>}
+        {e.draft.kind === "zone" && <>
+          <p>Обведіть частину вибраного приміщення багатокутником. Додайте решту зон окремо. Перетягування вершин уточнює межі.</p>
+          <label>Назва зони <input maxLength={200} value={e.draft.name} onChange={event => e.setName(event.target.value)} className={button} /></label>{" "}
+          <label>Висота зони, м <input type="number" min="0.01" max="100" step="any" value={e.draft.height} onChange={event => e.setHeight(event.target.value)} className={button} /></label>
+          <p className="text-sm">Порожня висота — «Недостатньо даних»: ця зона не бере участі в розміщенні.</p>
+        </>}
+        {e.draft.kind === "exit" && <>
+          <p>Клацніть по вихідних дверях на DXF-плані. За потреби перетягніть позначку, потім збережіть.</p>
+          <label>Назва виходу <input maxLength={200} value={e.draft.name} onChange={event => e.setName(event.target.value)} className={button} /></label>
+        </>}
         {e.draft.kind === "device" && <label>Тип приладу <select aria-label="Тип приладу" className={button} value={e.draft.type} onChange={event => e.setType(event.target.value as Device["type"])}>
           {Object.entries(DEVICE_LABELS).map(([type, label]) => <option key={type} value={type}>{label}</option>)}
         </select></label>}
         <div className="flex flex-wrap gap-2">
-          {e.draft.kind === "room" && !e.draft.id && <button className={button} disabled={!e.draft.points.length || e.uncertain} onClick={e.undoPoint}>Прибрати останню вершину</button>}
+          {(e.draft.kind === "room" || e.draft.kind === "zone") && !e.draft.id && <button className={button} disabled={!e.draft.points.length || e.uncertain} onClick={e.undoPoint}>Прибрати останню вершину</button>}
           <button className={button} disabled={e.uncertain} onClick={e.save}>Зберегти зміни</button>
           <button className={button} onClick={e.cancel}>Скасувати зміни</button>
         </div>
       </div>}
       {e.deletion && <div role="alertdialog" aria-label="Підтвердження видалення" className="rounded-lg border p-3 space-y-2">
-        <p>Видалити {e.deletion.kind === "room" ? "приміщення? Прилади залишаться без прив’язки до нього." : "прилад із плану та вихідного DXF?"}</p>
+        <p>Видалити {e.deletion.kind === "room" ? "приміщення? Прилади залишаться без прив’язки до нього." : e.deletion.kind === "zone" ? "зону приміщення?" : e.deletion.kind === "exit" ? "позначення евакуаційного виходу?" : "прилад із плану та вихідного DXF?"}</p>
         <button className={button} disabled={e.uncertain} onClick={e.deleteSelected}>Підтвердити видалення</button>{" "}
         <button className={button} onClick={e.cancelDelete}>Скасувати видалення</button>
       </div>}

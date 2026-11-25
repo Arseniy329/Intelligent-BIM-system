@@ -16,7 +16,7 @@ type LoadState =
 
 export default function DrawingCanvas({
   url, onReady, onRetry, retryPending = false, rooms, devices, initialRoomLabelsVisible = true,
-  selectedRoomId, editor, onSelectRoom, onSelectDevice,
+  selectedRoomId, editor, onSelectRoom, onSelectDevice, zones, exits,
 }: DrawingViewerProps & { onRetry: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const adapterRef = useRef<DrawingViewerAdapter | null>(null);
@@ -99,8 +99,9 @@ export default function DrawingCanvas({
       />
       <div className={styles.stage} aria-busy={state.status === "loading"}>
         <div ref={hostRef} className={styles.canvas} aria-label="Полотно DXF" />
-        {state.status === "ready" && (rooms?.length || devices?.length) ? (
+        {state.status === "ready" && (rooms?.length || devices?.length || zones?.length || exits?.length) ? (
           <DrawingOverlay controller={state.controller}
+            zones={zones?.filter(zone => editor?.draft?.kind !== "zone" || editor.draft.id !== zone.id)} exits={exits}
             rooms={rooms?.filter(room => editor?.draft?.kind !== "room" || editor.draft.id !== room.id)}
             devices={devices?.filter(device => editor?.draft?.kind !== "device" || editor.draft.id !== device.id)}
             showRooms={showRooms} showDevices={showDevices} showRoomLabels={showRoomLabels}

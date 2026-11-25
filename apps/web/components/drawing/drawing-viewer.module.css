@@ -142,3 +142,10 @@
 .editPolygon { fill: #2563eb; fill-opacity: .15; stroke: #2563eb; stroke-width: 2; pointer-events: none; }
 .editVertex { fill: white; stroke: #2563eb; stroke-width: 2; cursor: grab; }
 .editVertex:focus { outline: none; stroke-width: 4; }
+.zoneHeight {
+  fill: var(--viewer-text);
+  stroke: var(--viewer-surface);
+  stroke-width: 3px;
+  paint-order: stroke;
+  font-size: 12px;
+}

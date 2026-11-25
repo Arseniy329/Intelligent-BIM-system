@@ -8,6 +8,8 @@ import tokens from "../../../../tokens.json";
 import styles from "./drawing-viewer.module.css";
 
 export type DrawingViewerProps = {
+  zones?: import("@/lib/drawing/plan-features-api").RoomZone[];
+  exits?: import("@/lib/drawing/plan-features-api").PlanExit[];
   editor?: import("@/lib/drawing/use-plan-editor").PlanEditor;
   onSelectRoom?: (id: string) => void;
   onSelectDevice?: (id: string) => void;

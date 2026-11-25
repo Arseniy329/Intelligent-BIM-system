@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DrawingStatus, DrawingDetailStatus } from "@bim/contracts";
 import { DrawingViewer, type DrawingViewerProps } from "./drawing-viewer";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -14,6 +14,8 @@ import { mapContractRoomToRoom, getRoomBlockingReasons, type Room } from "@/type
 import { useUpdateRoomMutation } from "@/lib/rooms/rooms-api";
 import { usePlanEditor } from "@/lib/drawing/use-plan-editor";
 import { PlanEditorPanel } from "./plan-editor-panel";
+import { PlanFeaturesPanel } from "./plan-features-panel";
+import { planFeaturesApi } from "@/lib/drawing/plan-features-api";
 import { cn } from "@/lib/utils";
 
 export type DrawingTab = "plan" | "rooms" | "rules" | "report";
@@ -75,10 +77,21 @@ function DrawingDetailContent({
   const [editingRoom, setEditingRoom] = useState<Room | null>(null);
   const [isEditingRoomDirty, setIsEditingRoomDirty] = useState(false);
   const loadedResult = state.detail.data && isDrawingResult(state.detail.data) ? state.detail.data : null;
+  const queryClient = useQueryClient();
+  const featureOptions = (revision: number) => ({
+    queryKey: ["drawing-features", id, revision],
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      const [zones, exits] = await Promise.all([planFeaturesApi.zones(id, signal), planFeaturesApi.exits(id, signal)]);
+      return { zones, exits };
+    },
+    retry: false, refetchOnWindowFocus: false, staleTime: Infinity,
+  });
+  const features = useQuery({ ...featureOptions(state.detail.dataUpdatedAt), enabled: !demo && !!loadedResult });
   const editor = usePlanEditor({ drawingId: id, rooms: loadedResult?.rooms ?? [], devices: loadedResult?.devices ?? [], selectRoom: setSelectedRoomId,
     refresh: async () => {
       const updated = await state.detail.refetch({ cancelRefetch: false });
       if (updated.isError) throw updated.error;
+      if (!demo) await queryClient.fetchQuery(featureOptions(updated.dataUpdatedAt));
     },
   });
   const [viewerAttempt, setViewerAttempt] = useState(0);
@@ -154,7 +167,7 @@ function DrawingDetailContent({
   const reprocessing = !!result?.rooms.length || metadata.status === "processed";
   const mappedRooms =
     result?.rooms?.map((r, i) => mapContractRoomToRoom(r, i)) ?? [];
-  const roomBlockingReasons = getRoomBlockingReasons(mappedRooms);
+  const roomBlockingReasons = getRoomBlockingReasons(mappedRooms, false, new Set(features.data?.zones.map(zone => zone.roomId)));
   const editBlockingReasons: string[] = [];
   if (editor.blocked) editBlockingReasons.push("Збережіть або скасуйте зміни плану перед розміщенням");
   if (updateRoomMutation.isPending) {
@@ -384,8 +397,13 @@ function DrawingDetailContent({
           )}
           {result && !demo && <PlanEditorPanel editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
             selectRoom={setSelectedRoomId} devicesEditable={metadata.status === "processed"} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching} />}
+          {result && !demo && <PlanFeaturesPanel editor={editor} room={result.rooms.find(room => room.id === selectedRoomId)}
+            zones={features.data?.zones ?? []} exits={features.data?.exits ?? []} loading={features.isPending || features.isFetching}
+            error={features.isError} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching}
+            retry={() => void features.refetch()} />}
           <section aria-label="План креслення" className="min-w-0 space-y-3">
             <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
+              zones={features.data?.zones} exits={features.data?.exits}
               selectedRoomId={selectedRoomId} editor={demo ? undefined : editor} onSelectRoom={setSelectedRoomId} onSelectDevice={editor.selectDevice}
               onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
             <button className={button} disabled={state.detail.isFetching || state.busy || editor.blocked} onClick={refreshFile}>Оновити файл</button>
@@ -446,6 +464,7 @@ function DrawingDetailContent({
             </div>
           ) : (
             <RoomsTable
+              zones={features.data?.zones}
               rooms={mappedRooms}
               selectedRoomId={selectedRoomId}
               onSelectRoom={(room) => setSelectedRoomId(room.id ?? null)}

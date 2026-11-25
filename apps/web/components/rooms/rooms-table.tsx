@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import type { RoomType } from "@bim/contracts";
+import type { RoomZone } from "@/lib/drawing/plan-features-api";
 import { cn } from "@/lib/utils";
 import {
   type Room,
@@ -26,6 +27,7 @@ import {
 } from "@/components/ui/table";
 
 export interface RoomsTableProps {
+  zones?: RoomZone[];
   rooms: Room[];
   roomTypes?: RoomType[];
   selectedRoomId?: string | null;
@@ -47,6 +49,7 @@ function formatHeight(height: number | null | undefined): string | null {
 }
 
 export function RoomsTable({
+  zones = [],
   rooms,
   roomTypes: propRoomTypes,
   selectedRoomId,
@@ -70,7 +73,7 @@ export function RoomsTable({
   const incompleteCount = rooms.filter((r) => !isRoomDataComplete(r)).length;
 
   // Check blocking reasons for the bottom warning banner
-  const blockingReasons = getRoomBlockingReasons(rooms, hasUnsavedChanges);
+  const blockingReasons = getRoomBlockingReasons(rooms, hasUnsavedChanges, new Set(zones.map(zone => zone.roomId)));
   const hasBlocking = blockingReasons.length > 0;
 
   const handleRoomClick = (room: Room) => {
@@ -180,6 +183,9 @@ export function RoomsTable({
 
                     {/* Column 3: Висота */}
                     <TableCell>
+                      {zones.filter(zone => zone.roomId === room.id).map((zone, index) => <div key={zone.id} data-zone-id={zone.id} className="text-xs">
+                        {zone.name || `Зона ${index + 1}`}: {formatHeight(zone.height) || "Недостатньо даних: немає висоти"}
+                      </div>)}
                       {heightStr ? (
                         <span className="text-slate-800 font-mono text-xs">
                           {heightStr}

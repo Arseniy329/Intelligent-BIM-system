@@ -7,6 +7,8 @@ import { observeOverlayViewport, projectDevice, projectRoom, roomLabelPlacement 
 import tokens from "../../../../tokens.json";
 import { DEVICE_LABELS, DeviceSymbol } from "./device-symbol";
 import styles from "./drawing-viewer.module.css";
+import type { RoomZone, PlanExit } from "@/lib/drawing/plan-features-api";
+import { isFinitePoint } from "@/lib/drawing/overlay-geometry";
 
 const NO_ROOMS: Room[] = [];
 const NO_DEVICES: Device[] = [];
@@ -30,6 +32,8 @@ const overlayTheme = {
 } as CSSProperties;
 
 type Props = {
+  zones?: RoomZone[];
+  exits?: PlanExit[];
   onSelectRoom?: (id: string) => void;
   onSelectDevice?: (id: string) => void;
   controller: DrawingViewportController;
@@ -49,6 +53,7 @@ export function DrawingOverlay({
   showDevices,
   showRoomLabels = true,
   selectedRoomId, onSelectRoom, onSelectDevice,
+  zones = [], exits = [],
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const tooltipId = useId();
@@ -134,6 +139,26 @@ export function DrawingOverlay({
               <title>{room.name?.trim() || "Приміщення без назви"}</title>
             </polygon>
           );
+        })}
+      </svg>
+      <svg className={styles.roomPolygons} aria-label="Зони різної висоти та виходи">
+        {showRooms && zones.filter(zone => zone.polygon.length >= 3 && zone.polygon.every(isFinitePoint)).map((zone, index) => {
+          const points = zone.polygon.map(point => controller.worldToScreen(point));
+          const label = roomLabelPlacement(points, viewport);
+          return <g key={zone.id} data-zone-id={zone.id}>
+            <polygon points={points.map(p => `${p.x},${p.y}`).join(" ")} style={{ fill: "none", stroke: "var(--viewer-focus)", strokeDasharray: "6 3", strokeWidth: 2 }} vectorEffect="non-scaling-stroke">
+              <title>{zone.name || `Зона ${index + 1}`} · {zone.height == null ? "Висоту не вказано" : `${zone.height} м`}</title>
+            </polygon>
+            {label && <text x={label.x} y={label.y} textAnchor="middle" className={styles.zoneHeight}>{zone.height == null ? "Висоту не вказано" : `${zone.height} м`}</text>}
+          </g>;
+        })}
+        {exits.filter(exit => isFinitePoint(exit.position)).map((exit, index) => {
+          const point = controller.worldToScreen(exit.position);
+          return <g key={exit.id} data-exit-id={exit.id} transform={`translate(${point.x},${point.y})`}>
+            <title>{exit.name || `Вихід ${index + 1}`} · {exit.source === "dxf" ? "Знайдено в DXF" : "Позначено вручну"}</title>
+            <rect x={-13} y={-13} width={26} height={26} rx={4} style={{ fill: tokens.color.semantic.success }} />
+            <text textAnchor="middle" dy=".35em" fill="white" fontSize={20}>↗</text>
+          </g>;
         })}
       </svg>
       {showRoomLabels && projected.rooms.map(({ room, label }) => label && (
