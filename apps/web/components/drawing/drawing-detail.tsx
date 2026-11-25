@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchRules } from "@/lib/api/rules";
 import type { DrawingStatus, DrawingDetailStatus } from "@bim/contracts";
 import { DrawingViewer, type DrawingViewerProps } from "./drawing-viewer";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -91,6 +92,12 @@ function DrawingDetailContent({
     retry: false, refetchOnWindowFocus: false, staleTime: Infinity,
   });
   const features = useQuery({ ...featureOptions(state.detail.dataUpdatedAt), enabled: !demo && !!loadedResult });
+  const rules = useQuery({
+    queryKey: ["drawing-rules", id, state.detail.dataUpdatedAt],
+    queryFn: ({ signal }) => fetchRules(signal),
+    enabled: !demo && !!loadedResult?.devices.some(device => device.ruleId),
+    retry: false, refetchOnWindowFocus: false,
+  });
   const editor = usePlanEditor({ drawingId: id, rooms: loadedResult?.rooms ?? [], devices: loadedResult?.devices ?? [], selectRoom: setSelectedRoomId,
     refresh: async () => {
       const updated = await state.detail.refetch({ cancelRefetch: false });
@@ -413,6 +420,8 @@ function DrawingDetailContent({
             </div>
           )}
           <section aria-label="План креслення" className="min-w-0 space-y-3">
+            {rules.isFetching && <p role="status">Завантаження статусів правил…</p>}
+            {rules.isError && <p role="alert">Не вдалося отримати статуси правил. Позначення «?» не означає, що правило перевірене. <button className={button} onClick={() => void rules.refetch()}>Повторити завантаження правил</button></p>}
             <div className={cn(workspaceStyles.planLayout, mode === "rooms" && !demo && workspaceStyles.featureLayout)}>
             <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
               layers={layers} mode={mode} onModeChange={setMode}
@@ -420,10 +429,11 @@ function DrawingDetailContent({
                 selectRoom={setSelectedRoomId} devicesEditable={metadata.status === "processed"} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching}
                 onPlace={api.placeDrawing ? state.startPlacement : undefined} placementDisabled={!result.rooms.length || hasPlacementBlocking} onExit={() => setMode("rooms")} /> : undefined}
               zones={features.data?.zones} exits={features.data?.exits}
+              rules={rules.isError ? undefined : rules.data}
               selectedRoomId={selectedRoomId} editor={demo ? undefined : editor} onSelectRoom={setSelectedRoomId} onSelectDevice={editor.selectDevice}
               onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
             <aside className={workspaceStyles.inspector}>
-              {result && !demo ? <PlanEditorPanel mode={mode} onTable={() => navigateTab("rooms")} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
+              {result && !demo ? <PlanEditorPanel rules={rules.isError ? undefined : rules.data} mode={mode} onTable={() => navigateTab("rooms")} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
                 selectRoom={setSelectedRoomId} devicesEditable={metadata.status === "processed"} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching} />
                 : <section className={workspaceStyles.detailsCard}><h3>Деталі приміщення</h3><div>
                   {selectedRoomId ? <><strong>{result?.rooms.find(room => room.id === selectedRoomId)?.name}</strong><p>{result?.rooms.find(room => room.id === selectedRoomId)?.area} м²</p></>

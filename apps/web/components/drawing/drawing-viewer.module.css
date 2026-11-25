@@ -72,10 +72,10 @@
 .roomPolygons polygon[data-selected="true"],
 .roomPolygonSelected {
   stroke: var(--viewer-focus, #3b82f6) !important;
-  stroke-width: calc(var(--room-stroke-width, 1.5px) * 2.5) !important;
+  stroke-width: 2 !important;
   stroke-dasharray: none !important;
-  fill: var(--viewer-focus, #3b82f6) !important;
-  fill-opacity: 0.28 !important;
+  fill: white !important;
+  fill-opacity: 0.08 !important;
 }
 .roomLabel {
   position: absolute;
@@ -117,13 +117,12 @@
   pointer-events: auto;
 }
 .viewer .deviceMarker:hover:not(:disabled) { background: transparent; }
-.deviceMarker svg {
-  width: var(--marker-size);
-  height: var(--marker-size);
+.deviceMarker img {
+  width: 20px;
+  height: 20px;
   overflow: visible;
-  filter: drop-shadow(0 1px 1px var(--viewer-muted));
 }
-.deviceMarker:hover svg, .deviceMarker:focus-visible svg { width: var(--marker-hover-size); height: var(--marker-hover-size); }
+.deviceMarker:focus-visible { outline: 2px solid var(--viewer-focus); outline-offset: 2px; }
 .deviceTooltip {
   position: absolute;
   box-sizing: border-box;
@@ -170,5 +169,14 @@
   paint-order: stroke;
   font-size: 12px;
 }
+.deviceLegend { border-top: 1px solid var(--viewer-border); padding: 24px 20px; font-size: 12px; color: var(--viewer-text); }
+.deviceLegend ul { display: flex; flex-wrap: wrap; gap: 12px 20px; margin: 0 0 8px; padding: 0; list-style: none; }
+.deviceLegend li { display: flex; align-items: center; gap: 6px; }
+.legendSymbol { display: inline-block; width: 20px; height: 20px; flex-shrink: 0; }
+.legendSymbol img { display: block; }
+.deviceLegend ul:last-child { margin-bottom: 0; }
+.ruleLegend { margin: 12px 0 0; color: var(--viewer-muted); }
+.ruleIndicator { position: absolute; top: 0; right: 0; width: 16px; height: 16px; border-radius: 50%; background: var(--viewer-surface); color: var(--viewer-muted); border: 1px solid currentColor; font: 700 12px/14px sans-serif; }
+.ruleIndicator[data-review="true"], .reviewKey { color: var(--bim-color-semantic-warning, #B45309); background: var(--bim-color-semantic-warning-bg, #FFFBEB); }
 @media(max-width: 1200px) { .modes { margin-right: 0; } .viewer .modes button { width: auto; } .workPanel { flex-basis: 190px; margin-left: 16px; margin-right: 16px; } }
 @media(max-width: 767px) { .planBody { flex-direction: column; align-items: stretch; } .stage { flex: auto; height: 420px; } .workPanel { flex: auto; margin: 16px; } }

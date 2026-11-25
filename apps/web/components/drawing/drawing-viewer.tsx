@@ -14,6 +14,7 @@ export type DrawingViewerProps = {
   mode?: "rooms" | "devices";
   onModeChange?: (mode: "rooms" | "devices") => void;
   workPanel?: ReactNode;
+  rules?: import("@/lib/api/rules").Rule[];
   editor?: import("@/lib/drawing/use-plan-editor").PlanEditor;
   onSelectRoom?: (id: string) => void;
   onSelectDevice?: (id: string) => void;

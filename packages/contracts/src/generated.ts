@@ -136,6 +136,10 @@ export interface Device {
   type: "smoke_detector" | "heat_detector" | "sounder" | "manual_call_point";
   position: Point;
   layer: string;
+  /**
+   * Ідентифікатор застосованого правила (devices.rule_id → GET /rules items[].id). null або відсутнє — правило невідоме або прилад додано вручну.
+   */
+  ruleId?: string | null;
 }
 /**
  * Тіло POST /drawings/{id}/devices — пристрій, доданий вручну. Шар завжди SYS_FIRE_SENSORS. roomId — приміщення того самого креслення або null.

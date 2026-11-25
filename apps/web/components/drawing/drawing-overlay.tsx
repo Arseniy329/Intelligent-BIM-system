@@ -5,7 +5,9 @@ import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 
 import type { DrawingViewportController } from "@/lib/drawing/viewer-adapter";
 import { observeOverlayViewport, projectDevice, projectRoom, roomLabelPlacement } from "@/lib/drawing/overlay-geometry";
 import tokens from "../../../../tokens.json";
-import { DEVICE_LABELS, DeviceSymbol } from "./device-symbol";
+import { deviceLabel, DeviceSymbol } from "./device-symbol";
+import type { Rule } from "@/lib/api/rules";
+import { deviceRuleState, RULE_STATE_LABELS } from "@/lib/drawing/device-rule-status";
 import styles from "./drawing-viewer.module.css";
 import type { RoomZone, PlanExit } from "@/lib/drawing/plan-features-api";
 import { isFinitePoint } from "@/lib/drawing/overlay-geometry";
@@ -34,6 +36,7 @@ const overlayTheme = {
 type Props = {
   zones?: RoomZone[];
   exits?: PlanExit[];
+  rules?: Rule[];
   onSelectRoom?: (id: string) => void;
   onSelectDevice?: (id: string) => void;
   controller: DrawingViewportController;
@@ -55,6 +58,7 @@ export function DrawingOverlay({
   showRoomLabels = true,
   selectedRoomId, selectedDeviceId, onSelectRoom, onSelectDevice,
   zones = [], exits = [],
+  rules = [],
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const tooltipId = useId();
@@ -176,7 +180,8 @@ export function DrawingOverlay({
       {projected.devices.map(({ device, point }) => (
         <button key={device.id} type="button" className={styles.deviceMarker} data-device-id={device.id}
           data-selected={selectedDeviceId === device.id || undefined}
-          style={{ left: point.x, top: point.y }} aria-label={`${DEVICE_LABELS[device.type]} · ${roomName(device)}`}
+          style={{ left: point.x, top: point.y }} aria-label={`${deviceLabel(device.type)} · ${roomName(device)} · ${RULE_STATE_LABELS[deviceRuleState(device, rules)]}`}
+          data-rule-state={deviceRuleState(device, rules)}
           aria-describedby={active?.device.id === device.id ? tooltipId : undefined}
           onClick={() => onSelectDevice?.(device.id)}
           onPointerEnter={() => { setHovered(device.id); setDismissed(null); }}
@@ -185,6 +190,7 @@ export function DrawingOverlay({
           onBlur={() => setFocused(null)}
           onKeyDown={(event) => { if (event.key === "Escape") setDismissed(device.id); }}>
           <DeviceSymbol type={device.type} />
+          {deviceRuleState(device, rules) !== "verified" && <span aria-hidden="true" className={styles.ruleIndicator} data-review={deviceRuleState(device, rules) === "needs_review"}>?</span>}
         </button>
       ))}
       {active && (
@@ -195,8 +201,10 @@ export function DrawingOverlay({
           transform: below ? undefined : "translateY(-100%)",
           maxHeight: Math.max(0, (below ? viewport.height - active.point.y : active.point.y) - tooltipGap - 8),
         }}>
-          <strong>{DEVICE_LABELS[active.device.type]}</strong>
+          <strong>{deviceLabel(active.device.type)}</strong>
           <span>{roomName(active.device)}</span>
+          <span>{RULE_STATE_LABELS[deviceRuleState(active.device, rules)]}</span>
+          {active.device.ruleId && <span>Правило: {active.device.ruleId}</span>}
         </div>
       )}
     </div>

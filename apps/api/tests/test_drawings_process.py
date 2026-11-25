@@ -1256,6 +1256,9 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertEqual(result.drawing.status.value, "processed")
         self.assertEqual(len(result.rooms), len(db["rooms"]))
         self.assertEqual(len(result.devices), len(db["devices"]))
+        stored_rules = {str(row["id"]): row.get("rule_id") for row in db["devices"]}
+        for device in result.devices:
+            self.assertEqual(device.ruleId, stored_rules[str(device.id)])
         self.assertIsNotNone(result.downloadUrl)
         self.assertTrue(str(result.downloadUrl).startswith("https://mock.supabase.co"))
         self.assertIsNotNone(result.downloadUrlExpiresAt)

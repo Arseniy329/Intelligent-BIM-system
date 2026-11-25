@@ -33,6 +33,12 @@ function validateDefinition(definition: string, value: unknown) {
 }
 
 describe("JSON contract examples", () => {
+  it("accepts optional device rule provenance while rejecting invalid ids", () => {
+    const device = readExample("drawing-result.json").devices[0];
+    expect(validateDefinition("Device", device)).toBe(true);
+    for (const ruleId of [null, "rule-1"]) expect(validateDefinition("Device", { ...device, ruleId })).toBe(true);
+    for (const ruleId of ["", 12, {}]) expect(validateDefinition("Device", { ...device, ruleId })).toBe(false);
+  });
   it("supports room results before placement with a separate expiring source link", () => {
     const result = readExample("drawing-result.json");
     result.drawing.status = "processing";

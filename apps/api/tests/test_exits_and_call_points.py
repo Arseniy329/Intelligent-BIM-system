@@ -317,6 +317,11 @@ class TestPlaceManualCallPoints(ExitsTestCase):
         )
 
     def test_manual_call_points_at_exits_and_along_the_corridor(self) -> None:
+        self.drawings_table.rows[0].update({
+            "original_file_name": "plan.dxf",
+            "storage_path": f"{self.user_id}/{self.drawing_id}/source.dxf",
+            "created_at": "2026-11-19T10:00:00+00:00",
+        })
         self.add_exit(0, 1_500, "dxf")
         self.add_exit(40_000, 1_500, "manual")
 
@@ -335,6 +340,10 @@ class TestPlaceManualCallPoints(ExitsTestCase):
 
         rows = self.call_point_rows()
         self.assertEqual(len(rows), 3)
+        reopened = self.client.get(f"/api/v1/drawings/{self.drawing_id}").json()
+        returned = [device for device in reopened["devices"] if device["type"] == "manual_call_point"]
+        self.assertEqual(len(returned), len(rows))
+        self.assertTrue(all(device["ruleId"] == self.dstu_rule["id"] for device in returned))
         for row in rows:
             self.assertEqual(row["layer"], "SYS_FIRE_MCP")
             self.assertEqual(row["rule_id"], self.dstu_rule["id"])
