@@ -13,6 +13,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RoomsTable } from "@/components/rooms/rooms-table";
 
 afterEach(cleanup);
+it("starts a guarded zone draft from the panel height field and saves its original geometry", async () => {
+  const updateZone = vi.fn().mockResolvedValue({ ...zone, height: 4.2 });
+  function Harness() {
+    const editor = usePlanEditor({ drawingId: "drawing", rooms: [room], devices: [], selectRoom: vi.fn(), refresh: async () => {}, featuresApi: { ...planFeaturesApi, updateZone } });
+    return <PlanFeaturesPanel editor={editor} room={room} zones={[zone]} exits={[]} loading={false} error={false} disabled={false} retry={() => {}} />;
+  }
+  render(<Harness />);
+  fireEvent.change(screen.getByLabelText("Висота Низька на плані, м"), { target: { value: "4.2" } });
+  expect(screen.getByRole("button", { name: "Позначити евакуаційний вихід" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Зберегти зону" }));
+  await waitFor(() => expect(updateZone).toHaveBeenCalledWith(zone.id, { name: zone.name, height: 4.2, polygon: zone.polygon }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Зберегти зону" })).toBeNull());
+});
 it("edits a zone height in its own table row without changing its polygon or parent room", async () => {
   const updateZone = vi.fn().mockResolvedValue({ ...zone, height: 4.5 });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

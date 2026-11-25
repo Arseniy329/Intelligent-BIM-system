@@ -20,11 +20,16 @@ export function PlanFeaturesPanel({ editor, room, zones, exits, loading, error, 
       <button className={button} disabled={blocked || !room} onClick={() => room && editor.beginZone(room)}>Додати зону багатокутником</button>
       {room && <ul className="space-y-2">{zones.filter(z => z.roomId === room.id).map((z, i) => <li key={z.id} className="flex flex-wrap items-center gap-2">
         <strong>{z.name || `Зона ${i + 1}`}</strong>
+        <label className={styles.heightField}>Висота стелі, м<input aria-label={`Висота ${z.name || `зони ${i + 1}`} на плані, м`} type="number" min="0.01" max="100" step="any" placeholder="Введіть висоту"
+          disabled={disabled || editor.busy || editor.uncertain || !!editor.draft && !(editor.draft.kind === "zone" && editor.draft.id === z.id)}
+          value={editor.draft?.kind === "zone" && editor.draft.id === z.id ? editor.draft.height : z.height ?? ""}
+          onChange={event => { if (!editor.draft) editor.beginZone(room, z); editor.setHeight(event.target.value); }} /></label>
         <span className={z.height == null ? styles.warning : undefined}>{z.height == null ? "Недостатньо даних: немає висоти" : `Висота стелі: ${z.height.toLocaleString("uk-UA", { minimumFractionDigits: 2 })} м`}</span>
         {z.height == null && <p>У цій зоні розміщення недоступне. Решта зон обробляються незалежно.</p>}
         <button className={button} disabled={blocked} onClick={() => editor.beginZone(room, z)}>Редагувати зону</button>
         <button className={button} disabled={blocked} onClick={() => editor.requestDelete("zone", z.id)}>Видалити зону</button>
       </li>)}</ul>}
+      {editor.draft?.kind === "zone" && editor.draft.id && <div className={styles.saveActions}><button className={`${button} ${styles.primary}`} disabled={editor.busy || editor.uncertain} onClick={editor.save}>Зберегти зону</button><button className={button} disabled={editor.busy} onClick={editor.cancel}>Скасувати зміни зони</button></div>}
       </div></section>
       <section className={styles.panel} aria-label="Евакуаційні виходи"><h2 className={styles.heading}>Евакуаційні виходи</h2><div className={styles.content}>
       {!exits.length && <div className={styles.emptyState}>

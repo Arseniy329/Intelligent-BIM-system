@@ -413,7 +413,7 @@ function DrawingDetailContent({
             </div>
           )}
           <section aria-label="План креслення" className="min-w-0 space-y-3">
-            <div className={workspaceStyles.planLayout}>
+            <div className={cn(workspaceStyles.planLayout, mode === "rooms" && !demo && workspaceStyles.featureLayout)}>
             <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
               layers={layers} mode={mode} onModeChange={setMode}
               workPanel={result && !demo ? <PlanWorkPanel mode={mode} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
