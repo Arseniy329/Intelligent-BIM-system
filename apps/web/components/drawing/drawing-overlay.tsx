@@ -162,7 +162,7 @@ export function DrawingOverlay({
           onBlur={() => setFocused(null)}
           onKeyDown={(event) => { if (event.key === "Escape") setDismissed(device.id); }}>
           <DeviceSymbol type={device.type} />
-          {deviceRuleState(device, rules) !== "verified" && <span aria-hidden="true" className={styles.ruleIndicator} data-review={deviceRuleState(device, rules) === "needs_review"}>{deviceRuleState(device, rules) === "needs_review" ? "!" : "?"}</span>}
+          {deviceRuleState(device, rules) !== "verified" && <span aria-hidden="true" className={styles.ruleIndicator} data-review={deviceRuleState(device, rules) === "needs_review"}>?</span>}
         </button>
       ))}
       {active && (

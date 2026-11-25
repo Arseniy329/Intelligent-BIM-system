@@ -217,3 +217,40 @@ BIM-170/matching Figma data and marker/icon frames remain unavailable/unverified
 confirmed workspace design differences remain. Draft only;
 do not describe this as pixel-perfect, end-to-end verified, or merge-ready.
 No push, merge, remote PR creation, Jira mutation or production access performed.
+
+NEW DESIGN MATERIALS REVIEW — 2026-11-25 (implementation still in progress)
+51 ZIP archives extracted safely to tmp/design-review-2; originals unchanged.
+Inventory: 59 PDF/SVG exports (31 PDFs, 28 SVGs), including duplicate exports.
+Read both developer handoffs before editing. Missing-reference blockers for
+BIM-131 zones/exits/room-zone table and BIM-129 rule states are RESOLVED.
+This supersedes the earlier claim that these frames were unavailable.
+The handoff specifies illustrative geometry/counts, independent room source,
+confirmation and completeness, and rule review distinct from a violation.
+
+BIM-122 correction: replace the review exclamation with the reference question
+mark on the plan and in the legend. Original device symbols remain unchanged.
+337 web tests, lint, standalone TypeScript and production build PASS afterward.
+No new browser screenshot comparison completed yet; exact design remains FAIL /
+NOT VERIFIED, not accepted on the strength of automated tests.
+
+Still-required implementation work: compare and correct panel geometry, spacing,
+legend/status presentation and layer layout against the new references. BIM-182
+currently has combined zone/exit controls and zone summaries inside a room cell;
+the new frames show separate state panels and editable child zone rows. These
+are implementation work, not missing-material blockers. Official BIM-170 does
+not block these independent corrections or supplementary local testing.
+
+Backend recheck: authorized test /openapi.json returns 200, still no zone/exit
+routes or Device.ruleId. Local dev contains the zone/exit implementation, and
+BIM-122 contains the approved ruleId mapping. This confirms a deployed/local
+contract difference; the exact deployed commit remains unidentified. An isolated
+local authenticated API/database has not yet been configured or tested.
+
+Asset search: no standalone House/Fit export identified in the 59-file inventory;
+components are exported as boards. No paths were extracted/redrawn from frames.
+Prototype.html mentioned in the handoff was not included in the archive inventory.
+No changes to BIM-173/BIM-78/BIM-218/BIM-219, no push/merge/Jira/production actions.
+
+PR draft addendum: incorporate the new BIM-129 review-marker correction and
+replace the obsolete missing-frame blocker with pending reference-based UI work.
+Retain draft status until browser comparison and remaining implementation finish.

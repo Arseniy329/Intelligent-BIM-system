@@ -16,7 +16,7 @@ export function DeviceLegend({ devices = [], rules = [] }: { devices?: Device[];
       <Image src={`/design/bim-107/${asset}.svg`} width={20} height={20} alt="" unoptimized />{label}
     </li>)}</ul>
     {states.some(state => state !== "verified") && <p className={styles.ruleLegend}>
-      {states.includes("needs_review") && <span><span className={styles.reviewKey}>!</span> Треба перевірити правило. </span>}
+      {states.includes("needs_review") && <span><span className={styles.reviewKey}>?</span> Треба перевірити правило. </span>}
       {states.includes("unknown") && <span>? Статус правила невідомий. </span>}
       Позначка правила не означає підтверджене порушення.
     </p>}
