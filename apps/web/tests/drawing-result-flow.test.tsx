@@ -7,6 +7,7 @@ import type { DrawingResult } from "@bim/contracts";
 import example from "../../../packages/contracts/examples/drawing-result.json";
 import { DrawingDetail } from "@/components/drawing/drawing-detail";
 import type { DrawingViewerProps } from "@/components/drawing/drawing-viewer";
+vi.mock("@/lib/drawing/plan-features-api", () => ({ planFeaturesApi: { zones: async () => [], exits: async () => [] } }));
 
 const { viewer } = vi.hoisted(() => ({ viewer: vi.fn() }));
 vi.mock("@/components/drawing/drawing-viewer", () => ({

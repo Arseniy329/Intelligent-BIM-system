@@ -1,5 +1,5 @@
 import type { Device } from "@bim/contracts";
-import tokens from "../../../../tokens.json";
+import Image from "next/image";
 
 export const DEVICE_LABELS: Record<Device["type"], string> = {
   smoke_detector: "Димовий сповіщувач",
@@ -8,22 +8,20 @@ export const DEVICE_LABELS: Record<Device["type"], string> = {
   sounder: "Оповіщувач",
 };
 
-const colors: Record<Device["type"], string> = {
-  smoke_detector: tokens.color.plan.deviceSmoke,
-  heat_detector: tokens.color.plan.deviceHeat,
-  manual_call_point: tokens.color.plan.deviceManualCallPoint,
-  sounder: tokens.color.plan.deviceSounder,
+export const DEVICE_ASSETS: Record<Device["type"], string> = {
+  smoke_detector: "/design/bim-107/smoke.svg",
+  heat_detector: "/design/bim-107/heat.svg",
+  manual_call_point: "/design/bim-107/manual.svg",
+  sounder: "/design/bim-107/sounder.svg",
 };
 
-/** Temporary design.md symbols; replace this component when BIM-107 ships. */
-export function DeviceSymbol({ type }: { type: Device["type"] }) {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="currentColor"
-      style={{ color: colors[type] }} stroke={tokens.color.plan.markerOutline} strokeWidth={tokens.borderWidth.deviceDefault}>
-      {type === "smoke_detector" && <circle cx="8" cy="8" r="7" />}
-      {type === "heat_detector" && <path d="M8 1 15 15H1Z" />}
-      {type === "manual_call_point" && <rect x="1" y="1" width="14" height="14" />}
-      {type === "sounder" && <path d="m8 1 7 7-7 7-7-7Z" />}
-    </svg>
-  );
+export function deviceLabel(type: string) {
+  return Object.hasOwn(DEVICE_LABELS, type) ? DEVICE_LABELS[type as Device["type"]] : "Невідомий тип приладу";
+}
+
+/** Original exported assets, using the variants in Desktop 6/10-19. */
+export function DeviceSymbol({ type }: { type: string }) {
+  if (!Object.hasOwn(DEVICE_ASSETS, type)) return <span data-device-symbol="unknown" aria-hidden="true">?</span>;
+  return <Image src={DEVICE_ASSETS[type as Device["type"]]} width={20} height={20}
+    data-device-symbol={type} alt="" aria-hidden="true" unoptimized draggable={false} />;
 }

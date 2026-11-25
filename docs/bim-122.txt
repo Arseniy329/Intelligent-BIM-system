@@ -1,0 +1,71 @@
+BIM-122 acceptance report - 2026-11-25
+
+Branch: feature/BIM-122-device-overlay. Implementation c7cae44, continuing from 88e1819. Compared against origin/dev 3ef7714e44d9d5996a2e905e642e016c43a5bc90. Kept separate from BIM-182; no push, merge, Jira changes or production access.
+
+Decision: NOT ACCEPTED for release. Local device presentation and rule-provenance behavior verified; actual all-type positive-status API integration and exact design acceptance remain unverified.
+
+Latest user decision: skip isolated backend setup and defer authenticated integration until after the later dev merge. These checks remain NOT VERIFIED; no push or merge is authorized by that deferral.
+
+Implemented
+- Original supplied BIM-107 SVGs consistently represent smoke, heat, manual call points and sounders on the plan and legend. Live counts and independent layers retained.
+- Optional nullable Device.ruleId preserves stored rule_id in drawing/device responses. Exact-id GET /rules lookup; only verified counts as verified. Missing/unmatched/pending/future status remains unknown; both review spellings supported.
+- BIM-129 question-mark review indicator preserved, separate from violations.
+- Selected-device inspector displays rule ID, condition, value, document, clause, link, check date and review reason from actual API data. Missing provenance is explicitly unknown, with no invented normative sources. Draft guard blocks rule navigation.
+- Review/verified/unknown badge colors, reason section, typography and spacing follow supplied state references. Existing layer controls, legend symbols, API errors/retry, viewport behavior and device editing retained.
+- No placement algorithm, schema migration, authorization policy or production changes.
+
+Acceptance criteria
+PASS = verified within the stated evidence boundary. FAIL = observed discrepancy. NOT VERIFIED = environment/data/access unavailable. Unit/component and substituted-infrastructure API tests do not prove real authenticated persistence or pixel identity.
+
+| Criterion | Status | Evidence / limitation |
+| --- | --- | --- |
+| Distinct smoke, manual call point and sounder on a test DXF | PASS | Native Chrome local representative DXF shows all three original symbols; heat also visible. Illustrative device records, not real placement API proof. |
+| All three device types in adjacent legend | PASS | Visible symbols/counts match the plan; shared symbol sources and component tests. |
+| Symbols follow BIM-107 | PASS | Original supplied SVG geometry/attributes retained. Prior comparison normalized only CRLF/trailing whitespace. |
+| Mark needs-review device according to BIM-129 | PASS | Supplied frame now available; question mark visible on smoke marker/legend and review inspector. Exact-id local status tests pass. Real positive-status API join remains separately NOT VERIFIED. |
+| BIM-131 layout / exact design | FAIL | Confirmed House/Fit glyph substitutes remain, explicitly permitted temporarily. Matching-data whole-screen pixel acceptance not established. New inspector states inspected using illustrative data, not asserted pixel-perfect. |
+| Completed result on intended BIM-170 acceptance DXF | NOT VERIFIED | Official data and expected results unavailable. Supplementary local testing continued. |
+| PR targets dev, Arseniy reviewer | NOT VERIFIED | Local draft below; remote PR/review request not authorized. |
+| PR merged into dev | NOT VERIFIED | Not authorized/performed. |
+
+Additional verification
+| Check | Status | Evidence / limitation |
+| --- | --- | --- |
+| Device.ruleId serialization | PASS | Contracts and API GET/mutation mapping; smoke/manual/sounder round-trip assertions use test doubles. |
+| Deployed Device.ruleId contract | FAIL | Authorized test OpenAPI lacks ruleId and forbids additional Device properties; local implementation exists. Deployment mismatch, not an unresolved local mapping defect. |
+| Real authenticated baseline | PASS | Previously authorized test signup/sign-in, synthetic upload/process, room edits, smoke placement and reload: 3 rooms, 81 m2, five smoke devices persisted on drawing 9191c265-e890-4b6b-9af4-4874f40110cf. |
+| Real all-type placement and positive rule statuses | NOT VERIFIED | No capable isolated stack configured; shared test contract lacks provenance. |
+| Review/verified/unknown rendering | PASS | Chrome clicked manual device: verified inspector and test provenance; clicked heat: unknown, no borrowed rule; smoke: amber question-mark review. Automated missing/wrong-id and blocked-navigation regressions pass. |
+| Legend and layer isolation | PASS | Browser: four types/count one; hiding smoke removes its marker and leaves others. Prior checks verified manual/sounder isolation and 125% zoom retention; live smoke hide/show retained count five. |
+| Rule fetch failure/retry on real service | NOT VERIFIED | Logic covered locally; capable positive-provenance service absent. |
+| Draft navigation protection | PASS | Existing breadcrumb regression and new rule-link draft guard tests. |
+| Exact same-data screenshot acceptance | NOT VERIFIED | Three-room illustrative DXF and test rules differ from exported floor/device records. No pixel-diff claim. |
+
+Browser evidence and final checks
+Native Chrome screenshots captured in conversation for representative DXF, all device symbols and review inspector; verified/unknown inspector and smoke-layer transitions observed in accessibility state. Temporary preview used production components with explicitly illustrative records and no API calls. Source retained in ignored tmp/bim122-acceptance-preview.tsx; production route restored and temporary component removed. Final reason heading received a targeted regression rerun; no post-heading screenshot claim.
+
+340 web + 92 contract tests PASS. Three targeted rule-details tests rerun after final reason presentation change: PASS. Lint, standalone TypeScript and production build PASS. API 409 PASS, 1 SKIP, 139 subtests, 17 deprecation warnings; skip is legacy generated-output case. API auth/DB/storage are test doubles. Logs tmp/bim122-final-{all,lint,types,build,api}.log; git diff --check PASS.
+
+Backend investigation / exact remaining infrastructure need
+origin/dev 3ef7714 already has zones, exits and required migrations; BIM-122 c7cae44 includes the approved optional ruleId mapping. No new endpoint is required. Authorized test API https://intelligent-bim-api.vercel.app still lacks zone/exit routes and ruleId in OpenAPI. Web https://intelligent-bim-web.vercel.app uses test Supabase qgkxerxiyzpbeczkpbpj. Exact deployed revision remains unknown.
+
+No Docker/Podman/PostgreSQL executable/service or Docker installation found. WSL explicitly reports not installed. Backend requires Supabase Auth, Storage and PostgREST plus server-only service-role credentials; no isolated configuration supplied. No migrations applied, paid cloud resources created or authentication bypass introduced.
+
+Infrastructure owner: provide a dedicated isolated Supabase project via secure API environment (SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, drawings bucket), or install/start Docker Desktop/WSL. Apply complete ordered supabase/migrations only there. Configure local frontend with corresponding public auth settings and local API URL. Then authenticate, process/place smoke/manual/sounder cases, inspect GET drawing ruleId and exact GET rules join, reopen/reload, test verified/review/missing and failed-rules-fetch recovery; verify device move/save/cancel and layers at zoom. Never place service-role secrets in NEXT_PUBLIC configuration.
+
+Resolved dependencies
+51 archives safely extracted, originals unchanged; 59 PDF/SVG exports including duplicates. Developer handoffs read. BIM-131 zones/exits/table/legend and BIM-129 rule states are available: previous missing-frame/marker blocker is resolved. Review question mark and rule provenance panel corrected. Missing BIM-170 did not block independent work.
+
+Remaining assets/data/review
+- Polina: original standalone House/Fit SVG assets; none found in exported inventory. No flattened frame paths extracted/redrawn. Existing assets retained temporarily at user's explicit direction.
+- Matching Figma drawing/room/device/state records for exact comparison; current differences in geometry/counts/positions are fixture differences, not proof of a UI defect.
+- Denys/Danylo/Dariia: official anonymized BIM-170 DXFs and expected-result table. Previous repository/docs/history, sibling ZIP inventory, connected Drive, GitHub, Jira BIM-170 and Sprint 4 Confluence searches found no accessible files/link. Jira references Drive > Sprint 4 > Research with no attachments/comments; older Nov 3 parser fixtures do not establish official acceptance.
+- External PR review and merge need later authorization. No work added to BIM-173/BIM-78/BIM-218/BIM-219.
+
+PR DRAFT - local text only
+Title: BIM-122: distinguish device symbols and expose rule verification provenance
+Base: dev. Intended reviewer: Arseniy329 (BIM-187). Draft, not release accepted.
+
+Smoke detectors, manual call points and sounders share original BIM-107 symbols with the counted legend and per-type layers. Optional Device.ruleId preserves stored provenance for exact-id rules lookup. BIM-129 question-mark review and unknown/verified states appear on markers and in the selected-device inspector with source fields and reason. Draft navigation remains guarded; placement algorithms unchanged.
+
+Validation: 340 web / 92 contract / 409 API tests (1 skip), lint, TypeScript and production build pass. Chrome checks distinct symbols, counts, layer hiding and all three rule states using illustrative local data. Authorized live smoke baseline persists, but real all-type positive provenance integration requires a capable isolated backend. House/Fit substitutes, official BIM-170 and exact matching-data acceptance remain unresolved. Do not claim pixel-perfect, end-to-end verified or merge-ready.

@@ -300,7 +300,7 @@ export function UploadForm() {
   return (
     <form
       onSubmit={handleSubmit}
-      className="space-y-[var(--bim-spacing-6)]"
+      className="upload-card space-y-[var(--bim-spacing-6)]"
       aria-busy={isBusy}
     >
       {/* Upload card / dropzone */}
@@ -308,7 +308,8 @@ export function UploadForm() {
         aria-label="Вибір DXF-файлу"
         className="rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-[var(--bim-spacing-6)] sm:p-[var(--bim-spacing-8)] shadow-[var(--bim-shadow-sm)]"
       >
-        <div
+        <h2 className="upload-card-heading">Нове креслення<span>DXF</span></h2>
+        <div data-dropzone
           onDragEnter={handleDragEnter}
           onDragLeave={handleDragLeave}
           onDragOver={handleDragOver}

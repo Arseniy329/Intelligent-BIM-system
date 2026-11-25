@@ -5,8 +5,12 @@ import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 
 import type { DrawingViewportController } from "@/lib/drawing/viewer-adapter";
 import { observeOverlayViewport, projectDevice, projectRoom, roomLabelPlacement } from "@/lib/drawing/overlay-geometry";
 import tokens from "../../../../tokens.json";
-import { DEVICE_LABELS, DeviceSymbol } from "./device-symbol";
+import { deviceLabel, DeviceSymbol } from "./device-symbol";
+import type { Rule } from "@/lib/api/rules";
+import { deviceRuleState, RULE_STATE_LABELS } from "@/lib/drawing/device-rule-status";
 import styles from "./drawing-viewer.module.css";
+import type { RoomZone, PlanExit } from "@/lib/drawing/plan-features-api";
+import { isFinitePoint } from "@/lib/drawing/overlay-geometry";
 
 const NO_ROOMS: Room[] = [];
 const NO_DEVICES: Device[] = [];
@@ -30,6 +34,9 @@ const overlayTheme = {
 } as CSSProperties;
 
 type Props = {
+  zones?: RoomZone[];
+  exits?: PlanExit[];
+  rules?: Rule[];
   onSelectRoom?: (id: string) => void;
   onSelectDevice?: (id: string) => void;
   controller: DrawingViewportController;
@@ -39,6 +46,7 @@ type Props = {
   showDevices: boolean;
   showRoomLabels?: boolean;
   selectedRoomId?: string | null;
+  selectedDeviceId?: string | null;
 };
 
 export function DrawingOverlay({
@@ -48,7 +56,9 @@ export function DrawingOverlay({
   showRooms,
   showDevices,
   showRoomLabels = true,
-  selectedRoomId, onSelectRoom, onSelectDevice,
+  selectedRoomId, selectedDeviceId, onSelectRoom, onSelectDevice,
+  zones = [], exits = [],
+  rules = [],
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const tooltipId = useId();
@@ -118,6 +128,7 @@ export function DrawingOverlay({
             <polygon
               key={room.id}
               data-confirmed={room.confirmed ? "true" : "false"}
+              data-room-state={room.confirmed === true ? "confirmed" : room.confirmed === false ? "review" : "default"}
               data-source={room.source}
               style={{ pointerEvents: onSelectRoom ? "all" : undefined, cursor: onSelectRoom ? "pointer" : undefined }}
               role={onSelectRoom ? "button" : undefined}
@@ -136,7 +147,30 @@ export function DrawingOverlay({
           );
         })}
       </svg>
-      {showRoomLabels && projected.rooms.map(({ room, label }) => label && (
+      <svg className={styles.roomPolygons} aria-label="Зони різної висоти та виходи">
+        {showRooms && zones.filter(zone => zone.polygon.length >= 3 && zone.polygon.every(isFinitePoint)).map((zone, index) => {
+          const points = zone.polygon.map(point => controller.worldToScreen(point));
+          const label = roomLabelPlacement(points, viewport);
+          return <g key={zone.id} data-zone-id={zone.id}>
+            <polygon points={points.map(p => `${p.x},${p.y}`).join(" ")} style={{ fill: "none", stroke: "var(--viewer-focus)", strokeDasharray: "6 3", strokeWidth: 2 }} vectorEffect="non-scaling-stroke">
+              <title>{zone.name || `Зона ${index + 1}`} · {zone.height == null ? "Висоту не вказано" : `${zone.height} м`}</title>
+            </polygon>
+            {showRoomLabels && label && <text x={label.x} y={label.y} textAnchor="middle" className={styles.zoneHeight}>
+              <tspan x={label.x} dy="-0.6em">{zone.name || `Зона ${index + 1}`}</tspan>
+              <tspan x={label.x} dy="1.5em" fill={zone.height == null ? "#92400e" : "#475569"}>{zone.height == null ? "Висоту не задано" : `${zone.height.toLocaleString("uk-UA", { minimumFractionDigits: 2 })} м`}</tspan>
+            </text>}
+          </g>;
+        })}
+        {exits.filter(exit => isFinitePoint(exit.position)).map((exit, index) => {
+          const point = controller.worldToScreen(exit.position);
+          return <g key={exit.id} data-exit-id={exit.id} transform={`translate(${point.x},${point.y})`}>
+            <title>{exit.name || `Вихід ${index + 1}`} · {exit.source === "dxf" ? "Знайдено в DXF" : "Позначено вручну"}</title>
+            <rect x={-13} y={-13} width={26} height={26} rx={4} style={{ fill: tokens.color.semantic.success }} />
+            <text textAnchor="middle" dy=".35em" fill="white" fontSize={20}>↗</text>
+          </g>;
+        })}
+      </svg>
+      {showRoomLabels && projected.rooms.map(({ room, label }) => label && !zones.some(zone => zone.roomId === room.id) && (
         <div key={room.id} data-room-label={room.id} className={styles.roomLabel}
           style={{ left: label.x, top: label.y, width: label.width, height: label.height }}>
           <span>{room.name?.trim() || "Приміщення без назви"}</span>
@@ -145,7 +179,9 @@ export function DrawingOverlay({
       ))}
       {projected.devices.map(({ device, point }) => (
         <button key={device.id} type="button" className={styles.deviceMarker} data-device-id={device.id}
-          style={{ left: point.x, top: point.y }} aria-label={`${DEVICE_LABELS[device.type]} · ${roomName(device)}`}
+          data-selected={selectedDeviceId === device.id || undefined}
+          style={{ left: point.x, top: point.y }} aria-label={`${deviceLabel(device.type)} · ${roomName(device)} · ${RULE_STATE_LABELS[deviceRuleState(device, rules)]}`}
+          data-rule-state={deviceRuleState(device, rules)}
           aria-describedby={active?.device.id === device.id ? tooltipId : undefined}
           onClick={() => onSelectDevice?.(device.id)}
           onPointerEnter={() => { setHovered(device.id); setDismissed(null); }}
@@ -154,6 +190,7 @@ export function DrawingOverlay({
           onBlur={() => setFocused(null)}
           onKeyDown={(event) => { if (event.key === "Escape") setDismissed(device.id); }}>
           <DeviceSymbol type={device.type} />
+          {deviceRuleState(device, rules) !== "verified" && <span aria-hidden="true" className={styles.ruleIndicator} data-review={deviceRuleState(device, rules) === "needs_review"}>?</span>}
         </button>
       ))}
       {active && (
@@ -164,8 +201,10 @@ export function DrawingOverlay({
           transform: below ? undefined : "translateY(-100%)",
           maxHeight: Math.max(0, (below ? viewport.height - active.point.y : active.point.y) - tooltipGap - 8),
         }}>
-          <strong>{DEVICE_LABELS[active.device.type]}</strong>
+          <strong>{deviceLabel(active.device.type)}</strong>
           <span>{roomName(active.device)}</span>
+          <span>{RULE_STATE_LABELS[deviceRuleState(active.device, rules)]}</span>
+          {active.device.ruleId && <span>Правило: {active.device.ruleId}</span>}
         </div>
       )}
     </div>

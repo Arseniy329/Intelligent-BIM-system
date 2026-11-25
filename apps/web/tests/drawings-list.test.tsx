@@ -458,7 +458,7 @@ describe("DrawingsPage and AppHeader integration", () => {
     expect(html).toContain('href="/drawings"');
     expect(html).toContain("Мої креслення");
     expect(html).toContain('href="/upload"');
-    expect(html).toContain("Завантажити");
+    expect(html).toContain("Нове креслення");
   });
 });
 

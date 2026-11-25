@@ -876,6 +876,7 @@ async def get_drawing_detail(
                         type=dev_type,
                         position=Point(x=x_val, y=y_val),
                         layer=str(d.get("layer") or "SYS_FIRE_SENSORS"),
+                        ruleId=str(d["rule_id"]) if d.get("rule_id") else None,
                     )
                 )
 

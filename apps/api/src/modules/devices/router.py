@@ -41,6 +41,7 @@ def device_from_row(row: dict[str, Any]) -> Device:
         type=device_type,
         position=Point(x=float(row["x"]), y=float(row["y"])),
         layer=str(row.get("layer") or DEVICE_LAYER),
+        ruleId=str(row["rule_id"]) if row.get("rule_id") else None,
     )
 
 
@@ -184,6 +185,21 @@ async def update_device(
     if "roomId" in changed:
         _check_room_in_drawing(supabase, payload.roomId, drawing_id)
         values["room_id"] = str(payload.roomId) if payload.roomId else None
+
+    # Manual edits do not recalculate placement rules. Clear provenance in the
+    # same write only when the effective rule inputs change, not on a no-op PATCH.
+    persisted = {
+        "type": str(device["type"]),
+        "x": float(device["x"]),
+        "y": float(device["y"]),
+        "room_id": str(UUID(str(device["room_id"]))) if device.get("room_id") else None,
+    }
+    if any(
+        values[key] != previous
+        for key, previous in persisted.items()
+        if key in values
+    ):
+        values["rule_id"] = None
 
     updated = first_row(
         supabase.table("devices").update(values).eq("id", str(device_id)).execute()

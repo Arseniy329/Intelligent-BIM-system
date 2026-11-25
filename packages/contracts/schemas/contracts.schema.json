@@ -377,6 +377,11 @@
         "layer": {
           "type": "string",
           "minLength": 1
+        },
+        "ruleId": {
+          "description": "Ідентифікатор застосованого правила (devices.rule_id → GET /rules items[].id). null або відсутнє — правило невідоме або прилад додано вручну.",
+          "type": ["string", "null"],
+          "minLength": 1
         }
       }
     },

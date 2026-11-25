@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchRules } from "@/lib/api/rules";
 import type { DrawingStatus, DrawingDetailStatus } from "@bim/contracts";
 import { DrawingViewer, type DrawingViewerProps } from "./drawing-viewer";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -13,8 +14,12 @@ import { RoomsTable, RoomEditForm } from "@/components/rooms";
 import { mapContractRoomToRoom, getRoomBlockingReasons, type Room } from "@/types/rooms";
 import { useUpdateRoomMutation } from "@/lib/rooms/rooms-api";
 import { usePlanEditor } from "@/lib/drawing/use-plan-editor";
-import { PlanEditorPanel } from "./plan-editor-panel";
+import { PlanEditorPanel, PlanWorkPanel } from "./plan-editor-panel";
+import { INITIAL_PLAN_LAYERS, PlanLayersPanel } from "./plan-layers";
+import { PlanFeaturesPanel } from "./plan-features-panel";
+import { planFeaturesApi } from "@/lib/drawing/plan-features-api";
 import { cn } from "@/lib/utils";
+import workspaceStyles from "./drawing-workspace.module.css";
 
 export type DrawingTab = "plan" | "rooms" | "rules" | "report";
 
@@ -72,13 +77,32 @@ function DrawingDetailContent({
   const updateRoomMutation = useUpdateRoomMutation(id);
   const [activeTab, setActiveTab] = useState<DrawingTab>(initialTab);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [layers, setLayers] = useState(INITIAL_PLAN_LAYERS);
+  const [mode, setMode] = useState<"rooms" | "devices">("rooms");
   const [editingRoom, setEditingRoom] = useState<Room | null>(null);
   const [isEditingRoomDirty, setIsEditingRoomDirty] = useState(false);
   const loadedResult = state.detail.data && isDrawingResult(state.detail.data) ? state.detail.data : null;
+  const queryClient = useQueryClient();
+  const featureOptions = (revision: number) => ({
+    queryKey: ["drawing-features", id, revision],
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      const [zones, exits] = await Promise.all([planFeaturesApi.zones(id, signal), planFeaturesApi.exits(id, signal)]);
+      return { zones, exits };
+    },
+    retry: false, refetchOnWindowFocus: false, staleTime: Infinity,
+  });
+  const features = useQuery({ ...featureOptions(state.detail.dataUpdatedAt), enabled: !demo && !!loadedResult });
+  const rules = useQuery({
+    queryKey: ["drawing-rules", id, state.detail.dataUpdatedAt],
+    queryFn: ({ signal }) => fetchRules(signal),
+    enabled: !demo && !!loadedResult?.devices.some(device => device.ruleId),
+    retry: false, refetchOnWindowFocus: false,
+  });
   const editor = usePlanEditor({ drawingId: id, rooms: loadedResult?.rooms ?? [], devices: loadedResult?.devices ?? [], selectRoom: setSelectedRoomId,
     refresh: async () => {
       const updated = await state.detail.refetch({ cancelRefetch: false });
       if (updated.isError) throw updated.error;
+      if (!demo) await queryClient.fetchQuery(featureOptions(updated.dataUpdatedAt));
     },
   });
   const [viewerAttempt, setViewerAttempt] = useState(0);
@@ -154,7 +178,7 @@ function DrawingDetailContent({
   const reprocessing = !!result?.rooms.length || metadata.status === "processed";
   const mappedRooms =
     result?.rooms?.map((r, i) => mapContractRoomToRoom(r, i)) ?? [];
-  const roomBlockingReasons = getRoomBlockingReasons(mappedRooms);
+  const roomBlockingReasons = getRoomBlockingReasons(mappedRooms, false, new Set(features.data?.zones.map(zone => zone.roomId)));
   const editBlockingReasons: string[] = [];
   if (editor.blocked) editBlockingReasons.push("Збережіть або скасуйте зміни плану перед розміщенням");
   if (updateRoomMutation.isPending) {
@@ -168,17 +192,27 @@ function DrawingDetailContent({
   const hasPlacementBlocking = blockingReasons.length > 0;
 
   return (
-    <div className="min-w-0 space-y-5">
-      <Link className={button} href="/upload" aria-disabled={editor.blocked || undefined}
-        onClick={event => { if (editor.blocked) event.preventDefault(); }}>Завантажити інше креслення</Link>
+    <div className={workspaceStyles.workspace} data-drawing-workspace="">
+      <nav aria-label="Шлях до креслення" className={workspaceStyles.breadcrumb}>
+        {["Робочий простір", "Креслення"].map(label => <Fragment key={label}>
+          <Link href="/drawings" aria-disabled={editor.blocked || undefined}
+            onClick={event => { if (editor.blocked) event.preventDefault(); }}>{label}</Link><span>/</span>
+        </Fragment>)}
+        <span>{metadata.originalFileName}</span>
+      </nav>
       {demo && <p role="status" className="rounded-lg border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-subtle)] p-3">Демонстраційний режим. Локальний тестовий DXF та ілюстративні дані; реальна обробка не виконується.</p>}
-      <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className={workspaceStyles.heading}>
         <div className="min-w-0 space-y-2">
-          <h1 className="break-all text-2xl font-semibold">{metadata.originalFileName}</h1>
+          <p className={workspaceStyles.eyebrow}>КРЕСЛЕННЯ</p>
+          <h1 className="break-all text-2xl font-semibold">{metadata.originalFileName.replace(/\.dxf$/i, "")}</h1>
+          <p className={workspaceStyles.fileName}>{metadata.originalFileName}</p>
+        </div>
+        <div className={workspaceStyles.headingActions}>
+        <Link className={button} href="/upload" aria-disabled={editor.blocked || undefined}
+          onClick={event => { if (editor.blocked) event.preventDefault(); }}>Замінити файл</Link>
+        <details className={workspaceStyles.operations}><summary aria-label="Дії з кресленням">⋯</summary><div className="flex flex-wrap gap-2">
           <p role="status">Статус: {state.process.isPending ? "Пошук приміщень…" : state.place.isPending ? "Розміщення приладів…" : metadata.status === "processing" && result ? "Обробку приміщень завершено" : labels[metadata.status]}</p>
           <p className="text-sm text-[var(--bim-color-text-secondary)]">Одиниці: {!units || units === "from_file" ? "очікується визначення з файла" : units === "mm" ? "міліметри" : "метри"}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
           <button className={primaryButton} onClick={() => {
             if (state.busy || editor.blocked || state.detail.isFetching) return;
             if (reprocessing) setConfirmReprocess(true); else state.start();
@@ -216,9 +250,10 @@ function DrawingDetailContent({
             {download.isPending && isDrawingResult(data) ? "Завантаження DXF…" : "Завантажити DXF результату"}
           </button>
           <button className={button} disabled={state.detail.isFetching || state.busy || editor.blocked} onClick={() => void state.refresh()}>Оновити стан</button>
-        </div>
+          <button className={button} disabled={state.detail.isFetching || state.busy || editor.blocked} onClick={refreshFile}>Оновити файл</button>
+          {!resultDownloadAvailable && <p id="result-download-help" className="text-sm text-[var(--bim-color-text-secondary)]">DXF результату недоступний: сервер ще не надав посилання на оброблений файл. Оригінальний DXF є окремим файлом.</p>}
+        </div></details></div>
       </div>
-      {!resultDownloadAvailable && <p id="result-download-help" className="text-sm text-[var(--bim-color-text-secondary)]">DXF результату недоступний: сервер ще не надав посилання на оброблений файл. Оригінальний DXF є окремим файлом.</p>}
       {result?.drawing.errorMessage === "Device changes saved; result DXF needs regeneration" && <div role="alert" className={errorMessage}>
         <p>Зміни приладів збережено, але DXF ще не оновлено. Відновіть експорт без повторного додавання приладів.</p>
         <button className={button} disabled={editor.blocked || state.busy} onClick={editor.regenerate}>Відновити DXF</button>
@@ -237,7 +272,7 @@ function DrawingDetailContent({
       {download.isError && <p role="alert" className={errorMessage}>{drawingErrorMessage(download.error)}</p>}
       {download.isSuccess && <p role="status">DXF передано браузеру для збереження.</p>}
 
-      {/* Top-level 4 Tabs: План, Приміщення, Правила й норми, Звіт */}
+      {/* Preserve the existing rules/report functionality; BIM-78 is outside this change. */}
       <div
         role="tablist"
         aria-label="Розділи креслення"
@@ -272,11 +307,6 @@ function DrawingDetailContent({
           )}
         >
           <span>Приміщення</span>
-          {mappedRooms.length > 0 && (
-            <span className="text-xs px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700">
-              {mappedRooms.length}
-            </span>
-          )}
         </button>
         <button
           disabled={editor.blocked}
@@ -308,10 +338,17 @@ function DrawingDetailContent({
         >
           Звіт
         </button>
+        {result && <span className={workspaceStyles.tabSummary}>{mappedRooms.length} {new Intl.PluralRules("uk").select(mappedRooms.length) === "one" ? "кімната" : new Intl.PluralRules("uk").select(mappedRooms.length) === "few" ? "кімнати" : "кімнат"}</span>}
       </div>
 
       {activeTab === "plan" && (
         <div className="space-y-5">
+          <div className={workspaceStyles.sectionTitle}><h2>План</h2><p>Натисніть на кімнату, щоб побачити деталі</p></div>
+          {result && <div className={workspaceStyles.summary}>
+            <span><strong>{result.rooms.length}</strong> приміщень</span>
+            <span><strong>{result.devices.filter(d => d.type === "smoke_detector" || d.type === "heat_detector").length}</strong> сповіщувачів</span>
+            <span><strong>{result.rooms.reduce((area, room) => area + room.area, 0).toLocaleString("uk-UA", { maximumFractionDigits: 1 })}</strong> м² <span>площа кімнат</span></span>
+          </div>}
           {hasPlacementBlocking && (result?.rooms?.length ?? 0) > 0 && (
             <div
               role="alert"
@@ -382,16 +419,36 @@ function DrawingDetailContent({
               </ul>
             </div>
           )}
-          {result && !demo && <PlanEditorPanel editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
-            selectRoom={setSelectedRoomId} devicesEditable={metadata.status === "processed"} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching} />}
           <section aria-label="План креслення" className="min-w-0 space-y-3">
+            {rules.isFetching && <p role="status">Завантаження статусів правил…</p>}
+            {rules.isError && <p role="alert">Не вдалося отримати статуси правил. Позначення «?» не означає, що правило перевірене. <button className={button} onClick={() => void rules.refetch()}>Повторити завантаження правил</button></p>}
+            <div className={cn(workspaceStyles.planLayout, mode === "rooms" && !demo && workspaceStyles.featureLayout)}>
             <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
+              layers={layers} mode={mode} onModeChange={setMode}
+              workPanel={result && !demo ? <PlanWorkPanel mode={mode} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
+                selectRoom={setSelectedRoomId} devicesEditable={metadata.status === "processed"} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching}
+                onPlace={api.placeDrawing ? state.startPlacement : undefined} placementDisabled={!result.rooms.length || hasPlacementBlocking} onExit={() => setMode("rooms")} /> : undefined}
+              zones={features.data?.zones} exits={features.data?.exits}
+              rules={rules.isError ? undefined : rules.data}
               selectedRoomId={selectedRoomId} editor={demo ? undefined : editor} onSelectRoom={setSelectedRoomId} onSelectDevice={editor.selectDevice}
               onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
-            <button className={button} disabled={state.detail.isFetching || state.busy || editor.blocked} onClick={refreshFile}>Оновити файл</button>
+            <aside className={workspaceStyles.inspector}>
+              {result && !demo ? <PlanEditorPanel rules={rules.isError ? undefined : rules.data} mode={mode} onTable={() => navigateTab("rooms")} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
+                selectRoom={setSelectedRoomId} devicesEditable={metadata.status === "processed"} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching} />
+                : <section className={workspaceStyles.detailsCard}><h3>Деталі приміщення</h3><div>
+                  {selectedRoomId ? <><strong>{result?.rooms.find(room => room.id === selectedRoomId)?.name}</strong><p>{result?.rooms.find(room => room.id === selectedRoomId)?.area} м²</p></>
+                    : <><span className={workspaceStyles.emptyIcon} aria-hidden="true">⌂</span><strong>Виберіть приміщення</strong><p>Натисніть на кімнату на плані або її назву у списку нижче.</p><button className={button} onClick={() => navigateTab("rooms")}>Вибрати приміщення →</button></>}
+                </div></section>}
+              <PlanLayersPanel rooms={result?.rooms ?? []} devices={result?.devices ?? []} value={layers} onChange={setLayers} />
+              {result && !demo && mode === "rooms" && <PlanFeaturesPanel editor={editor} room={result.rooms.find(room => room.id === selectedRoomId)}
+                zones={features.data?.zones ?? []} exits={features.data?.exits ?? []} loading={features.isPending || features.isFetching}
+                error={features.isError} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching}
+                retry={() => void features.refetch()} />}
+            </aside>
+            </div>
           </section>
-          {result ? <section aria-label="Результат обробки" className="space-y-3 rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-4 sm:p-6">
-            <h2 className="text-xl font-semibold">Результат обробки</h2>
+          {result ? <details aria-label="Результат обробки" className={workspaceStyles.processingDetails}>
+            <summary>Результат обробки</summary>
             <p>Приміщень: {result.rooms.length} · Сповіщувачів: {result.devices.length}</p>
             {result.rooms.length ? <ul className="divide-y divide-[var(--bim-color-border-default)]">
               {result.rooms.map((room, index) => <li key={room.id} className="flex flex-wrap justify-between gap-2 py-3">
@@ -400,7 +457,7 @@ function DrawingDetailContent({
               </li>)}
             </ul> : <p>Приміщень не знайдено.</p>}
             {!result.devices.length && <p>Сповіщувачів не знайдено.</p>}
-          </section> : <EmptyState title={metadata.status === "processed" ? "Результат ще недоступний" : "Результату обробки ще немає"}
+          </details> : <EmptyState title={metadata.status === "processed" ? "Результат ще недоступний" : "Результату обробки ще немає"}
             description={metadata.status === "processed" ? "Сервер повернув лише відомості про креслення. Приміщення, сповіщувачі та DXF результату поки недоступні." : "Після обробки тут з’являться приміщення, їхні площі та кількість сповіщувачів."} />}
         </div>
       )}
@@ -446,6 +503,12 @@ function DrawingDetailContent({
             </div>
           ) : (
             <RoomsTable
+              zoneEditor={editor}
+              onEditZone={zone => {
+                const room = result?.rooms.find(item => item.id === zone.roomId);
+                if (room) editor.beginZone(room, zone);
+              }}
+              zones={features.data?.zones}
               rooms={mappedRooms}
               selectedRoomId={selectedRoomId}
               onSelectRoom={(room) => setSelectedRoomId(room.id ?? null)}
@@ -454,9 +517,9 @@ function DrawingDetailContent({
                 setSelectedRoomId(room.id ?? null);
                 navigateTab("plan");
               }}
-              onEditRoom={(room) => setEditingRoom(room)}
+              onEditRoom={(room) => { if (!editor.blocked) setEditingRoom(room); }}
               onConfirmRoom={async (room) => {
-                if (!room.id) return;
+                if (!room.id || editor.blocked) return;
                 await updateRoomMutation.mutateAsync({
                   roomId: room.id,
                   patch: { confirmed: true },
@@ -498,6 +561,7 @@ function DrawingDetailContent({
           </p>
         </section>
       )}
+      <footer className={workspaceStyles.footer}>Інтелектуальна BIM · Пожежна безпека</footer>
     </div>
   );
 }

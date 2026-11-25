@@ -1,4 +1,5 @@
 "use client";
+import { PasswordInput } from "./password-input";
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
@@ -138,7 +139,7 @@ export function RegisterForm() {
         <label htmlFor="register-password" className="block text-xs font-medium">
           Пароль
         </label>
-        <input
+        <PasswordInput
           id="register-password"
           name="password"
           type="password"
@@ -168,7 +169,7 @@ export function RegisterForm() {
         <label htmlFor="register-confirm-password" className="block text-xs font-medium">
           Підтвердження пароля
         </label>
-        <input
+        <PasswordInput
           id="register-confirm-password"
           name="confirmPassword"
           type="password"
