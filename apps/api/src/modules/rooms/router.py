@@ -18,6 +18,7 @@ from src.core.auth import CurrentUser, get_current_user
 from src.infrastructure.supabase import get_supabase_client
 from src.modules.drawings.access import all_rows, first_row, get_drawing_for_user
 from src.modules.drawings.service import get_unit_scale_m
+from src.modules.findings.service import sync_findings_after_mutation
 from src.modules.rooms.service import (
     get_room_types,
     room_from_row,
@@ -25,6 +26,13 @@ from src.modules.rooms.service import (
     row_points,
     suggest_room_type,
     validate_polygon,
+)
+from src.modules.rooms.zones import (
+    RoomZone,
+    RoomZoneCreateRequest,
+    RoomZoneUpdateRequest,
+    check_zone_geometry,
+    zone_from_row,
 )
 
 router = APIRouter(tags=["rooms"])
@@ -133,6 +141,7 @@ async def update_room(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Room not found"
         )
+    sync_findings_after_mutation(supabase, str(drawing["id"]), drawing_row=drawing)
     return room_from_row(updated)
 
 
@@ -170,6 +179,7 @@ async def create_room(
         "updated_at": now,
     }
     inserted = first_row(supabase.table("rooms").insert(values).execute())
+    sync_findings_after_mutation(supabase, str(drawing_id), drawing_row=drawing)
     return room_from_row(inserted if inserted is not None else values)
 
 
@@ -179,13 +189,14 @@ async def delete_room(
     supabase: Annotated[Client, Depends(get_supabase_client)],
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Response:
-    _get_room_for_user(supabase, room_id, current_user)
+    _, drawing = _get_room_for_user(supabase, room_id, current_user)
 
     # devices.room_id has no foreign key, so detach the devices explicitly.
     supabase.table("devices").update({"room_id": None}).eq(
         "room_id", str(room_id)
     ).execute()
     supabase.table("rooms").delete().eq("id", str(room_id)).execute()
+    sync_findings_after_mutation(supabase, str(drawing["id"]), drawing_row=drawing)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -196,7 +207,7 @@ async def confirm_rooms(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> list[Room]:
     """Confirm the outlines of all rooms of the drawing."""
-    get_drawing_for_user(supabase, drawing_id, current_user)
+    drawing = get_drawing_for_user(supabase, drawing_id, current_user)
 
     rows = all_rows(
         supabase.table("rooms")
@@ -204,4 +215,157 @@ async def confirm_rooms(
         .eq("drawing_id", str(drawing_id))
         .execute()
     )
+    sync_findings_after_mutation(supabase, str(drawing_id), drawing_row=drawing)
     return [room_from_row(row) for row in rows if len(row_points(row)) >= 3]
+
+
+# ── Зони приміщення (BIM-73) ────────────────────────────────────────────────
+
+
+def _get_zone_for_user(
+    supabase: Client, zone_id: UUID, current_user: CurrentUser
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Return (zone, room, drawing) if the zone's drawing belongs to the user."""
+    zone = first_row(
+        supabase.table("room_zones")
+        .select("*")
+        .eq("id", str(zone_id))
+        .limit(1)
+        .execute()
+    )
+    if zone is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Zone not found"
+        )
+
+    room, drawing = _get_room_for_user(
+        supabase, UUID(str(zone["room_id"])), current_user
+    )
+    return zone, room, drawing
+
+
+def _room_zone_rows(supabase: Client, room_id: UUID) -> list[dict[str, Any]]:
+    rows = all_rows(
+        supabase.table("room_zones").select("*").eq("room_id", str(room_id)).execute()
+    )
+    return sorted(rows, key=lambda row: str(row.get("created_at") or ""))
+
+
+def _check_zone_geometry(
+    shape: Polygon,
+    room: dict[str, Any],
+    siblings: list[dict[str, Any]],
+    exclude_zone_id: str | None = None,
+) -> None:
+    try:
+        check_zone_geometry(shape, room, siblings, exclude_zone_id)
+    except ValueError as exc:
+        raise _unprocessable(str(exc)) from exc
+
+
+@router.get("/drawings/{drawing_id}/zones", response_model=list[RoomZone])
+async def list_drawing_zones(
+    drawing_id: UUID,
+    supabase: Annotated[Client, Depends(get_supabase_client)],
+    current_user: CurrentUser = Depends(get_current_user),
+) -> list[RoomZone]:
+    """All zones of the drawing's rooms (for the plan and the rooms table)."""
+    get_drawing_for_user(supabase, drawing_id, current_user)
+
+    rows = all_rows(
+        supabase.table("room_zones")
+        .select("*")
+        .eq("drawing_id", str(drawing_id))
+        .execute()
+    )
+    rows.sort(key=lambda row: str(row.get("created_at") or ""))
+    return [zone_from_row(row) for row in rows if len(row_points(row)) >= 3]
+
+
+@router.post(
+    "/rooms/{room_id}/zones",
+    response_model=RoomZone,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_room_zone(
+    room_id: UUID,
+    payload: RoomZoneCreateRequest,
+    supabase: Annotated[Client, Depends(get_supabase_client)],
+    current_user: CurrentUser = Depends(get_current_user),
+) -> RoomZone:
+    """Add a part of the room with its own ceiling height."""
+    points, shape = _validated_polygon(payload.polygon)
+
+    room, drawing = _get_room_for_user(supabase, room_id, current_user)
+    _check_zone_geometry(shape, room, _room_zone_rows(supabase, room_id))
+
+    now = _now()
+    values: dict[str, Any] = {
+        "id": str(uuid4()),
+        "room_id": str(room_id),
+        "drawing_id": str(room["drawing_id"]),
+        "name": payload.name,
+        "height": payload.height,
+        "area": _area_m2(supabase, drawing, shape),
+        "polygon": _polygon_json(points),
+        "created_at": now,
+        "updated_at": now,
+    }
+    inserted = first_row(supabase.table("room_zones").insert(values).execute())
+    sync_findings_after_mutation(supabase, str(room["drawing_id"]), drawing_row=drawing)
+    return zone_from_row(inserted if inserted is not None else values)
+
+
+@router.patch("/zones/{zone_id}", response_model=RoomZone)
+async def update_room_zone(
+    zone_id: UUID,
+    payload: RoomZoneUpdateRequest,
+    supabase: Annotated[Client, Depends(get_supabase_client)],
+    current_user: CurrentUser = Depends(get_current_user),
+) -> RoomZone:
+    changed = payload.model_fields_set
+    if not changed:
+        raise _unprocessable("Provide at least one field: name, height or polygon")
+    if "polygon" in changed and payload.polygon is None:
+        raise _unprocessable("polygon cannot be null")
+
+    polygon = None
+    if payload.polygon is not None:
+        polygon = _validated_polygon(payload.polygon)
+
+    _, room, drawing = _get_zone_for_user(supabase, zone_id, current_user)
+
+    values: dict[str, Any] = {"updated_at": _now()}
+    if "name" in changed:
+        values["name"] = payload.name
+    if "height" in changed:
+        values["height"] = payload.height
+    if polygon is not None:
+        points, shape = polygon
+        siblings = _room_zone_rows(supabase, UUID(str(room["id"])))
+        _check_zone_geometry(shape, room, siblings, exclude_zone_id=str(zone_id))
+        values["area"] = _area_m2(supabase, drawing, shape)
+        values["polygon"] = _polygon_json(points)
+
+    updated = first_row(
+        supabase.table("room_zones").update(values).eq("id", str(zone_id)).execute()
+    )
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Zone not found"
+        )
+    sync_findings_after_mutation(supabase, str(room["drawing_id"]), drawing_row=drawing)
+    return zone_from_row(updated)
+
+
+@router.delete("/zones/{zone_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_room_zone(
+    zone_id: UUID,
+    supabase: Annotated[Client, Depends(get_supabase_client)],
+    current_user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    _, room, drawing = _get_zone_for_user(supabase, zone_id, current_user)
+
+    supabase.table("room_zones").delete().eq("id", str(zone_id)).execute()
+    sync_findings_after_mutation(supabase, str(room["drawing_id"]), drawing_row=drawing)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

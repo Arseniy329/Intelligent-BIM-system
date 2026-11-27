@@ -4,7 +4,7 @@ import { RegisterForm } from "@/components/auth/register-form";
 export default function RegisterPage() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold">Реєстрація</h1>
+      <h1 className="text-2xl font-semibold">Створіть обліковий запис</h1>
       <p className="mt-2 text-sm text-[var(--bim-color-text-secondary)]">
         Створіть обліковий запис для роботи з кресленнями.
       </p>

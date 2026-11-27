@@ -1,4 +1,5 @@
 "use client";
+import { PasswordInput } from "./password-input";
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
@@ -109,7 +110,7 @@ export function LoginForm() {
         <label htmlFor="login-password" className="block text-xs font-medium">
           Пароль
         </label>
-        <input
+        <PasswordInput
           id="login-password"
           name="password"
           type="password"

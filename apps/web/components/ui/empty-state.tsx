@@ -13,7 +13,7 @@ export function EmptyState({ title, description, action, className }: EmptyState
     <section
       aria-label={title}
       className={cn(
-        "w-full min-w-0 rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-[var(--bim-spacing-6)] text-center sm:p-[var(--bim-spacing-8)]",
+        "w-full min-w-0 min-h-64 content-center rounded-[var(--bim-radius-xl)] border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-[var(--bim-spacing-6)] text-center sm:p-[var(--bim-spacing-8)]",
         className,
       )}
     >

@@ -7,6 +7,7 @@ import type { DrawingResult } from "@bim/contracts";
 import example from "../../../packages/contracts/examples/drawing-result.json";
 import { DrawingDetail } from "@/components/drawing/drawing-detail";
 import type { DrawingViewerProps } from "@/components/drawing/drawing-viewer";
+vi.mock("@/lib/drawing/plan-features-api", () => ({ planFeaturesApi: { zones: async () => [], exits: async () => [] } }));
 
 const { viewer } = vi.hoisted(() => ({ viewer: vi.fn() }));
 vi.mock("@/components/drawing/drawing-viewer", () => ({
@@ -48,6 +49,7 @@ beforeEach(() => {
   fetchMock.mockReset().mockImplementation(async (input: URL | string, init?: RequestInit) => {
     const url = new URL(String(input));
     calls.push(`${init?.method ?? "GET"} ${url.pathname}`);
+    if (url.pathname.endsWith("/findings")) return Response.json([]);
     if (url.pathname.endsWith("/process")) { current = rooms; return Response.json({ drawing_id: id, status: "processing" }); }
     if (url.pathname.endsWith("/place")) {
       if (placeFailure) return Response.json({ detail: "private SQL diagnostic token=secret" }, { status: placeFailure });
@@ -76,13 +78,15 @@ it("runs GET → process → GET rooms → place → GET devices without reloadi
   await screen.findByText("Приміщень: 1 · Сповіщувачів: 2");
   expect(viewer.mock.lastCall?.[0]).toMatchObject({ rooms: result.rooms, devices: result.devices, url: source });
   expect(screen.getByTestId("viewer")).toBe(canvas);
-  expect(calls).toEqual([
+  await waitFor(() => expect(calls).toEqual([
     `GET /api/v1/drawings/${id}`, `POST /api/v1/drawings/${id}/process`, `GET /api/v1/drawings/${id}`,
     `POST /api/v1/drawings/${id}/place`, `GET /api/v1/drawings/${id}`,
-  ]);
+    `GET /api/v1/drawings/${id}/findings`,
+  ]));
   await waitFor(() => expect(screen.getByRole("button", { name: "Оновити стан" })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: "Оновити стан" }));
-  await waitFor(() => expect(calls).toHaveLength(6));
+  await waitFor(() => expect(calls).toHaveLength(8));
+  expect(calls.slice(-2)).toEqual([`GET /api/v1/drawings/${id}`, `GET /api/v1/drawings/${id}/findings`]);
   expect(viewer.mock.lastCall?.[0].rooms).toHaveLength(1);
   expect(viewer.mock.lastCall?.[0].devices).toHaveLength(2);
 });
@@ -95,7 +99,7 @@ it("reopens results without POST and requires confirmation before replacing room
   fireEvent.click(screen.getByRole("button", { name: "Обробити повторно" }));
   expect(screen.getByText(/перезапише приміщення/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Скасувати" }));
-  expect(calls).toHaveLength(1);
+  await waitFor(() => expect(calls).toEqual([`GET /api/v1/drawings/${id}`, `GET /api/v1/drawings/${id}/findings`]));
   fireEvent.click(screen.getByRole("button", { name: "Обробити повторно" }));
   fireEvent.click(screen.getByRole("button", { name: "Підтвердити повторну обробку" }));
   await screen.findByText("Приміщень: 1 · Сповіщувачів: 0");

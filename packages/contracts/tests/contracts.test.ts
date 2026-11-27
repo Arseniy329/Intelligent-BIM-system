@@ -33,6 +33,12 @@ function validateDefinition(definition: string, value: unknown) {
 }
 
 describe("JSON contract examples", () => {
+  it("accepts optional device rule provenance while rejecting invalid ids", () => {
+    const device = readExample("drawing-result.json").devices[0];
+    expect(validateDefinition("Device", device)).toBe(true);
+    for (const ruleId of [null, "rule-1"]) expect(validateDefinition("Device", { ...device, ruleId })).toBe(true);
+    for (const ruleId of ["", 12, {}]) expect(validateDefinition("Device", { ...device, ruleId })).toBe(false);
+  });
   it("supports room results before placement with a separate expiring source link", () => {
     const result = readExample("drawing-result.json");
     result.drawing.status = "processing";
@@ -73,6 +79,32 @@ describe("JSON contract examples", () => {
     result.rooms[0].polygon.push(result.rooms[0].polygon[0]);
 
     expect(validateDefinition("DrawingResult", result)).toBe(false);
+  });
+
+  it("validates Finding contract shape and rejects invalid severities", () => {
+    const validFinding = {
+      id: "finding-01",
+      drawingId: "2dcbe698-7658-40c7-90f1-372e669b1277",
+      roomId: "room-01",
+      deviceId: null,
+      ruleId: "rule-01",
+      severity: "critical",
+      message: "Площа на один сповіщувач перевищує допустиму норму",
+      document: "ДСТУ EN 54-14:2021",
+      clause: "6.5.2, таблиця A.1",
+      ruleStatus: "verified",
+    };
+    expect(validateDefinition("Finding", validFinding)).toBe(true);
+    expect(
+      validateDefinition("Finding", {
+        ...validFinding,
+        severity: "rule_conflict",
+        conflictDetails: { rules: [] },
+      }),
+    ).toBe(true);
+    expect(
+      validateDefinition("Finding", { ...validFinding, severity: "unknown_level" }),
+    ).toBe(false);
   });
 });
 

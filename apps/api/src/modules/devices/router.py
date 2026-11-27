@@ -20,6 +20,7 @@ from src.core.auth import CurrentUser, get_current_user
 from src.infrastructure.supabase import get_supabase_client
 from src.modules.drawings.access import first_row, get_drawing_for_user
 from src.modules.drawings.service import generate_and_upload_result_dxf
+from src.modules.findings.service import sync_findings_after_mutation
 
 router = APIRouter(tags=["devices"])
 
@@ -41,6 +42,7 @@ def device_from_row(row: dict[str, Any]) -> Device:
         type=device_type,
         position=Point(x=float(row["x"]), y=float(row["y"])),
         layer=str(row.get("layer") or DEVICE_LAYER),
+        ruleId=str(row["rule_id"]) if row.get("rule_id") else None,
     )
 
 
@@ -134,7 +136,7 @@ async def create_device(
     supabase: Annotated[Client, Depends(get_supabase_client)],
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Device:
-    _get_editable_drawing(supabase, drawing_id, current_user)
+    drawing = _get_editable_drawing(supabase, drawing_id, current_user)
     _check_room_in_drawing(supabase, payload.roomId, str(drawing_id))
 
     values: dict[str, Any] = {
@@ -149,6 +151,7 @@ async def create_device(
     }
     inserted = first_row(supabase.table("devices").insert(values).execute())
     _regenerate_result(supabase, str(drawing_id))
+    sync_findings_after_mutation(supabase, str(drawing_id), drawing_row=drawing)
     return device_from_row(inserted if inserted is not None else values)
 
 
@@ -185,6 +188,19 @@ async def update_device(
         _check_room_in_drawing(supabase, payload.roomId, drawing_id)
         values["room_id"] = str(payload.roomId) if payload.roomId else None
 
+    # Manual edits do not recalculate placement rules. Clear provenance in the
+    # same write only when the effective rule inputs change, not on a no-op PATCH.
+    persisted = {
+        "type": str(device["type"]),
+        "x": float(device["x"]),
+        "y": float(device["y"]),
+        "room_id": str(UUID(str(device["room_id"]))) if device.get("room_id") else None,
+    }
+    if any(
+        values[key] != previous for key, previous in persisted.items() if key in values
+    ):
+        values["rule_id"] = None
+
     updated = first_row(
         supabase.table("devices").update(values).eq("id", str(device_id)).execute()
     )
@@ -195,6 +211,7 @@ async def update_device(
             status_code=status.HTTP_404_NOT_FOUND, detail="Device not found"
         )
     _regenerate_result(supabase, drawing_id)
+    sync_findings_after_mutation(supabase, drawing_id)
     return device_from_row(updated)
 
 
@@ -207,5 +224,7 @@ async def delete_device(
     device = _get_device_for_user(supabase, device_id, current_user)
 
     supabase.table("devices").delete().eq("id", str(device_id)).execute()
-    _regenerate_result(supabase, str(device["drawing_id"]))
+    drawing_id = str(device["drawing_id"])
+    _regenerate_result(supabase, drawing_id)
+    sync_findings_after_mutation(supabase, drawing_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

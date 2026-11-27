@@ -1,9 +1,12 @@
 import io
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import ezdxf
@@ -20,6 +23,20 @@ from src.contracts.generated import DrawingResult
 from src.core.auth import CurrentUser, get_current_user
 from src.infrastructure.supabase import get_supabase_client
 from src.main import app
+from src.modules.drawings.router import (
+    EXIT_DETECTION_FAILED,
+    WARNING_EXIT_DETECTION_FAILED,
+)
+from src.modules.placement.manual_call_points import (
+    WARNING_PASSAGES_IGNORED,
+    WARNING_ROUTE_UNCONFIRMED,
+)
+from tests.fakes import (
+    FakeTable,
+    fake_replace_dxf_layout,
+    fake_supabase,
+    set_null_on_room_delete,
+)
 
 FIXTURES_DIR = API_DIR / "tests" / "fixtures" / "test_drawing_dxf"
 
@@ -125,13 +142,116 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             self.assertEqual(room["confirmed"], False)
 
         # Verify drawings table status updated to 'processing'
+        # Приміщення створено заново, тож збережений звіт розміщення скидається.
         mock_drawings_query.update.assert_called_with(
-            {"status": "processing", "unit_scale_m": 0.001}
+            {"status": "processing", "unit_scale_m": 0.001, "placement_report": None}
         )
 
         # Verify /tmp cleanup
         files_after = set(tmp_dir.glob("*.dxf"))
         self.assertEqual(len(files_after - files_before), 0)
+
+    def _process_with_rpc(self, rpc_failure: Exception | None) -> dict:
+        """POST /process; ``rpc_failure`` ломає запис виходів і проходів у БД."""
+        drawing_id = str(uuid4())
+        fixture_path = FIXTURES_DIR / "01_simple_rooms_mm.dxf"
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "01_simple_rooms_mm.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "status": "uploaded",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+
+        drawings_query = MagicMock()
+        for name in ("select", "eq", "single", "update"):
+            getattr(drawings_query, name).return_value = drawings_query
+        drawings_query.execute.return_value = MagicMock(data=drawing_record)
+
+        rooms_table = MagicMock()
+        rooms_table.delete.return_value.eq.return_value.execute.return_value = (
+            MagicMock(data=[])
+        )
+        inserted_rooms: list[dict] = []
+
+        def insert_rooms(rows: list[dict]) -> MagicMock:
+            inserted_rooms.extend(rows)
+            return MagicMock(execute=MagicMock(return_value=MagicMock(data=rows)))
+
+        rooms_table.insert.side_effect = insert_rooms
+
+        exits_table = MagicMock()
+        exits_query = MagicMock()
+        exits_query.select.return_value = exits_query
+        exits_query.eq.return_value = exits_query
+        exits_query.execute.return_value = MagicMock(data=[])
+        exits_table.select.return_value = exits_query
+
+        tables = {
+            "drawings": drawings_query,
+            "rooms": rooms_table,
+            "exits": exits_table,
+        }
+        self.mock_supabase.table.side_effect = lambda name: tables.get(
+            name, MagicMock()
+        )
+        if rpc_failure is not None:
+            self.mock_supabase.rpc.side_effect = rpc_failure
+        storage_bucket = MagicMock()
+        storage_bucket.download.return_value = fixture_path.read_bytes()
+        self.mock_supabase.storage.from_.return_value = storage_bucket
+
+        response = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
+
+        return {
+            "response": response,
+            "rooms": inserted_rooms,
+            "exits_table": exits_table,
+            "drawings_query": drawings_query,
+            "drawing_id": drawing_id,
+        }
+
+    def test_process_reports_exit_detection_step_state(self) -> None:
+        result = self._process_with_rpc(None)
+
+        self.assertEqual(result["response"].status_code, 200)
+        data = result["response"].json()
+        self.assertEqual(data["status"], "processing")
+        self.assertEqual(data["exit_detection"]["status"], "ok")
+        self.assertIsNone(data["exit_detection"]["warning"])
+        # Виходи й проходи замінюються однією функцією БД, а не delete + insert.
+        self.mock_supabase.rpc.assert_called_once()
+        name, params = self.mock_supabase.rpc.call_args.args
+        self.assertEqual(name, "replace_dxf_layout")
+        self.assertEqual(params["p_drawing_id"], result["drawing_id"])
+        result["exits_table"].delete.assert_not_called()
+        result["exits_table"].insert.assert_not_called()
+
+    def test_process_shows_a_warning_when_exit_replacement_fails(self) -> None:
+        """Збій запису виходів не ламає обробку і не лишається непомітним."""
+        result = self._process_with_rpc(RuntimeError("simulated write failure"))
+
+        self.assertEqual(result["response"].status_code, 200)
+        data = result["response"].json()
+        self.assertEqual(data["status"], "processing")
+        self.assertEqual(data["exit_detection"]["status"], "failed")
+        self.assertIn("лишено без змін", data["exit_detection"]["warning"])
+        # Приміщення розпізнано і збережено, статус креслення оновлено.
+        self.assertGreater(len(result["rooms"]), 0)
+        # Збій кроку лишається і у звіті креслення: після перезавантаження
+        # попередження не зникає.
+        result["drawings_query"].update.assert_called_with(
+            {
+                "status": "processing",
+                "unit_scale_m": 0.001,
+                "placement_report": {"exit_detection": data["exit_detection"]},
+            }
+        )
+        # Старі виходи не видалялись окремим запитом.
+        result["exits_table"].delete.assert_not_called()
+        result["exits_table"].insert.assert_not_called()
 
     def test_process_drawing_fallback_auto_sets_source_and_confirmed(self) -> None:
         """Verify POST /process fallback sets source='auto' and confirmed=False."""
@@ -437,6 +557,7 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             "original_file_name": "01_simple_rooms_mm.dxf",
             "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
             "units": "mm",
+            "unit_scale_m": 0.001,
             "status": "processing",
             "created_at": "2026-10-31T12:00:00Z",
         }
@@ -458,7 +579,24 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             }
         ]
 
-        rules_data = [{"id": str(uuid4()), "threshold": 2000.0, "status": "approved"}]
+        # Правило з каталогу: крок 2 м (креслення в мм, масштаб 0.001),
+        # без обмеження висоти.
+        db_rule_id = str(uuid4())
+        rules_data = [
+            {
+                "id": db_rule_id,
+                "rule_id": "TEST_GRID",
+                "name": "Test grid",
+                "device_type": "smoke_detector",
+                "value_kind": "max_grid_spacing_m",
+                "value": 2.0,
+                "min_height_m": None,
+                "max_height_m": None,
+                "room_types": [],
+                "conditions": {},
+                "verification_status": "verified",
+            }
+        ]
 
         mock_drawings_query = MagicMock()
         mock_drawings_query.select.return_value = mock_drawings_query
@@ -474,7 +612,6 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
 
         mock_rules_query = MagicMock()
         mock_rules_query.select.return_value = mock_rules_query
-        mock_rules_query.limit.return_value = mock_rules_query
         mock_rules_query.execute.return_value = MagicMock(data=rules_data)
 
         inserted_devices: list[dict] = []
@@ -546,6 +683,20 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertEqual(data["status"], "processed")
         self.assertEqual(data["result_path"], expected_storage_path)
 
+        # BIM-73: результат розміщення по приміщенню (кімната висотою 3 м).
+        self.assertEqual(len(data["placements"]), 1)
+        placement = data["placements"][0]
+        self.assertEqual(placement["room_id"], room_id)
+        self.assertIsNone(placement["zone_id"])
+        self.assertEqual(placement["status"], "placed")
+        self.assertEqual(placement["rule"]["rule_id"], "TEST_GRID")
+
+        # BIM-75: виходів немає — ручні сповіщувачі не розміщуються, є повідомлення.
+        call_points = data["manual_call_points"]
+        self.assertEqual(call_points["status"], "insufficient_data")
+        self.assertEqual(call_points["reason"], "Позначте евакуаційні виходи")
+        self.assertEqual(call_points["device_count"], 0)
+
         # Verify old devices deleted
         mock_devices_table.delete.assert_called_once()
         mock_devices_delete.eq.assert_called_with("drawing_id", drawing_id)
@@ -555,13 +706,26 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         for dev in inserted_devices:
             self.assertEqual(dev["drawing_id"], drawing_id)
             self.assertEqual(dev["room_id"], room_id)
+            self.assertEqual(dev["rule_id"], db_rule_id)
             self.assertIn("x", dev)
             self.assertIn("y", dev)
             self.assertEqual(dev["type"], "smoke_detector")
             self.assertEqual(dev["layer"], "SYS_FIRE_SENSORS")
 
         # Verify drawing status updated to 'processed'
-        mock_drawings_query.update.assert_called_with({"status": "processed"})
+        # Звіт розміщення пишеться тим самим UPDATE, що й статус (GET його повертає).
+        mock_drawings_query.update.assert_called_with(
+            {
+                "status": "processed",
+                "placement_report": {
+                    "placement_status": "complete",
+                    "device_count": len(inserted_devices),
+                    "skipped": [],
+                    "manual_call_points": call_points,
+                    "sounders": data["sounders"],
+                },
+            }
+        )
 
         # Verify DXF uploaded
         self.assertEqual(len(uploaded_payloads), 1)
@@ -658,7 +822,6 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
 
         mock_rules_query = MagicMock()
         mock_rules_query.select.return_value = mock_rules_query
-        mock_rules_query.limit.return_value = mock_rules_query
         mock_rules_query.execute.return_value = MagicMock(data=[])
 
         def table_side_effect(table_name: str) -> MagicMock:
@@ -910,7 +1073,21 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
             ],
             "rooms": [],
             "devices": [],
-            "rules": [{"id": str(uuid4()), "threshold": 2000.0, "status": "approved"}],
+            "rules": [
+                {
+                    "id": str(uuid4()),
+                    "rule_id": "TEST_GRID",
+                    "name": "Test grid",
+                    "device_type": "smoke_detector",
+                    "value_kind": "max_grid_spacing_m",
+                    "value": 2.0,  # метри; креслення в мм, масштаб зберігає /process
+                    "min_height_m": None,
+                    "max_height_m": None,
+                    "room_types": [],
+                    "conditions": {},
+                    "verification_status": "verified",
+                }
+            ],
         }
 
         def mock_table(table_name: str) -> MagicMock:
@@ -1050,7 +1227,12 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertTrue(mid_data["sourceDownloadUrl"].endswith("/source.dxf"))
         self.assertIsNotNone(mid_data["sourceDownloadUrlExpiresAt"])
 
+<<<<<<< HEAD
         # Without height devices are not placed, so engineer sets it before placement
+=======
+        # BIM-73: без висоти сповіщувачі не розміщуються, тож інженер вводить її
+        # (PATCH /rooms/{id}) до розміщення.
+>>>>>>> origin/dev
         for room_row in db["rooms"]:
             room_row["height"] = 3.0
 
@@ -1067,11 +1249,20 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         get_resp = self.client.get(f"/api/v1/drawings/{drawing_id}")
         self.assertEqual(get_resp.status_code, 200)
 
-        result = DrawingResult.model_validate(get_resp.json())
+        # GET повертає збережений звіт розміщення поруч із контрактом (DrawingResult
+        # не допускає зайвих полів): контракт перевіряється без нього, а звіт — окремо.
+        body = get_resp.json()
+        stored_report = body.pop("placementReport")
+        self.assertEqual(stored_report, db["drawings"][0]["placement_report"])
+        self.assertEqual(stored_report["device_count"], len(db["devices"]))
+        result = DrawingResult.model_validate(body)
         self.assertEqual(str(result.drawing.id), drawing_id)
         self.assertEqual(result.drawing.status.value, "processed")
         self.assertEqual(len(result.rooms), len(db["rooms"]))
         self.assertEqual(len(result.devices), len(db["devices"]))
+        stored_rules = {str(row["id"]): row.get("rule_id") for row in db["devices"]}
+        for device in result.devices:
+            self.assertEqual(device.ruleId, stored_rules[str(device.id)])
         self.assertIsNotNone(result.downloadUrl)
         self.assertTrue(str(result.downloadUrl).startswith("https://mock.supabase.co"))
         self.assertIsNotNone(result.downloadUrlExpiresAt)
@@ -1099,6 +1290,874 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertEqual(len(intermediate["rooms"]), len(result.rooms))
         self.assertEqual(intermediate["devices"], [])
         self.assertIsNone(intermediate["downloadUrl"])
+
+
+def _points(*coords: tuple[float, float]) -> list[SimpleNamespace]:
+    return [SimpleNamespace(x=x, y=y) for x, y in coords]
+
+
+class TestStaleLayoutAfterFailedReprocess(unittest.TestCase):
+    """Повторна обробка: збій запису виходів і проходів не підтверджує новий маршрут.
+
+    Приміщення при кожній обробці створюються заново (нові id), а запис виходів і
+    проходів — окремий крок, який може не вдатись. Тоді в БД лишаються проходи зі
+    старої обробки: вони не мають автоматично підтверджувати маршрут для нових
+    контурів, а причина має бути видима і в POST /place, і після перезавантаження.
+    """
+
+    DOOR = (20_150.0, 1_500.0)
+
+    def setUp(self) -> None:
+        self.user_id = str(uuid4())
+        self.drawing_id = str(uuid4())
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+        # Попередня обробка: два коридори через стіну, вихід у кожному, двері між ними.
+        self.old_west, self.old_east = str(uuid4()), str(uuid4())
+        self.rooms_table = FakeTable(
+            [
+                self.room_row(self.old_west, "West", 0, 20_000),
+                self.room_row(self.old_east, "East", 20_300, 40_300),
+            ]
+        )
+        self.exits_table = FakeTable(
+            [
+                self.exit_row(0, 1_500, self.old_west),
+                self.exit_row(40_300, 1_500, self.old_east),
+            ]
+        )
+        self.old_passage = {
+            "id": str(uuid4()),
+            "drawing_id": self.drawing_id,
+            "name": None,
+            "x": self.DOOR[0],
+            "y": self.DOOR[1],
+            "source": "dxf",
+            "room_a_id": self.old_west,
+            "room_b_id": self.old_east,
+            "created_at": "2026-11-20T10:00:00+00:00",
+        }
+        self.passages_table = FakeTable([self.old_passage])
+        self.drawings_table = FakeTable(
+            [
+                {
+                    "id": self.drawing_id,
+                    "owner_id": self.user_id,
+                    "units": "mm",
+                    "unit_scale_m": 0.001,
+                    "status": "processed",
+                    "original_file_name": "plan.dxf",
+                    "storage_path": f"{self.user_id}/{self.drawing_id}/source.dxf",
+                    "created_at": "2026-11-19T10:00:00+00:00",
+                    "placement_report": None,
+                }
+            ]
+        )
+        self.devices_table = FakeTable([])
+        # Приміщення видаляються при обробці, пара проходу обнуляється (set null).
+        self.rooms_table.on_delete = set_null_on_room_delete(
+            (self.exits_table, ("room_id",)),
+            (self.passages_table, ("room_a_id", "room_b_id")),
+        )
+        self.tables = {
+            "rooms": self.rooms_table,
+            "room_zones": FakeTable([]),
+            "exits": self.exits_table,
+            "passages": self.passages_table,
+            "drawings": self.drawings_table,
+            "devices": self.devices_table,
+            "rules": FakeTable([self.manual_call_point_rule()]),
+        }
+        self.current_user = CurrentUser(id=self.user_id, role="engineer")
+        app.dependency_overrides[get_current_user] = lambda: self.current_user
+
+    def tearDown(self) -> None:
+        app.dependency_overrides.clear()
+
+    def room_row(self, room_id: str, name: str, x0: float, x1: float) -> dict[str, Any]:
+        return {
+            "id": room_id,
+            "drawing_id": self.drawing_id,
+            "name": name,
+            "type": "corridor",
+            "height": 3.0,
+            "area": (x1 - x0) * 3 / 1000,
+            "polygon": [
+                {"x": x0, "y": 0},
+                {"x": x1, "y": 0},
+                {"x": x1, "y": 3_000},
+                {"x": x0, "y": 3_000},
+            ],
+            "source": "auto",
+        }
+
+    def exit_row(self, x: float, y: float, room_id: str) -> dict[str, Any]:
+        return {
+            "id": str(uuid4()),
+            "drawing_id": self.drawing_id,
+            "room_id": room_id,
+            "name": None,
+            "x": x,
+            "y": y,
+            "source": "dxf",
+            "created_at": "2026-11-20T10:00:00+00:00",
+        }
+
+    @staticmethod
+    def manual_call_point_rule() -> dict[str, Any]:
+        return {
+            "id": str(uuid4()),
+            "rule_id": "MANUAL_CALL_POINT_SPACING_DSTU",
+            "name": "MANUAL_CALL_POINT_SPACING_DSTU",
+            "device_type": "manual_call_point",
+            "value_kind": "max_grid_spacing_m",
+            "room_types": [],
+            "min_height_m": None,
+            "max_height_m": None,
+            "value": 30.0,
+            "conditions": {"exit_offset_m": 1.0},
+            "verification_status": "verified",
+        }
+
+    def use_rpc(self, fails: bool) -> TestClient:
+        supabase = fake_supabase(
+            self.tables,
+            rpc={
+                "replace_dxf_layout": fake_replace_dxf_layout(
+                    self.tables, fail_after_delete=fails
+                )
+            },
+        )
+        app.dependency_overrides[get_supabase_client] = lambda: supabase
+        return TestClient(app)
+
+    def place(self, client: TestClient) -> Any:
+        with patch(
+            "src.modules.drawings.router.generate_and_upload_result_dxf",
+            return_value="result.dxf",
+        ):
+            return client.post(f"/api/v1/drawings/{self.drawing_id}/place")
+
+    def reprocess(self, client: TestClient) -> Any:
+        """Повторний POST /process: нові приміщення, ті самі виходи й двері."""
+        dxf = Path(self.tmp.name) / f"{uuid4()}.dxf"
+        dxf.write_bytes(b"0\nEOF\n")
+        new_rooms = [
+            SimpleNamespace(
+                id=uuid4(),
+                name=name,
+                type="corridor",
+                height=3.0,
+                area=60.0,
+                polygon=_points((x0, 0), (x1, 0), (x1, 3_000), (x0, 3_000)),
+                source=None,
+            )
+            for name, x0, x1 in (("West", 0, 20_000), ("East", 20_300, 40_300))
+        ]
+        exits = [
+            SimpleNamespace(x=0.0, y=1_500.0, name=None),
+            SimpleNamespace(x=40_300.0, y=1_500.0, name=None),
+        ]
+        doors = [SimpleNamespace(x=self.DOOR[0], y=self.DOOR[1])]
+        with (
+            patch("src.modules.drawings.router.download_dxf_to_tmp", return_value=dxf),
+            patch(
+                "src.modules.drawings.router.parse_dxf_rooms_with_scale",
+                return_value=(new_rooms, 0.001),
+            ),
+            patch("src.modules.drawings.router.read_dxf_document"),
+            patch("src.modules.drawings.router.find_exit_points", return_value=exits),
+            patch("src.modules.drawings.router.find_door_points", return_value=doors),
+        ):
+            return client.post(f"/api/v1/drawings/{self.drawing_id}/process")
+
+    def reload(self, client: TestClient) -> Any:
+        """Новий запит без стану POST: що бачить користувач після перезавантаження."""
+        return client.get(f"/api/v1/drawings/{self.drawing_id}")
+
+    def test_the_route_is_confirmed_by_the_passage_before_reprocessing(self) -> None:
+        response = self.place(self.use_rpc(fails=False))
+
+        self.assertEqual(response.status_code, 200, response.text)
+        mcp = response.json()["manual_call_points"]
+        self.assertEqual(mcp["route_coverage"], "confirmed")
+        self.assertEqual(mcp["passage_ids"], [self.old_passage["id"]])
+
+    def test_old_passage_does_not_confirm_the_route_after_a_failed_rewrite(
+        self,
+    ) -> None:
+        client = self.use_rpc(fails=True)
+
+        processed = self.reprocess(client)
+
+        self.assertEqual(processed.status_code, 200, processed.text)
+        self.assertEqual(processed.json()["exit_detection"]["status"], "failed")
+        # Старі дані не втрачено, але прохід більше не належить жодному приміщенню.
+        (kept,) = self.passages_table.rows
+        self.assertEqual(kept["id"], self.old_passage["id"])
+        self.assertIsNone(kept["room_a_id"])
+        self.assertIsNone(kept["room_b_id"])
+        self.assertNotIn(self.old_west, {r["id"] for r in self.rooms_table.rows})
+
+        response = self.place(client)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        mcp = body["manual_call_points"]
+        # Статус і пояснення, а не лише кількість сповіщувачів.
+        self.assertEqual(mcp["status"], "placed")
+        self.assertEqual(mcp["device_count"], 2)  # лише біля виходів
+        self.assertEqual(mcp["route_coverage"], "unconfirmed")
+        self.assertEqual(mcp["passage_ids"], [])
+        self.assertEqual(mcp["ignored_passage_ids"], [self.old_passage["id"]])
+        self.assertEqual(len(mcp["unconnected_exit_ids"]), 1)
+        self.assertEqual(mcp["unconnected_rooms"], ["East"])
+        self.assertIn(WARNING_ROUTE_UNCONFIRMED, mcp["route_warning"])
+        self.assertIn(WARNING_PASSAGES_IGNORED, mcp["route_warning"])
+        # Збій оновлення виходів і проходів теж лишається у звіті розміщення.
+        self.assertEqual(body["exit_detection"]["status"], EXIT_DETECTION_FAILED)
+        self.assertEqual(
+            body["exit_detection"]["warning"], WARNING_EXIT_DETECTION_FAILED
+        )
+
+    def test_the_explanation_is_still_there_after_a_reload(self) -> None:
+        client = self.use_rpc(fails=True)
+        self.reprocess(client)
+        posted = self.place(client).json()
+
+        detail = self.reload(client)
+
+        self.assertEqual(detail.status_code, 200, detail.text)
+        report = detail.json()["placementReport"]
+        self.assertEqual(report["manual_call_points"], posted["manual_call_points"])
+        self.assertEqual(report["exit_detection"], posted["exit_detection"])
+        self.assertEqual(report["manual_call_points"]["route_coverage"], "unconfirmed")
+        self.assertIn(
+            WARNING_PASSAGES_IGNORED, report["manual_call_points"]["route_warning"]
+        )
+
+    def test_a_failed_rewrite_is_visible_after_a_reload_before_any_placement(
+        self,
+    ) -> None:
+        client = self.use_rpc(fails=True)
+        self.reprocess(client)
+
+        detail = self.reload(client)
+
+        self.assertEqual(detail.status_code, 200, detail.text)
+        report = detail.json()["placementReport"]
+        # Розміщення ще не було: у звіті лише збій кроку, без placement_status.
+        self.assertEqual(list(report), ["exit_detection"])
+        self.assertEqual(report["exit_detection"]["status"], EXIT_DETECTION_FAILED)
+
+    def test_successful_reprocessing_binds_the_door_to_the_new_rooms(self) -> None:
+        client = self.use_rpc(fails=False)
+
+        processed = self.reprocess(client)
+
+        self.assertEqual(processed.json()["exit_detection"]["status"], "ok")
+        new_ids = {row["id"] for row in self.rooms_table.rows}
+        (passage,) = self.passages_table.rows
+        self.assertNotEqual(passage["id"], self.old_passage["id"])
+        self.assertEqual({passage["room_a_id"], passage["room_b_id"]}, new_ids)
+
+        mcp = self.place(client).json()["manual_call_points"]
+
+        self.assertEqual(mcp["route_coverage"], "confirmed")
+        self.assertEqual(mcp["passage_ids"], [passage["id"]])
+        self.assertEqual(mcp["ignored_passage_ids"], [])
+        self.assertIsNone(mcp["route_warning"])
+        # Без збою звіту про виходи нема: нічого показувати нема чого.
+        self.assertNotIn("exit_detection", self.place(client).json())
+
+    def test_a_good_reprocessing_clears_the_failure_of_a_previous_one(self) -> None:
+        failed = self.use_rpc(fails=True)
+        self.reprocess(failed)
+        self.assertIn("placementReport", self.reload(failed).json())
+
+        good = self.use_rpc(fails=False)
+        self.reprocess(good)
+
+        self.assertNotIn("placementReport", self.reload(good).json())
+        self.assertNotIn("exit_detection", self.place(good).json())
+
+
+class TestSchemaFallback(unittest.TestCase):
+    """Verify Sprint 4 schema fallback when PostgREST reports PGRST204/PGRST205."""
+
+    def setUp(self) -> None:
+        self.user_id = str(uuid4())
+        self.current_user = CurrentUser(id=self.user_id, role="engineer")
+        self.mock_supabase = MagicMock()
+        app.dependency_overrides[get_current_user] = lambda: self.current_user
+        app.dependency_overrides[get_supabase_client] = lambda: self.mock_supabase
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        app.dependency_overrides.clear()
+
+    def test_process_drawing_falls_back_on_pgrst204_missing_columns(self) -> None:
+        """process_drawing succeeds with status=processing when PGRST204 occurs."""
+        drawing_id = str(uuid4())
+        fixture_path = FIXTURES_DIR / "01_simple_rooms_mm.dxf"
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "01_simple_rooms_mm.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "status": "uploaded",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+
+        update_payloads: list[dict[str, Any]] = []
+
+        mock_drawings_table = MagicMock()
+        mock_select_query = MagicMock()
+        mock_select_query.eq.return_value = mock_select_query
+        mock_select_query.single.return_value = mock_select_query
+        mock_select_query.execute.return_value = MagicMock(data=drawing_record)
+        mock_drawings_table.select.return_value = mock_select_query
+
+        def mock_update(payload: dict[str, Any]) -> MagicMock:
+            update_payloads.append(payload)
+            q = MagicMock()
+            q.eq.return_value = q
+            if "unit_scale_m" in payload or "placement_report" in payload:
+                q.execute.side_effect = Exception(
+                    "{'code': 'PGRST204', 'message': "
+                    "\"Could not find the 'unit_scale_m' column of 'drawings' "
+                    'in the schema cache"}'
+                )
+            else:
+                q.execute.return_value = MagicMock(data=[drawing_record])
+            return q
+
+        mock_drawings_table.update.side_effect = mock_update
+
+        mock_rooms_table = MagicMock()
+        mock_rooms_q = MagicMock()
+        mock_rooms_q.eq.return_value = mock_rooms_q
+        mock_rooms_q.execute.return_value = MagicMock(data=[])
+        mock_rooms_table.delete.return_value = mock_rooms_q
+        mock_rooms_table.insert.return_value = mock_rooms_q
+
+        def table_side_effect(name: str) -> MagicMock:
+            if name == "drawings":
+                return mock_drawings_table
+            if name == "rooms":
+                return mock_rooms_table
+            return MagicMock()
+
+        self.mock_supabase.table.side_effect = table_side_effect
+        mock_bucket = MagicMock()
+        mock_bucket.download.return_value = fixture_path.read_bytes()
+        self.mock_supabase.storage.from_.return_value = mock_bucket
+
+        response = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "processing")
+        self.assertEqual(len(update_payloads), 3)
+        self.assertIn("unit_scale_m", update_payloads[0])
+        self.assertIn("placement_report", update_payloads[0])
+        self.assertEqual(
+            update_payloads[1],
+            {"status": "processing", "unit_scale_m": 0.001},
+        )
+        self.assertEqual(update_payloads[2], {"status": "processing"})
+
+    def test_process_drawing_preserves_unit_scale_m_on_placement_report_pgrst204(
+        self,
+    ) -> None:
+        """When only placement_report is missing (PGRST204), unit_scale_m is kept."""
+        drawing_id = str(uuid4())
+        fixture_path = FIXTURES_DIR / "01_simple_rooms_mm.dxf"
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "01_simple_rooms_mm.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "status": "uploaded",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+
+        update_payloads: list[dict[str, Any]] = []
+        mock_drawings_table = MagicMock()
+        mock_select_query = MagicMock()
+        mock_select_query.eq.return_value = mock_select_query
+        mock_select_query.single.return_value = mock_select_query
+        mock_select_query.execute.return_value = MagicMock(data=drawing_record)
+        mock_drawings_table.select.return_value = mock_select_query
+
+        def mock_update(payload: dict[str, Any]) -> MagicMock:
+            update_payloads.append(payload)
+            q = MagicMock()
+            q.eq.return_value = q
+            if "placement_report" in payload:
+                q.execute.side_effect = Exception(
+                    "PGRST204: Could not find the 'placement_report' column"
+                )
+            else:
+                q.execute.return_value = MagicMock(data=[drawing_record])
+            return q
+
+        mock_drawings_table.update.side_effect = mock_update
+
+        mock_rooms_table = MagicMock()
+        mock_rooms_q = MagicMock()
+        mock_rooms_q.eq.return_value = mock_rooms_q
+        mock_rooms_q.execute.return_value = MagicMock(data=[])
+        mock_rooms_table.delete.return_value = mock_rooms_q
+        mock_rooms_table.insert.return_value = mock_rooms_q
+
+        def table_side_effect(name: str) -> MagicMock:
+            if name == "drawings":
+                return mock_drawings_table
+            if name == "rooms":
+                return mock_rooms_table
+            return MagicMock()
+
+        self.mock_supabase.table.side_effect = table_side_effect
+        mock_bucket = MagicMock()
+        mock_bucket.download.return_value = fixture_path.read_bytes()
+        self.mock_supabase.storage.from_.return_value = mock_bucket
+
+        response = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "processing")
+        self.assertEqual(len(update_payloads), 2)
+        self.assertIn("placement_report", update_payloads[0])
+        self.assertEqual(
+            update_payloads[1],
+            {"status": "processing", "unit_scale_m": 0.001},
+        )
+
+    @patch("src.modules.drawings.router.generate_and_upload_result_dxf")
+    def test_place_aborts_on_pgrst205_without_wiping_devices(
+        self,
+        mock_export: MagicMock,
+    ) -> None:
+        """PGRST205 on Sprint 4 tables aborts with 503 before deleting devices."""
+        drawing_id = str(uuid4())
+        room_id = str(uuid4())
+        existing_device_id = str(uuid4())
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "plan.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "unit_scale_m": 0.001,
+            "status": "processing",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+        room_row = {
+            "id": room_id,
+            "drawing_id": drawing_id,
+            "name": "Office",
+            "type": "office",
+            "height": 3.0,
+            "area": 20.0,
+            "polygon": [
+                {"x": 0.0, "y": 0.0},
+                {"x": 4000.0, "y": 0.0},
+                {"x": 4000.0, "y": 5000.0},
+                {"x": 0.0, "y": 5000.0},
+            ],
+        }
+        rule_row = {
+            "id": str(uuid4()),
+            "rule_id": "SMOKE_GRID_HEIGHT_3_5",
+            "name": "SMOKE_GRID_HEIGHT_3_5",
+            "device_type": "smoke_detector",
+            "value_kind": "max_grid_spacing_m",
+            "room_types": [],
+            "min_height_m": None,
+            "max_height_m": 3.5,
+            "value": 9.0,
+            "conditions": {"max_protected_area_m2": 80.0},
+            "verification_status": "verified",
+        }
+        existing_device = {
+            "id": existing_device_id,
+            "drawing_id": drawing_id,
+            "room_id": room_id,
+            "type": "manual_call_point",
+            "x": 100.0,
+            "y": 100.0,
+        }
+
+        drawings_table = FakeTable([dict(drawing_record)])
+        rooms_table = FakeTable([room_row])
+        rules_table = FakeTable([rule_row])
+        devices_table = FakeTable([dict(existing_device)])
+
+        def make_missing_table(table_name: str) -> MagicMock:
+            tbl = MagicMock()
+            q = MagicMock()
+            q.eq.return_value = q
+            q.execute.side_effect = Exception(
+                f"PGRST205: Could not find the table 'public.{table_name}' "
+                "in the schema cache"
+            )
+            tbl.select.return_value = q
+            return tbl
+
+        # Case 1: PGRST205 on exits -> 503, devices preserved, no export, not processed
+        tables_missing = {
+            "drawings": drawings_table,
+            "rooms": rooms_table,
+            "rules": rules_table,
+            "devices": devices_table,
+            "room_zones": FakeTable([]),
+            "exits": make_missing_table("exits"),
+            "passages": FakeTable([]),
+        }
+        self.mock_supabase.table.side_effect = lambda name: tables_missing[name]
+
+        resp_err = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+        self.assertEqual(resp_err.status_code, 503, resp_err.text)
+        self.assertEqual(len(devices_table.rows), 1)
+        self.assertEqual(devices_table.rows[0]["id"], existing_device_id)
+        self.assertEqual(devices_table.deleted, [])
+        mock_export.assert_not_called()
+        self.assertNotEqual(drawings_table.rows[0]["status"], "processed")
+
+        # Case 2: Valid empty [] tables -> 200 and status=processed
+        mock_export.return_value = f"{self.user_id}/{drawing_id}/result.dxf"
+        tables_ok = {
+            "drawings": drawings_table,
+            "rooms": rooms_table,
+            "rules": rules_table,
+            "devices": devices_table,
+            "room_zones": FakeTable([]),
+            "exits": FakeTable([]),
+            "passages": FakeTable([]),
+        }
+        self.mock_supabase.table.side_effect = lambda name: tables_ok[name]
+
+        resp_ok = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+        self.assertEqual(resp_ok.status_code, 200, resp_ok.text)
+        self.assertEqual(resp_ok.json()["status"], "processed")
+
+    @patch("src.modules.drawings.router.generate_and_upload_result_dxf")
+    def test_place_aborts_on_pgrst204_placement_report_without_wiping_devices(
+        self,
+        mock_export: MagicMock,
+    ) -> None:
+        """PGRST204 or 42703 on placement_report aborts with 503 without mutating."""
+        drawing_id = str(uuid4())
+        room_id = str(uuid4())
+        existing_device_id = str(uuid4())
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "plan.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "unit_scale_m": 0.001,
+            "status": "processed",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+        room_row = {
+            "id": room_id,
+            "drawing_id": drawing_id,
+            "name": "Office",
+            "type": "office",
+            "height": 3.0,
+            "area": 20.0,
+            "polygon": [
+                {"x": 0.0, "y": 0.0},
+                {"x": 4000.0, "y": 0.0},
+                {"x": 4000.0, "y": 5000.0},
+                {"x": 0.0, "y": 5000.0},
+            ],
+        }
+        rule_row = {
+            "id": str(uuid4()),
+            "rule_id": "SMOKE_GRID_HEIGHT_3_5",
+            "name": "SMOKE_GRID_HEIGHT_3_5",
+            "device_type": "smoke_detector",
+            "value_kind": "max_grid_spacing_m",
+            "room_types": [],
+            "min_height_m": None,
+            "max_height_m": 3.5,
+            "value": 9.0,
+            "conditions": {"max_protected_area_m2": 80.0},
+            "verification_status": "verified",
+        }
+
+        cases = (
+            (
+                "PGRST204",
+                "PGRST204: Could not find the 'placement_report' column",
+            ),
+            (
+                "42703",
+                '{"code": "42703", "message": "column drawings.placement_report '
+                'does not exist"}',
+            ),
+        )
+
+        for error_code, error_msg in cases:
+            with self.subTest(error_code=error_code):
+                mock_export.reset_mock()
+                devices_table = FakeTable(
+                    [
+                        {
+                            "id": existing_device_id,
+                            "drawing_id": drawing_id,
+                            "room_id": room_id,
+                            "type": "smoke_detector",
+                            "x": 2000.0,
+                            "y": 2500.0,
+                        }
+                    ]
+                )
+
+                mock_drawings_table = MagicMock()
+
+                def mock_select(
+                    *cols: str,
+                    _err: str = error_msg,
+                ) -> MagicMock:
+                    q = MagicMock()
+                    q.eq.return_value = q
+                    q.limit.return_value = q
+                    q.single.return_value = q
+                    if cols == ("placement_report",):
+                        q.execute.side_effect = Exception(_err)
+                    else:
+                        q.execute.return_value = MagicMock(data=drawing_record)
+                    return q
+
+                mock_drawings_table.select.side_effect = mock_select
+
+                tables = {
+                    "drawings": mock_drawings_table,
+                    "rooms": FakeTable([room_row]),
+                    "rules": FakeTable([rule_row]),
+                    "devices": devices_table,
+                    "room_zones": FakeTable([]),
+                    "exits": FakeTable([]),
+                    "passages": FakeTable([]),
+                }
+                self.mock_supabase.table.side_effect = lambda name, t=tables: t[name]
+
+                response = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertEqual(len(devices_table.rows), 1)
+                self.assertEqual(devices_table.rows[0]["id"], existing_device_id)
+                self.assertEqual(devices_table.deleted, [])
+                mock_export.assert_not_called()
+                mock_drawings_table.update.assert_not_called()
+
+    @patch(
+        "src.modules.drawings.router.generate_and_upload_result_dxf",
+        return_value="user/drawing/result.dxf",
+    )
+    def test_place_resolves_inches_unit_scale_from_source_dxf_when_null(
+        self,
+        _mock_export: MagicMock,
+    ) -> None:
+        """When drawings.unit_scale_m is NULL/unmigrated, /place reads $INSUNITS."""
+        drawing_id = str(uuid4())
+        room_id = str(uuid4())
+
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 1  # inches -> 0.0254 m/unit
+        dxf_buf = io.StringIO()
+        doc.write(dxf_buf)
+        dxf_bytes = dxf_buf.getvalue().encode("utf-8")
+
+        drawing_record = {
+            "id": drawing_id,
+            "owner_id": self.user_id,
+            "original_file_name": "inches.dxf",
+            "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+            "units": "mm",
+            "unit_scale_m": None,
+            "status": "processing",
+            "created_at": "2026-10-31T12:00:00Z",
+        }
+        room_row = {
+            "id": room_id,
+            "drawing_id": drawing_id,
+            "name": "Office",
+            "type": "office",
+            "height": 3.0,
+            "area": 25.8,
+            "polygon": [
+                {"x": 0.0, "y": 0.0},
+                {"x": 200.0, "y": 0.0},
+                {"x": 200.0, "y": 200.0},
+                {"x": 0.0, "y": 200.0},
+            ],
+        }
+        rule_row = {
+            "id": str(uuid4()),
+            "rule_id": "SMOKE_GRID_HEIGHT_3_5",
+            "name": "SMOKE_GRID_HEIGHT_3_5",
+            "device_type": "smoke_detector",
+            "value_kind": "max_grid_spacing_m",
+            "room_types": [],
+            "min_height_m": None,
+            "max_height_m": 3.5,
+            "value": 9.0,
+            "conditions": {"max_protected_area_m2": 80.0},
+            "verification_status": "verified",
+        }
+
+        drawings_table = FakeTable([dict(drawing_record)])
+        orig_update = drawings_table.update
+
+        def update_with_missing_unit_scale(values: dict[str, Any]) -> Any:
+            q = orig_update(values)
+            if "unit_scale_m" in values:
+                mock_q = MagicMock()
+                mock_q.eq.return_value = mock_q
+                mock_q.execute.side_effect = Exception(
+                    "PGRST204: Could not find the 'unit_scale_m' column"
+                )
+                return mock_q
+            return q
+
+        drawings_table.update = update_with_missing_unit_scale  # type: ignore[method-assign]
+        devices_table = FakeTable([])
+
+        tables = {
+            "drawings": drawings_table,
+            "rooms": FakeTable([room_row]),
+            "rules": FakeTable([rule_row]),
+            "devices": devices_table,
+            "room_zones": FakeTable([]),
+            "exits": FakeTable([]),
+            "passages": FakeTable([]),
+        }
+        self.mock_supabase.table.side_effect = lambda name: tables[name]
+        mock_bucket = MagicMock()
+        mock_bucket.download.return_value = dxf_bytes
+        self.mock_supabase.storage.from_.return_value = mock_bucket
+
+        with patch(
+            "src.modules.drawings.router.place_targets",
+            wraps=__import__(
+                "src.modules.placement.service", fromlist=["place_targets"]
+            ).place_targets,
+        ) as spy_place_targets:
+            response = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertAlmostEqual(
+            spy_place_targets.call_args.kwargs["unit_scale_m"], 0.0254, places=6
+        )
+
+    def test_full_process_place_get_integration(self) -> None:
+        """Full POST /process -> POST /place -> GET /drawings/{id} flow."""
+        drawing_id = str(uuid4())
+        fixture_path = FIXTURES_DIR / "01_simple_rooms_mm.dxf"
+        dxf_bytes = fixture_path.read_bytes()
+
+        drawings_table = FakeTable(
+            [
+                {
+                    "id": drawing_id,
+                    "owner_id": self.user_id,
+                    "original_file_name": "01_simple_rooms_mm.dxf",
+                    "storage_path": f"{self.user_id}/{drawing_id}/source.dxf",
+                    "units": "mm",
+                    "status": "uploaded",
+                    "created_at": "2026-10-31T12:00:00Z",
+                }
+            ]
+        )
+        rooms_table = FakeTable([])
+        exits_table = FakeTable([])
+        passages_table = FakeTable([])
+        room_zones_table = FakeTable([])
+        devices_table = FakeTable([])
+        rules_table = FakeTable(
+            [
+                {
+                    "id": str(uuid4()),
+                    "rule_id": "SMOKE_GRID_HEIGHT_3_5",
+                    "name": "SMOKE_GRID_HEIGHT_3_5",
+                    "device_type": "smoke_detector",
+                    "value_kind": "max_grid_spacing_m",
+                    "room_types": [],
+                    "min_height_m": None,
+                    "max_height_m": 3.5,
+                    "value": 9.0,
+                    "conditions": {"max_protected_area_m2": 80.0},
+                    "verification_status": "verified",
+                }
+            ]
+        )
+
+        tables = {
+            "drawings": drawings_table,
+            "rooms": rooms_table,
+            "exits": exits_table,
+            "passages": passages_table,
+            "room_zones": room_zones_table,
+            "devices": devices_table,
+            "rules": rules_table,
+        }
+        rpc = {
+            "replace_dxf_layout": fake_replace_dxf_layout(exits_table, passages_table)
+        }
+        fake_client = fake_supabase(tables, rpc=rpc)
+
+        uploaded_files: dict[str, bytes] = {}
+        mock_bucket = MagicMock()
+        mock_bucket.download.return_value = dxf_bytes
+
+        def mock_upload(path: str, file: str | bytes, file_options: dict) -> dict:
+            uploaded_files[path] = (
+                Path(file).read_bytes() if isinstance(file, str) else file
+            )
+            return {"Key": path}
+
+        mock_bucket.upload.side_effect = mock_upload
+        mock_bucket.create_signed_url.return_value = {
+            "signedURL": "https://mock.supabase.co/signed/result.dxf"
+        }
+        fake_client.storage.from_.return_value = mock_bucket
+        app.dependency_overrides[get_supabase_client] = lambda: fake_client
+
+        proc_resp = self.client.post(f"/api/v1/drawings/{drawing_id}/process")
+        self.assertEqual(proc_resp.status_code, 200, proc_resp.text)
+        self.assertEqual(proc_resp.json()["status"], "processing")
+        self.assertEqual(len(rooms_table.rows), 3)
+
+        for row in rooms_table.rows:
+            row["height"] = 3.0
+
+        place_resp = self.client.post(f"/api/v1/drawings/{drawing_id}/place")
+        self.assertEqual(place_resp.status_code, 200, place_resp.text)
+        place_body = place_resp.json()
+        self.assertEqual(place_body["status"], "processed")
+        self.assertGreater(len(devices_table.rows), 0)
+        self.assertIn(f"{self.user_id}/{drawing_id}/result.dxf", uploaded_files)
+
+        get_resp = self.client.get(f"/api/v1/drawings/{drawing_id}")
+        self.assertEqual(get_resp.status_code, 200, get_resp.text)
+        detail = get_resp.json()
+        self.assertEqual(len(detail["rooms"]), 3)
+        self.assertEqual(len(detail["devices"]), len(devices_table.rows))
+        self.assertEqual(
+            detail["downloadUrl"], "https://mock.supabase.co/signed/result.dxf"
+        )
+        self.assertEqual(
+            detail["placementReport"]["manual_call_points"],
+            place_body["manual_call_points"],
+        )
+        self.assertEqual(detail["placementReport"]["sounders"], place_body["sounders"])
 
 
 if __name__ == "__main__":

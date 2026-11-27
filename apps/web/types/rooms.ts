@@ -208,7 +208,8 @@ export function getRoomConfirmationStatus(room: Room): RoomConfirmationStatus {
  */
 export function getRoomBlockingReasons(
   rooms: Room[],
-  options?: RoomBlockingReasonsOptions | boolean
+  options?: RoomBlockingReasonsOptions | boolean,
+  zonedRoomIds: ReadonlySet<string> = new Set()
 ): string[] {
   const reasons: string[] = [];
 
@@ -242,7 +243,11 @@ export function getRoomBlockingReasons(
   }
 
   // Priority 3: Rooms missing type or height (? Недостатньо даних)
-  const hasIncomplete = rooms.some((room) => !isRoomDataComplete(room));
+  // BIM-73 uses zone heights instead of the parent height. Missing zone heights
+  // are reported by /place, which can still place devices in the other zones.
+  const hasIncomplete = rooms.some((room) => room.id && zonedRoomIds.has(room.id)
+    ? !room.roomType?.trim() || room.roomType === "unknown"
+    : !isRoomDataComplete(room));
   if (hasIncomplete) {
     reasons.push(BLOCKING_REASONS.INCOMPLETE_DATA);
   }

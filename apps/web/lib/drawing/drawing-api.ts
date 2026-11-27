@@ -5,14 +5,33 @@ import { isDrawingDemoEnabled } from "./demo-mode";
 // FastAPI preserves requested units until parsing; shared DrawingDetailResponse
 // currently allows only resolved mm/m. Keep this wire adaptation local to the client.
 export type DrawingDetail = Omit<DrawingDetailResponse, "units" | "status"> & { units: RequestedDrawingUnits; status: DrawingDetailResponse["status"] | ContractDrawingStatus };
-export type DrawingResponse = DrawingDetail | DrawingResult;
+// GET returns the stored report of the last placement next to the contract fields
+// (the generated `DrawingResult` stays untouched), so it survives a reload.
+export type DrawingResultView = DrawingResult & { placementReport?: PlacementReport };
+export type DrawingResponse = DrawingDetail | DrawingResultView;
 // The synchronous POST endpoints return snake_case acknowledgements, not jobs.
-export type DrawingOperation = { drawingId: string; status: "processing" | "processed" };
-export type ProcessingResponse = DrawingOperation | DrawingResult | ProcessingJob;
+// `status: "processed"` only says the placement step finished. Whether every room
+// and zone was handled is in `placementStatus`; what was skipped and why is in
+// `placementIssues`.
+export type PlacementStatus = "complete" | "partial" | "insufficient_data";
+export interface PlacementIssue {
+  /** Room, optionally with the zone, the issue belongs to. */
+  title: string;
+  reason: string;
+}
+export type PlacementReport = {
+  placementStatus?: PlacementStatus;
+  deviceCount?: number;
+  placementIssues?: PlacementIssue[];
+  /** Warnings of the step that do not fail it, e.g. exits not saved or an unconfirmed evacuation route. */
+  warnings?: string[];
+};
+export type DrawingOperation = { drawingId: string; status: "processing" | "processed" } & PlacementReport;
+export type ProcessingResponse = DrawingOperation | DrawingResultView | ProcessingJob;
 export interface DrawingApi {
   getDrawing(id: string, signal?: AbortSignal): Promise<DrawingResponse>;
   processDrawing(id: string, signal?: AbortSignal): Promise<ProcessingResponse>;
-  placeDrawing?(id: string, signal?: AbortSignal): Promise<DrawingOperation | DrawingResult>;
+  placeDrawing?(id: string, signal?: AbortSignal): Promise<DrawingOperation | DrawingResultView>;
   // Only adapters with an actual job endpoint (currently the explicit demo) poll.
   getJob?(id: string, signal?: AbortSignal): Promise<ProcessingJob>;
 }
@@ -98,7 +117,7 @@ export function drawingErrorMessage(error: unknown): string {
   return "Не вдалося отримати дані. Перевірте з’єднання та спробуйте ще раз.";
 }
 
-export function isDrawingResult(data: DrawingResponse): data is DrawingResult {
+export function isDrawingResult(data: DrawingResponse): data is DrawingResultView {
   return "drawing" in data;
 }
 
@@ -135,14 +154,95 @@ export function normalizeDrawingDetail(value: unknown, id: string): DrawingDetai
   };
 }
 
-export function parseDrawingOperation(value: unknown, id: string, status: DrawingOperation["status"]): DrawingOperation | DrawingResult {
+export function parseDrawingOperation(value: unknown, id: string, status: DrawingOperation["status"]): DrawingOperation | DrawingResultView {
   if (record(value) && "drawing" in value) {
     const result = parseDrawing(value, id);
     if (isDrawingResult(result)) return result;
   }
   if (!record(value) || value.drawing_id !== id || value.status !== status)
     throw new Error("Invalid drawing operation response.");
-  return { drawingId: id, status };
+  return { drawingId: id, status, ...parsePlacementReport(value) };
+}
+
+const placementStatuses: readonly PlacementStatus[] = ["complete", "partial", "insufficient_data"];
+
+/** Reads the optional placement report of POST /place. Missing or malformed parts are left out. */
+export function parsePlacementReport(value: Record<string, unknown>): PlacementReport {
+  const report: PlacementReport = {};
+  if (typeof value.placement_status === "string" && placementStatuses.includes(value.placement_status as PlacementStatus))
+    report.placementStatus = value.placement_status as PlacementStatus;
+  if (typeof value.device_count === "number" && Number.isFinite(value.device_count))
+    report.deviceCount = value.device_count;
+  if (Array.isArray(value.skipped)) {
+    report.placementIssues = value.skipped.flatMap((item): PlacementIssue[] => {
+      if (!record(item) || typeof item.reason !== "string" || !item.reason) return [];
+      const room = typeof item.name === "string" && item.name ? item.name : "Приміщення";
+      const zone = typeof item.zone_name === "string" && item.zone_name ? ` — ${item.zone_name}` : "";
+      return [{ title: `${room}${zone}`, reason: item.reason }];
+    });
+  }
+  const warnings = operationWarnings(value);
+  if (warnings.length) report.warnings = warnings;
+  return report;
+}
+
+/**
+ * Step warnings of POST /process (`exit_detection`) and POST /place (`manual_call_points`):
+ * the step itself succeeded, but the engineer must know about the gap.
+ */
+function operationWarnings(value: Record<string, unknown>): string[] {
+  const warnings: string[] = [];
+  const text = (candidate: unknown) => typeof candidate === "string" && candidate ? candidate : null;
+  if (record(value.exit_detection)) {
+    const warning = text(value.exit_detection.warning);
+    if (warning) warnings.push(warning);
+  }
+  if (record(value.manual_call_points)) {
+    const mcp = value.manual_call_points;
+    const reason = mcp.status === "insufficient_data" ? text(mcp.reason) : null;
+    for (const message of [reason, text(mcp.route_warning), text(mcp.warning)])
+      if (message) warnings.push(`Ручні сповіщувачі: ${message}`);
+  }
+  // BIM-76: стан оповіщувачів окремо від димових сповіщувачів. «Сітку побудовано»
+  // (placement_status) відділено від «правило підтверджено» (needs_review): крок
+  // переведено з рівня звуку попередньо, тож навіть `complete` не означає, що
+  // акустичне покриття перевірено.
+  if (record(value.sounders)) {
+    const s = value.sounders;
+    const firstReason = Array.isArray(s.skipped) && record(s.skipped[0]) ? text(s.skipped[0].reason) : null;
+    if (s.placement_status === "insufficient_data")
+      warnings.push(`Оповіщувачі не розміщено${firstReason ? `: ${firstReason}` : ""}`);
+    else if (s.placement_status === "partial")
+      warnings.push("Оповіщувачі: розміщено не в усіх приміщеннях чи зонах");
+    if (s.needs_review)
+      warnings.push(
+        "Оповіщувачі: крок розміщення попередній — переведення з рівня звуку не підтверджено (BIM-124), акустичне покриття не перевірено",
+      );
+  }
+  return warnings;
+}
+
+/** A POST acknowledgement: neither a result (`drawing`) nor a job (`id`) nor a flat detail (`id`). */
+function isOperation(value: ProcessingResponse | DrawingResponse): value is DrawingOperation {
+  return !("drawing" in value) && !("id" in value) && "drawingId" in value;
+}
+
+/**
+ * The placement report of a response: the acknowledgement of POST /process or /place,
+ * or the report GET returns with a result (it is stored, so it survives a reload).
+ * Accepts every shape a mutation or a query can hold (a job included); null when
+ * there is nothing to show, i.e. neither a placement status nor a step warning.
+ */
+export function placementReport(source: ProcessingResponse | DrawingResponse | undefined): PlacementReport | null {
+  if (!source) return null;
+  const report = "drawing" in source ? source.placementReport : isOperation(source) ? source : undefined;
+  if (!report || !(report.placementStatus || report.warnings?.length)) return null;
+  const result: PlacementReport = {};
+  if (report.placementStatus) result.placementStatus = report.placementStatus;
+  if (report.deviceCount !== undefined) result.deviceCount = report.deviceCount;
+  if (report.placementIssues) result.placementIssues = report.placementIssues;
+  if (report.warnings?.length) result.warnings = report.warnings;
+  return result;
 }
 
 export function parseDrawing(value: unknown, id: string): DrawingResponse {
@@ -166,8 +266,17 @@ export function parseDrawing(value: unknown, id: string): DrawingResponse {
         Array.isArray(room.polygon) && room.polygon.length >= 3 && room.polygon.every(validPoint)) ||
       !value.devices.every(device => record(device) && device.drawingId === id && typeof device.id === "string" &&
         (device.roomId === null || typeof device.roomId === "string") && typeof device.layer === "string" &&
-        ["smoke_detector", "heat_detector", "sounder", "manual_call_point"].includes(String(device.type)) && validPoint(device.position)))
+        typeof device.type === "string" && device.type.length > 0 &&
+        (device.ruleId === undefined || device.ruleId === null || typeof device.ruleId === "string" && device.ruleId.length > 0) && validPoint(device.position)))
       throw new Error("Invalid drawing result.");
+    if ("placementReport" in value) {
+      // The stored report is optional (null before the first placement): a missing
+      // or malformed one is dropped instead of failing the whole result.
+      const { placementReport: stored, ...contract } = value;
+      const report = record(stored) ? parsePlacementReport(stored) : null;
+      const useful = !!report && (!!report.placementStatus || !!report.warnings?.length);
+      return (useful ? { ...contract, placementReport: report } : contract) as unknown as DrawingResponse;
+    }
   }
   return value as unknown as DrawingResponse;
 }

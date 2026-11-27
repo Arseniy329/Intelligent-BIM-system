@@ -30,10 +30,12 @@ from src.infrastructure.supabase import get_supabase_client
 from src.main import app
 from src.modules.cad.parser import (
     _is_area_string,
+    _is_height_annotation,
     _polygon_to_single_ring,
     parse_dxf_rooms,
 )
 from src.modules.placement.service import RuleRecord, place_devices_from_rule
+from src.modules.rooms.service import suggest_room_type
 
 FIXTURES_DIR = API_DIR / "tests" / "fixtures" / "test_drawing_dxf"
 
@@ -1052,6 +1054,267 @@ class TestCadParser(unittest.TestCase):
                 "Не вдалося коректно обробити внутрішні отвори приміщення",
                 str(ctx.exception),
             )
+
+    def test_exits_layer_and_insert_door_block_close_room_perimeter(self) -> None:
+        """BIM-181: EXITS layer geometry and INSERT door blocks close room contours."""
+        dxf_path = self.temp_dir / "exits_and_insert_door.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6  # meters
+        doc.layers.add("WALLS")
+        doc.layers.add("EXITS")
+        doc.layers.add("DOORS")
+        doc.layers.add("TEXT")
+
+        # Block definition for a 0.9m interior door (leaf line + swing arc on layer "0")
+        door_block = doc.blocks.new(name="DOOR_900")
+        door_block.add_line((0.0, 0.0), (0.0, 0.9), dxfattribs={"layer": "0"})
+        door_block.add_arc(
+            center=(0.0, 0.0),
+            radius=0.9,
+            start_angle=0.0,
+            end_angle=90.0,
+            dxfattribs={"layer": "0"},
+        )
+
+        msp = doc.modelspace()
+        # Room 1 (0,0)-(5,5) with a 1.0m exit doorway gap along bottom wall (2,0)-(3,0)
+        msp.add_line((0.0, 0.0), (2.0, 0.0), dxfattribs={"layer": "WALLS"})
+        msp.add_line((3.0, 0.0), (5.0, 0.0), dxfattribs={"layer": "WALLS"})
+        msp.add_line((5.0, 0.0), (5.0, 5.0), dxfattribs={"layer": "WALLS"})
+        msp.add_line((5.0, 5.0), (0.0, 5.0), dxfattribs={"layer": "WALLS"})
+        msp.add_line((0.0, 5.0), (0.0, 0.0), dxfattribs={"layer": "WALLS"})
+        # Exit door on EXITS layer closing (2,0)-(3,0)
+        msp.add_line((2.0, 0.0), (3.0, 0.0), dxfattribs={"layer": "EXITS"})
+        msp.add_text("Хол", dxfattribs={"insert": (2.5, 2.5, 0.0), "layer": "TEXT"})
+
+        # Room 2 (5,0)-(10,5) with a 0.9m interior doorway gap at (7,0)-(7.9,0)
+        msp.add_line((5.0, 0.0), (7.0, 0.0), dxfattribs={"layer": "WALLS"})
+        msp.add_line((7.9, 0.0), (10.0, 0.0), dxfattribs={"layer": "WALLS"})
+        msp.add_line((10.0, 0.0), (10.0, 5.0), dxfattribs={"layer": "WALLS"})
+        msp.add_line((10.0, 5.0), (5.0, 5.0), dxfattribs={"layer": "WALLS"})
+        # Door INSERT block at (7,0) closing (7,0)-(7.9,0); arc triangle dropped
+        msp.add_blockref("DOOR_900", (7.0, 0.0), dxfattribs={"layer": "DOORS"})
+        msp.add_text(
+            "Котельня", dxfattribs={"insert": (7.5, 2.5, 0.0), "layer": "TEXT"}
+        )
+
+        doc.saveas(str(dxf_path))
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 2)
+        by_name = {r.name: r for r in rooms}
+        self.assertIn("Хол", by_name)
+        self.assertEqual(by_name["Хол"].type, "corridor")
+        self.assertAlmostEqual(by_name["Хол"].area, 25.0, places=1)
+        self.assertIn("Котельня", by_name)
+        self.assertEqual(by_name["Котельня"].type, "technical")
+
+    def test_height_annotations_ignored_and_explication_resolved(self) -> None:
+        """BIM-181: Height/zone markers are ignored; room resolves via explication."""
+        for height_text in (
+            "H=3.5",
+            "h = 4.2 м",
+            "H=6m",
+            "Висота 3.0 м",
+            "Зона 1 (h=5м)",
+            "H=4.5м",
+        ):
+            self.assertTrue(_is_height_annotation(height_text), msg=height_text)
+        for room_text in ("Склад", "Зона очікування", "Hall (192 m2)", "101 | Склад"):
+            self.assertFalse(_is_height_annotation(room_text), msg=room_text)
+
+        dxf_path = self.temp_dir / "height_and_explication.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6
+        doc.layers.add("WALLS")
+        doc.layers.add("TEXT")
+        msp = doc.modelspace()
+
+        msp.add_lwpolyline(
+            [(0.0, 0.0), (6.0, 0.0), (6.0, 5.0), (0.0, 5.0)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text("H=4.5м", dxfattribs={"insert": (2.0, 3.0, 0.0), "layer": "TEXT"})
+        msp.add_text("101", dxfattribs={"insert": (3.0, 2.0, 0.0), "layer": "TEXT"})
+        msp.add_text(
+            "101 | Склад", dxfattribs={"insert": (10.0, 10.0, 0.0), "layer": "TEXT"}
+        )
+
+        doc.saveas(str(dxf_path))
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 1)
+        self.assertEqual(rooms[0].name, "Склад")
+        self.assertEqual(rooms[0].type, "storage")
+
+    def test_multiline_mtext_room_naming_and_priority(self) -> None:
+        """BIM-181: Multi-line MTEXT preserves lines and prioritizes catalog names."""
+        dxf_path = self.temp_dir / "multiline_mtext.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6
+        doc.layers.add("WALLS")
+        doc.layers.add("TEXT")
+        msp = doc.modelspace()
+
+        # Room 1: multi-line MTEXT "101\nКабінет"
+        msp.add_lwpolyline(
+            [(0.0, 0.0), (5.0, 0.0), (5.0, 4.0), (0.0, 4.0)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        mtext = msp.add_mtext("101\\PКабінет", dxfattribs={"layer": "TEXT"})
+        mtext.set_location((2.5, 2.0, 0.0))
+
+        # Room 2: non-catalog note + explication number + height annotation
+        msp.add_lwpolyline(
+            [(5.0, 0.0), (10.0, 0.0), (10.0, 4.0), (5.0, 4.0)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text(
+            "Зона 1 (h=5м)", dxfattribs={"insert": (7.5, 3.0, 0.0), "layer": "TEXT"}
+        )
+        msp.add_text(
+            "Примітка А", dxfattribs={"insert": (7.5, 2.5, 0.0), "layer": "TEXT"}
+        )
+        msp.add_text("102", dxfattribs={"insert": (7.5, 1.5, 0.0), "layer": "TEXT"})
+        msp.add_text(
+            "102 | Сходова клітка",
+            dxfattribs={"insert": (15.0, 10.0, 0.0), "layer": "TEXT"},
+        )
+
+        doc.saveas(str(dxf_path))
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 2)
+        by_name = {r.name: r for r in rooms}
+        self.assertIn("Кабінет", by_name)
+        self.assertEqual(by_name["Кабінет"].type, "office")
+        self.assertIn("Сходова клітка", by_name)
+        self.assertEqual(by_name["Сходова клітка"].type, "staircase")
+
+    def test_corridor_wall_break_not_closed_and_double_wall_cavity_discarded(
+        self,
+    ) -> None:
+        """BIM-181: 2m corridor and 2.5m break stay open; thin wall cavity dropped."""
+        dxf_path = self.temp_dir / "corridor_break_and_cavity.dxf"
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = 6  # meters
+        doc.layers.add("WALLS")
+        doc.layers.add("TEXT")
+        msp = doc.modelspace()
+
+        # Valid closed room: Кабінет (0, 2) to (4, 6)
+        msp.add_lwpolyline(
+            [(0.0, 2.0), (4.0, 2.0), (4.0, 6.0), (0.0, 6.0)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+        msp.add_text("Кабінет", dxfattribs={"insert": (2.0, 4.0, 0.0), "layer": "TEXT"})
+
+        # 2.0m wide corridor below (y=0..2) with open ends (x=0, x=10)
+        # and an intentional 2.5m wall break along y=2 from x=4.0 to x=6.5
+        msp.add_line((0.0, 0.0), (10.0, 0.0), dxfattribs={"layer": "WALLS"})
+        msp.add_line((6.5, 2.0), (10.0, 2.0), dxfattribs={"layer": "WALLS"})
+        # T-junction stub ending 2.0m above the opposite corridor wall
+        msp.add_line((6.5, 4.0), (6.5, 2.0), dxfattribs={"layer": "WALLS"})
+        # Open-ended room walls above y=2 next to the 2.5m break (4,2)-(6.5,2)
+        msp.add_line((4.0, 6.0), (10.0, 6.0), dxfattribs={"layer": "WALLS"})
+        msp.add_line((10.0, 6.0), (10.0, 2.0), dxfattribs={"layer": "WALLS"})
+
+        # Double-wall cavity: 10m x 0.25m (area = 2.5 m2 >= 0.5, width = 0.25m < 0.6m)
+        msp.add_lwpolyline(
+            [(0.0, -0.25), (10.0, -0.25), (10.0, 0.0), (0.0, 0.0)],
+            close=True,
+            dxfattribs={"layer": "WALLS"},
+        )
+
+        doc.saveas(str(dxf_path))
+        rooms = parse_dxf_rooms(dxf_path)
+        self.assertEqual(len(rooms), 1)
+        self.assertEqual(rooms[0].name, "Кабінет")
+        self.assertEqual(rooms[0].type, "office")
+        self.assertAlmostEqual(rooms[0].area, 16.0, places=1)
+
+    def test_expanded_room_type_catalog_synonyms(self) -> None:
+        """BIM-181: Newly added Ukrainian and English synonyms map to catalog codes."""
+        expected = {
+            "Хол": "corridor",
+            "Вестибюль": "corridor",
+            "Тамбур": "corridor",
+            "Lobby": "corridor",
+            "Hallway": "corridor",
+            "Сходова": "staircase",
+            "Сходова клітка": "staircase",
+            "Staircase": "staircase",
+            "Stairwell": "staircase",
+            "Зала": "hall",
+            "Кафе": "hall",
+            "Цех": "hall",
+            "Виробничий цех": "hall",
+            "Workshop": "hall",
+            "Підсобне": "service_room",
+            "Службове": "service_room",
+            "Охорона": "service_room",
+            "Кімната персоналу": "service_room",
+            "Туалет": "restroom",
+            "Вбиральня": "restroom",
+            "Душова": "restroom",
+            "Bathroom": "restroom",
+            "Toilet": "restroom",
+            "Щитова": "technical",
+            "Котельня": "technical",
+            "Насосна": "technical",
+            "Технічне": "technical",
+            "Boiler": "technical",
+            "Technical": "technical",
+        }
+        for label, code in expected.items():
+            with self.subTest(label=label):
+                self.assertEqual(suggest_room_type(label), code)
+
+    def test_open_loop_door_closes_small_gap_but_not_long_open_wall(self) -> None:
+        """BIM-181: A 1m door closes a 1m gap, not a 10m open wall."""
+        # Positive: U-shaped contour missing a 1m side filled by a 1m door
+        pos_path = self.temp_dir / "u_shape_small_door_gap.dxf"
+        pos_doc = ezdxf.new("R2010")
+        pos_doc.header["$INSUNITS"] = 6
+        pos_doc.layers.add("WALLS")
+        pos_doc.layers.add("DOORS")
+        pos_doc.layers.add("TEXT")
+        pos_msp = pos_doc.modelspace()
+        pos_msp.add_lwpolyline(
+            [(0.0, 0.0), (5.0, 0.0), (5.0, 1.0), (0.0, 1.0)],
+            close=False,
+            dxfattribs={"layer": "WALLS"},
+        )
+        pos_msp.add_line((0.0, 1.0), (0.0, 0.0), dxfattribs={"layer": "DOORS"})
+        pos_msp.add_text(
+            "Комора", dxfattribs={"insert": (2.5, 0.5, 0.0), "layer": "TEXT"}
+        )
+        pos_doc.saveas(str(pos_path))
+
+        pos_rooms = parse_dxf_rooms(pos_path)
+        self.assertEqual(len(pos_rooms), 1)
+        self.assertEqual(pos_rooms[0].name, "Комора")
+        self.assertAlmostEqual(pos_rooms[0].area, 5.0, places=1)
+
+        # Negative: 10x5m open U-shaped contour with a 1m door in the middle of
+        # the 10m open edge leaves 4.5m uncovered gaps on each side -> must NOT close.
+        neg_path = self.temp_dir / "u_shape_long_open_wall_with_door.dxf"
+        neg_doc = ezdxf.new("R2010")
+        neg_doc.header["$INSUNITS"] = 6
+        neg_doc.layers.add("WALLS")
+        neg_doc.layers.add("DOORS")
+        neg_msp = neg_doc.modelspace()
+        neg_msp.add_lwpolyline(
+            [(0.0, 0.0), (0.0, 5.0), (10.0, 5.0), (10.0, 0.0)],
+            close=False,
+            dxfattribs={"layer": "WALLS"},
+        )
+        neg_msp.add_line((4.5, 0.0), (5.5, 0.0), dxfattribs={"layer": "DOORS"})
+        neg_doc.saveas(str(neg_path))
+
+        with self.assertRaises(CADParsingError):
+            parse_dxf_rooms(neg_path)
 
 
 class TestStorageUtility(unittest.TestCase):

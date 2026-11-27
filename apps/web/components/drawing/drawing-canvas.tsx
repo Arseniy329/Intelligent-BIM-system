@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createDrawingViewerAdapter, type DrawingViewerAdapter } from "@/lib/drawing/viewer-adapter";
 import { LOAD_PHASE_LABELS, logDrawingLoadTimings, measureDrawingLoad, type DrawingLoadTimings } from "@/lib/drawing/load-timings";
 import type { DrawingViewerProps } from "./drawing-viewer";
 import { DrawingToolbar } from "./drawing-toolbar";
 import { PlanEditOverlay } from "./plan-edit-overlay";
 import { DrawingOverlay } from "./drawing-overlay";
+import { FindingsOverlay } from "./findings-overlay";
+import { DeviceLegend } from "./device-legend";
+import { DEVICE_LABELS } from "./device-symbol";
 import styles from "./drawing-viewer.module.css";
 
 type LoadState =
@@ -16,7 +19,8 @@ type LoadState =
 
 export default function DrawingCanvas({
   url, onReady, onRetry, retryPending = false, rooms, devices, initialRoomLabelsVisible = true,
-  selectedRoomId, editor, onSelectRoom, onSelectDevice,
+  selectedRoomId, editor, onSelectRoom, onSelectDevice, zones, exits, rules, layers, mode, onModeChange, workPanel,
+  findings, selectedFindingId, onSelectFinding,
 }: DrawingViewerProps & { onRetry: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const adapterRef = useRef<DrawingViewerAdapter | null>(null);
@@ -24,6 +28,8 @@ export default function DrawingCanvas({
   const [showRooms, setShowRooms] = useState(true);
   const [showDevices, setShowDevices] = useState(true);
   const [showRoomLabels, setShowRoomLabels] = useState(initialRoomLabelsVisible);
+  const [zoomPercent, setZoomPercent] = useState(100);
+  const fitWidth = useRef<number | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -80,31 +86,47 @@ export default function DrawingCanvas({
     };
   }, [url]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (state.status !== "ready" || !adapterRef.current) return;
+    const controller = state.controller;
+    fitWidth.current = controller.getViewport().width;
+    const unsubscribe = controller.subscribeViewportChange(() => {
+      const width = controller.getViewport().width;
+      if (width > 0 && fitWidth.current) setZoomPercent(Math.round(fitWidth.current / width * 100));
+    });
     onReady?.(adapterRef.current);
-    return () => { onReady?.(null); };
-  }, [state.status, onReady]);
+    return () => { unsubscribe(); onReady?.(null); };
+  }, [state, onReady]);
 
   return (
     <>
       <DrawingToolbar
+        mode={mode} onModeChange={onModeChange} modeDisabled={editor?.blocked}
+        zoomPercent={zoomPercent}
         disabled={state.status !== "ready"}
         onZoomIn={() => adapterRef.current?.zoomBy(1.25)}
         onZoomOut={() => adapterRef.current?.zoomBy(0.8)}
-        onFit={() => adapterRef.current?.fitToDrawing()}
-        roomsLayer={rooms?.length ? { visible: showRooms, toggle: () => setShowRooms((value) => !value) } : undefined}
-        devicesLayer={devices?.length ? { visible: showDevices, toggle: () => setShowDevices((value) => !value) } : undefined}
-        roomLabels={rooms?.length ? { visible: showRoomLabels, toggle: () => setShowRoomLabels((value) => !value) } : undefined}
+        onFit={() => { adapterRef.current?.fitToDrawing(); fitWidth.current = adapterRef.current?.getViewport().width ?? null; setZoomPercent(100); }}
+        roomsLayer={!layers && rooms?.length ? { visible: showRooms, toggle: () => setShowRooms((value) => !value) } : undefined}
+        devicesLayer={!layers && devices?.length ? { visible: showDevices, toggle: () => setShowDevices((value) => !value) } : undefined}
+        roomLabels={!layers && rooms?.length ? { visible: showRoomLabels, toggle: () => setShowRoomLabels((value) => !value) } : undefined}
       />
+      <div className={styles.planBody}>
+      {workPanel && <div className={styles.workPanel}>{workPanel}</div>}
       <div className={styles.stage} aria-busy={state.status === "loading"}>
         <div ref={hostRef} className={styles.canvas} aria-label="Полотно DXF" />
-        {state.status === "ready" && (rooms?.length || devices?.length) ? (
+        {state.status === "ready" && !editor?.draft && !!findings?.length && layers?.findings !== false && <FindingsOverlay controller={state.controller}
+          findings={findings} rooms={rooms ?? []} devices={devices ?? []} selectedId={selectedFindingId} onSelect={onSelectFinding} blocked={editor?.blocked} />}
+        {state.status === "ready" && (rooms?.length || devices?.length || zones?.length || exits?.length) ? (
           <DrawingOverlay controller={state.controller}
+            zones={zones?.filter(zone => editor?.draft?.kind !== "zone" || editor.draft.id !== zone.id)} exits={exits}
+            rules={rules}
+            selectedDeviceId={mode === "devices" ? editor?.selectedDeviceId : null}
             rooms={rooms?.filter(room => editor?.draft?.kind !== "room" || editor.draft.id !== room.id)}
-            devices={devices?.filter(device => editor?.draft?.kind !== "device" || editor.draft.id !== device.id)}
-            showRooms={showRooms} showDevices={showDevices} showRoomLabels={showRoomLabels}
-            selectedRoomId={selectedRoomId} onSelectRoom={editor?.blocked ? undefined : onSelectRoom} onSelectDevice={editor?.blocked ? undefined : onSelectDevice} />
+            devices={devices?.filter(device => (editor?.draft?.kind !== "device" || editor.draft.id !== device.id) &&
+              !layers?.hiddenDeviceTypes.includes(Object.hasOwn(DEVICE_LABELS, device.type) ? device.type : "unknown"))}
+            showRooms={layers?.rooms ?? showRooms} showDevices={showDevices} showRoomLabels={layers?.labels ?? showRoomLabels}
+            selectedRoomId={selectedRoomId} onSelectRoom={editor?.blocked || mode === "devices" ? undefined : onSelectRoom} onSelectDevice={editor?.blocked || mode === "rooms" ? undefined : onSelectDevice} />
         ) : null}
         {state.status === "ready" && editor?.draft && <PlanEditOverlay controller={state.controller} editor={editor} />}
         {state.status === "loading" && (
@@ -119,7 +141,9 @@ export default function DrawingCanvas({
           </div>
         )}
       </div>
-      {state.status === "ready" && showRooms && !!rooms?.length && (
+      </div>
+      {state.status === "ready" && <DeviceLegend devices={devices} rules={rules} />}
+      {!layers && state.status === "ready" && showRooms && !!rooms?.length && (
         <ul className={styles.roomSummary} aria-label="Назви та площі приміщень">
           {rooms.map((room) => <li key={room.id}>
             <span>{room.name?.trim() || "Приміщення без назви"}</span>
@@ -128,11 +152,11 @@ export default function DrawingCanvas({
           </li>)}
         </ul>
       )}
-      <p className={styles.status} role="status">
+      <p className={layers ? styles.screenReaderStatus : styles.status} role="status">
         {state.status === "ready" ? "Креслення готове до перегляду." :
           state.status === "error" ? "Помилка відкриття креслення." : "Завантаження…"}
       </p>
-      {state.status !== "loading" && state.timings && (
+      {process.env.NODE_ENV === "development" && !layers && state.status !== "loading" && state.timings && (
         <details className="px-3 pb-3 text-sm">
           <summary className="cursor-pointer">Діагностика завантаження</summary>
           <p>Ініціалізація renderer: {state.timings.rendererInitMs.toFixed(1)} мс</p>

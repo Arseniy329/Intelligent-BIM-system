@@ -26,6 +26,20 @@ function makeController() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("BIM-60 overlay", () => {
+  it("keeps rule-review and unknown provenance separate from verified devices", () => {
+    const { controller } = makeController();
+    const device = DEMO_RESULT.devices[0];
+    const markup = renderToStaticMarkup(<DrawingOverlay controller={controller} showRooms={false} showDevices
+      devices={[{ ...device, id: "verified", ruleId: "r1" }, { ...device, id: "review", ruleId: "r2" }, { ...device, id: "unknown", ruleId: null }]}
+      rules={[{ id: "r1", status: "verified", rule: "", value: "", document: "", clause: "" }, { id: "r2", status: "needs_verification", rule: "", value: "", document: "", clause: "" }]} />);
+    expect(markup).toContain('data-rule-state="verified"');
+    expect(markup).toContain('data-rule-state="needs_review"');
+    expect(markup).toContain('data-rule-state="unknown"');
+    expect(markup).toContain("Правило перевірено");
+    expect(markup).toContain("Треба перевірити");
+    expect(markup).toContain("Статус правила невідомий");
+    expect(markup).not.toContain("Порушення");
+  });
   it("ships the exact DXF fixture and rooms matching every closed polyline and its area", async () => {
     const original = await readFile(new URL("../../api/tests/fixtures/test_drawing_dxf/01_simple_rooms_mm.dxf", import.meta.url), "utf8");
     expect(DEMO_DXF.replaceAll("\r\n", "\n").trim()).toBe(original.replaceAll("\r\n", "\n").trim());

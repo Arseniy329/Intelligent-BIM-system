@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DrawingDetailResponse } from "@bim/contracts";
+import type { DrawingDetailResponse, ProcessingJob } from "@bim/contracts";
 import { ApiAuthenticationError, ApiHttpError, createDrawing } from "@/lib/api";
-import { drawingApi, drawingErrorMessage, downloadLink, fetchDrawingDownload, listDrawings, normalizeDrawingDetail, parseDrawing, parseJob, parseDrawingOperation, processingErrorMessage } from "@/lib/drawing/drawing-api";
+import { type DrawingResponse, drawingApi, drawingErrorMessage, downloadLink, fetchDrawingDownload, listDrawings, normalizeDrawingDetail, parseDrawing, parseJob, parseDrawingOperation, parsePlacementReport, placementReport, processingErrorMessage } from "@/lib/drawing/drawing-api";
 import { DEMO_RESULT } from "@/lib/drawing/demo-drawing";
 import { createDemoDrawingApi } from "@/lib/drawing/demo-api";
 import { isDrawingDemoEnabled } from "@/lib/drawing/demo-mode";
@@ -67,6 +67,149 @@ it.each(["process", "place"] as const)("POSTs the synchronous %s endpoint withou
   expect(fetchMock).toHaveBeenCalledOnce();
   expect(() => parseDrawingOperation({ ...response, drawing_id: "other" }, id, status)).toThrow();
   expect(() => parseDrawingOperation({ drawing_id: id, status: "accepted" }, id, status)).toThrow();
+});
+it("keeps the placement report of POST /place: partial result with skipped zones and reasons", () => {
+  const operation = parseDrawingOperation({
+    drawing_id: id, status: "processed", placement_status: "partial", device_count: 6,
+    placements: [{ status: "placed" }],
+    skipped: [
+      { room_id: "r1", zone_id: null, name: "Hall", zone_name: "Решта приміщення", scope: "remainder",
+        reason: "Частину приміщення (≈40 м², 50 %) не віднесено до жодної зони: додайте зону з висотою для решти приміщення" },
+      { room_id: "r2", zone_id: null, name: "Office", zone_name: null, scope: "room", reason: "Не введено висоту" },
+    ],
+  }, id, "processed");
+  expect(operation).toMatchObject({ drawingId: id, status: "processed", placementStatus: "partial", deviceCount: 6 });
+  expect(placementReport(operation)?.placementIssues).toEqual([
+    { title: "Hall — Решта приміщення", reason: expect.stringContaining("не віднесено до жодної зони") },
+    { title: "Office", reason: "Не введено висоту" },
+  ]);
+});
+it("reports no devices because of missing height as insufficient data, not as a plain success", () => {
+  const operation = parseDrawingOperation({
+    drawing_id: id, status: "processed", placement_status: "insufficient_data", device_count: 0,
+    skipped: [{ name: "Hall", zone_name: null, reason: "Не введено висоту" }],
+  }, id, "processed");
+  expect(placementReport(operation)).toMatchObject({ placementStatus: "insufficient_data", deviceCount: 0 });
+  expect(placementReport(operation)?.placementIssues).toEqual([{ title: "Hall", reason: "Не введено висоту" }]);
+});
+it("ignores malformed placement report parts and responses without a report", () => {
+  expect(parsePlacementReport({ placement_status: "invented", device_count: "3", skipped: [null, { reason: "" }, { name: "A" }] }))
+    .toEqual({ placementIssues: [] });
+  expect(placementReport(parseDrawingOperation({ drawing_id: id, status: "processed" }, id, "processed"))).toBeNull();
+  expect(placementReport(DEMO_RESULT)).toBeNull();
+  expect(placementReport(undefined)).toBeNull();
+});
+it("keeps the warnings of the process and place steps instead of dropping them", () => {
+  const processed = parseDrawingOperation({
+    drawing_id: id, status: "processing",
+    exit_detection: { status: "failed", exits: null, passages: null, warning: "Раніше збережені виходи й проходи лишено без змін" },
+  }, id, "processing");
+  expect(placementReport(processed)?.warnings).toEqual(["Раніше збережені виходи й проходи лишено без змін"]);
+
+  const placed = parseDrawingOperation({
+    drawing_id: id, status: "processed", placement_status: "complete", device_count: 4,
+    skipped: [],
+    manual_call_points: {
+      status: "placed", reason: null, warning: null,
+      route_coverage: "unconfirmed", route_warning: "Шлях евакуації між виходами не підтверджено. Приміщення: East",
+    },
+  }, id, "processed");
+  expect(placementReport(placed)).toMatchObject({ placementStatus: "complete" });
+  expect(placementReport(placed)?.warnings).toEqual(["Ручні сповіщувачі: Шлях евакуації між виходами не підтверджено. Приміщення: East"]);
+});
+it("shows why manual call points were not placed and ignores responses without warnings", () => {
+  const noExits = parseDrawingOperation({
+    drawing_id: id, status: "processed", placement_status: "complete", device_count: 4,
+    manual_call_points: { status: "insufficient_data", reason: "Позначте евакуаційні виходи", warning: null, route_warning: null },
+  }, id, "processed");
+  expect(placementReport(noExits)?.warnings).toEqual(["Ручні сповіщувачі: Позначте евакуаційні виходи"]);
+  const clean = parseDrawingOperation({
+    drawing_id: id, status: "processing", exit_detection: { status: "ok", exits: 2, passages: 1, warning: null },
+  }, id, "processing");
+  expect(placementReport(clean)).toBeNull();
+  expect(clean).toEqual({ drawingId: id, status: "processing" });
+});
+it("surfaces sounder status separately and keeps it after a reload (BIM-76)", () => {
+  // Випадок 1: димові complete, правила-відстані для оповіщувачів немає — причина
+  // на рівні типу приладу, а не мовчазний пропуск.
+  const noRule = {
+    placement_status: "complete", device_count: 4, skipped: [],
+    sounders: { placement_status: "insufficient_data", device_count: 0, needs_review: false,
+      skipped: [{ name: "Hall", reason: "Немає правила розміщення для цього типу приладу" }] },
+  };
+  const warn1 = "Оповіщувачі не розміщено: Немає правила розміщення для цього типу приладу";
+  expect(placementReport(parseDrawingOperation({ drawing_id: id, status: "processed", ...noRule }, id, "processed"))?.warnings).toContain(warn1);
+  // Те саме зі збереженого звіту, який GET повертає після перезавантаження.
+  expect(placementReport(parseDrawing({ ...DEMO_RESULT, placementReport: noRule }, id))?.warnings).toContain(warn1);
+
+  // Випадок 2: розміщено лише в частині приміщень/зон.
+  const partial = {
+    placement_status: "partial", device_count: 3, skipped: [{ name: "X", reason: "Не введено висоту" }],
+    sounders: { placement_status: "partial", device_count: 2, needs_review: true,
+      skipped: [{ name: "X", reason: "Не введено висоту" }] },
+  };
+  expect(placementReport(parseDrawing({ ...DEMO_RESULT, placementReport: partial }, id))?.warnings)
+    .toContain("Оповіщувачі: розміщено не в усіх приміщеннях чи зонах");
+
+  // Випадок 3: усі розміщені, але за попереднім правилом (needs_review): `complete`
+  // не означає, що акустичне покриття перевірено — попередження все одно є.
+  const preliminary = {
+    placement_status: "complete", device_count: 4, skipped: [],
+    sounders: { placement_status: "complete", device_count: 3, skipped: [], needs_review: true },
+  };
+  const warn3 = placementReport(parseDrawing({ ...DEMO_RESULT, placementReport: preliminary }, id))?.warnings ?? [];
+  expect(warn3.some(w => w.includes("крок розміщення попередній"))).toBe(true);
+});
+it("reads the stored placement report that GET returns with a result, so a reload keeps the reasons", () => {
+  const stored = {
+    placement_status: "partial", device_count: 6,
+    skipped: [{ room_id: "r1", zone_id: null, name: "Hall", zone_name: "Решта приміщення", scope: "remainder",
+      reason: "Частину приміщення (≈40 м², 50 %) не віднесено до жодної зони" }],
+  };
+  const result = parseDrawing({ ...DEMO_RESULT, placementReport: stored }, id);
+  expect(placementReport(result)).toMatchObject({ placementStatus: "partial", deviceCount: 6 });
+  expect(placementReport(result)?.placementIssues).toEqual([
+    { title: "Hall — Решта приміщення", reason: expect.stringContaining("не віднесено до жодної зони") },
+  ]);
+  // The same wire shape as the POST /place acknowledgement gives the same report.
+  expect(placementReport(result)).toEqual(parsePlacementReport(stored));
+  expect(placementReport(parseDrawingOperation({ drawing_id: id, status: "processed", ...stored }, id, "processed")))
+    .toEqual(placementReport(result));
+});
+it.each([null, "partial", {}, { placement_status: "invented" }])("treats a null or malformed stored report (%j) as no report and keeps the result valid", stored => {
+  const result = parseDrawing({ ...DEMO_RESULT, placementReport: stored }, id);
+  expect(placementReport(result)).toBeNull();
+  expect(result).toMatchObject({ rooms: DEMO_RESULT.rooms, devices: DEMO_RESULT.devices });
+  expect(result).not.toHaveProperty("placementReport");
+});
+it("keeps a result without a report as it is", () => {
+  expect(parseDrawing(DEMO_RESULT, id)).toBe(DEMO_RESULT);
+  expect(placementReport(parseDrawing(DEMO_RESULT, id))).toBeNull();
+});
+it("shows the stored step warnings after a reload, also when no device was placed yet", () => {
+  // /process stores only the exit detection outcome; /place adds the manual call point outcome.
+  const processed = parseDrawing({
+    ...DEMO_RESULT,
+    placementReport: { exit_detection: { status: "failed", exits: null, passages: null, warning: "Виходи не збережено: пошук виходів завершився помилкою" } },
+  }, id);
+  expect(placementReport(processed)).toEqual({ warnings: ["Виходи не збережено: пошук виходів завершився помилкою"] });
+
+  const placed = parseDrawing({
+    ...DEMO_RESULT,
+    placementReport: {
+      placement_status: "complete", device_count: 4, skipped: [],
+      manual_call_points: { status: "placed", route_coverage: "unconfirmed", route_warning: "Прохід не прив'язано до двох приміщень" },
+    },
+  }, id);
+  expect(placementReport(placed)).toEqual({
+    placementStatus: "complete", deviceCount: 4, placementIssues: [],
+    warnings: ["Ручні сповіщувачі: Прохід не прив'язано до двох приміщень"],
+  });
+});
+it("reads the report from every response shape a mutation can hold, a processing job included", () => {
+  const job = { id: "job", drawingId: id, status: "queued", errorMessage: null } as ProcessingJob;
+  expect(placementReport(job)).toBeNull();
+  expect(placementReport(detail as unknown as DrawingResponse)).toBeNull();
 });
 it("rejects mismatched IDs, absent data and invalid jobs", async () => {
   expect(() => parseDrawing(null, id)).toThrow();

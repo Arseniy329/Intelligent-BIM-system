@@ -4,14 +4,19 @@ import { useEffect, useRef, useState } from "react";
 import type { Device, Point, Room, RoomPolygon } from "@bim/contracts";
 import { editApi, type PlanEditApi } from "./edit-api";
 import { roomAtPoint, validOutline } from "./edit-geometry";
+import { planFeaturesApi, type RoomZone } from "./plan-features-api";
+import { ApiHttpError } from "@/lib/api";
 
 export type PlanDraft =
+  | { kind: "zone"; id: string | null; roomId: string; name: string; height: string; points: Point[] }
+  | { kind: "exit"; name: string; position: Point | null }
   | { kind: "room"; id: string | null; name: string; points: Point[] }
   | { kind: "device"; id: string | null; type: Device["type"]; position: Point | null };
 
-export function usePlanEditor({ drawingId, rooms, refresh, selectRoom, api = editApi }: {
+export function usePlanEditor({ drawingId, rooms, refresh, selectRoom, api = editApi, featuresApi = planFeaturesApi }: {
   drawingId: string; rooms: Room[]; devices: Device[];
   refresh: () => Promise<unknown>; selectRoom: (id: string | null) => void; api?: PlanEditApi;
+  featuresApi?: typeof planFeaturesApi;
 }) {
   const [draft, setDraft] = useState<PlanDraft | null>(null);
   const [selectedDeviceId, selectDevice] = useState<string | null>(null);
@@ -19,7 +24,7 @@ export function usePlanEditor({ drawingId, rooms, refresh, selectRoom, api = edi
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [uncertain, setUncertain] = useState(false);
-  const [deletion, setDeletion] = useState<{ kind: "room" | "device"; id: string } | null>(null);
+  const [deletion, setDeletion] = useState<{ kind: "room" | "device" | "zone" | "exit"; id: string } | null>(null);
   const lock = useRef(false);
 
   useEffect(() => {
@@ -39,7 +44,7 @@ export function usePlanEditor({ drawingId, rooms, refresh, selectRoom, api = edi
     } catch (cause) {
       // A failed response can follow a committed write (including a DXF 502).
       // Require reconciliation before allowing another non-idempotent request.
-      setUncertain(true);
+      setUncertain(!(cause instanceof ApiHttpError && [400, 401, 403, 404, 422].includes(cause.statusCode)));
       setError(cause instanceof Error ? `Не вдалося завершити операцію. ${cause.message}. Оновіть дані перед наступною зміною.` : "Не вдалося завершити операцію. Оновіть дані перед наступною зміною.");
     } finally {
       try { await refresh(); } catch { setError("Не вдалося оновити план. Оновіть дані перед наступною зміною."); setUncertain(true); }
@@ -60,7 +65,18 @@ export function usePlanEditor({ drawingId, rooms, refresh, selectRoom, api = edi
   };
   const save = () => {
     if (!draft || busy || uncertain) return;
-    if (draft.kind === "room") {
+    if (draft.kind === "zone") {
+      const height = draft.height.trim() === "" ? null : Number(draft.height);
+      if (!validOutline(draft.points)) { setError("Вкажіть щонайменше три різні вершини без самоперетинів."); return; }
+      if (height !== null && (!Number.isFinite(height) || height <= 0 || height > 100)) { setError("Висота зони має бути більшою за 0 і не більшою за 100 м."); return; }
+      if (!rooms.some(r => r.id === draft.roomId)) { setError("Приміщення більше не існує. Оновіть дані."); return; }
+      // Containment/overlap tolerances are enforced by BIM-73, including concave rooms.
+      const body = { name: draft.name.trim() || null, height, polygon: draft.points };
+      void run(() => draft.id ? featuresApi.updateZone(draft.id, body) : featuresApi.createZone(draft.roomId, body));
+    } else if (draft.kind === "exit") {
+      if (!draft.position || !Number.isFinite(draft.position.x) || !Number.isFinite(draft.position.y)) { setError("Виберіть двері на плані."); return; }
+      void run(() => featuresApi.createExit(drawingId, { name: draft.name.trim() || null, position: draft.position! }));
+    } else if (draft.kind === "room") {
       if (!validOutline(draft.points) || !draft.id && !draft.name.trim()) {
         setError("Вкажіть назву та щонайменше три різні кути без самоперетинів."); return;
       }
@@ -86,16 +102,21 @@ export function usePlanEditor({ drawingId, rooms, refresh, selectRoom, api = edi
     selectDevice: (id: string) => { if (!draft && !busy) selectDevice(id); },
     beginRoom: (room?: Room) => begin({ kind: "room", id: room?.id ?? null, name: room?.name ?? "", points: room ? [...room.polygon] : [] }),
     beginDevice: (device?: Device) => begin({ kind: "device", id: device?.id ?? null, type: device?.type ?? "smoke_detector", position: device?.position ?? null }),
-    setName: (name: string) => setDraft(d => d?.kind === "room" ? { ...d, name } : d),
+    beginZone: (room: Room, zone?: RoomZone) => begin({ kind: "zone", id: zone?.id ?? null, roomId: room.id, name: zone?.name ?? "", height: zone?.height == null ? "" : String(zone.height), points: zone ? [...zone.polygon] : [] }),
+    beginExit: () => begin({ kind: "exit", name: "", position: null }),
+    setHeight: (height: string) => { if (!busy && !uncertain) setDraft(d => d?.kind === "zone" ? { ...d, height } : d); },
+    setName: (name: string) => { if (!busy && !uncertain) setDraft(d => d && d.kind !== "device" ? { ...d, name } : d); },
     setType: (type: Device["type"]) => setDraft(d => d?.kind === "device" ? { ...d, type } : d),
-    moveVertex: (index: number, point: Point) => { if (!busy && !uncertain) setDraft(d => d?.kind === "room" ? { ...d, points: d.points.map((p, i) => i === index ? point : p) } : d); },
-    setPosition: (position: Point) => { if (!busy && !uncertain) setDraft(d => d?.kind === "device" ? { ...d, position } : d); },
-    addPoint: (point: Point) => { if (!busy && !uncertain) setDraft(d => d?.kind === "room" && !d.id ? { ...d, points: [...d.points, point] } : d?.kind === "device" ? { ...d, position: point } : d); },
-    undoPoint: () => setDraft(d => d?.kind === "room" ? { ...d, points: d.points.slice(0, -1) } : d),
-    requestDelete: (kind: "room" | "device", id: string) => { if (!draft && !busy && !uncertain) setDeletion({ kind, id }); },
+    moveVertex: (index: number, point: Point) => { if (!busy && !uncertain) setDraft(d => d?.kind === "room" || d?.kind === "zone" ? { ...d, points: d.points.map((p, i) => i === index ? point : p) } : d); },
+    setPosition: (position: Point) => { if (!busy && !uncertain) setDraft(d => d?.kind === "device" || d?.kind === "exit" ? { ...d, position } : d); },
+    addPoint: (point: Point) => { if (!busy && !uncertain) setDraft(d => (d?.kind === "room" || d?.kind === "zone") && !d.id ? { ...d, points: [...d.points, point] } : d?.kind === "device" || d?.kind === "exit" ? { ...d, position: point } : d); },
+    undoPoint: () => { if (!busy && !uncertain) setDraft(d => d?.kind === "room" || d?.kind === "zone" ? { ...d, points: d.points.slice(0, -1) } : d); },
+    requestDelete: (kind: "room" | "device" | "zone" | "exit", id: string) => { if (!draft && !busy && !uncertain) setDeletion({ kind, id }); },
     cancelDelete: () => setDeletion(null),
     deleteSelected: () => { if (deletion && !busy && !uncertain) void run(async () => {
       if (deletion.kind === "room") { await api.deleteRoom(deletion.id); selectRoom(null); }
+      else if (deletion.kind === "zone") await featuresApi.deleteZone(deletion.id);
+      else if (deletion.kind === "exit") await featuresApi.deleteExit(deletion.id);
       else { await api.deleteDevice(deletion.id); selectDevice(null); }
     }); },
     confirm: (id: string) => { if (!draft && !busy && !uncertain) void run(() => api.updateRoom(id, { confirmed: true })); },

@@ -30,7 +30,22 @@ export function RuleStatusBadge({
   const ariaLabel = isInsufficient && hasReason ? `${label}: ${trimmedReason}` : undefined;
 
   return (
+<<<<<<< HEAD
     <span className="inline-flex flex-col items-start gap-0.5">
+=======
+    <span
+      role="status"
+      data-slot="rule-status-badge"
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md px-2.5 py-0.5 text-xs font-medium whitespace-nowrap",
+        isVerified
+          ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+          : "bg-amber-50 text-amber-800 border border-amber-200",
+        className
+      )}
+      {...props}
+    >
+>>>>>>> origin/dev
       <span
         role="status"
         data-slot="rule-status-badge"

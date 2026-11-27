@@ -1,0 +1,5 @@
+Inter variable font, optical size and weight axes.
+Source: https://github.com/google/fonts/tree/main/ofl/inter
+File: Inter[opsz,wght].ttf, downloaded 2026-11-25, renamed Inter-Variable.ttf.
+License: SIL Open Font License 1.1; included as OFL.txt.
+Self-hosted to make the exported Inter typography independent of client-installed fonts.

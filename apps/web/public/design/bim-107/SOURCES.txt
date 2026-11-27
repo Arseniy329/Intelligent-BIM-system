@@ -1,0 +1,21 @@
+Original, unmodified SVG exports supplied by the project owner on 2026-11-25.
+violation.svg = violation 3.svg (20 x 20), copied byte-for-byte from design/Design materials figma 1 on 2026-11-27. Critical finding marker, original dimensions preserved.
+Figma file: I9LwN7XZgyliKP6yhJwYOT
+Source folder: Design materials figma 1
+Reference screens: Desktop - 6 and Desktop - 10 through 19; final BIM-107 symbol sheet.
+
+smoke.svg = smoke-detector 3.svg (20 x 20)
+heat.svg = heat-detector 5.svg (20 x 20, flame variant)
+manual.svg = Group 12.svg (56 x 56, arrow/button variant)
+sounder.svg = sounder 4.svg (56 x 56, speaker/waves variant)
+room-default.svg = room-default 2.svg (20 x 20)
+room-confirmed.svg = room-confirmed 3.svg (20 x 20)
+room-review.svg = room-needs-review 2.svg (20 x 20)
+logo.svg = intelligent-bim-flame-v2 2.svg (40 x 40)
+
+The UI displays square device assets at 20 CSS pixels, preserving aspect ratio.
+The SVG editor uses SVG image elements; HTML overlays and legends use Next Image.
+Root SVG dimensions/path geometry have not been edited.
+Other supplied variants are intentionally not substituted for these reference slots.
+
+auth-plan.svg = standalone Frame 117.svg (520 x 357), copied byte-for-byte. Decorative authentication illustration only; never used as the functional viewer.

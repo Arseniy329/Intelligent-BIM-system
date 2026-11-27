@@ -47,6 +47,9 @@
     },
     "rule": {
       "$ref": "#/$defs/Rule"
+    },
+    "finding": {
+      "$ref": "#/$defs/Finding"
     }
   },
   "$defs": {
@@ -418,6 +421,11 @@
         },
         "layer": {
           "type": "string",
+          "minLength": 1
+        },
+        "ruleId": {
+          "description": "Ідентифікатор застосованого правила (devices.rule_id → GET /rules items[].id). null або відсутнє — правило невідоме або прилад додано вручну.",
+          "type": ["string", "null"],
           "minLength": 1
         }
       }
@@ -818,6 +826,116 @@
             "verified",
             "needs_review"
           ]
+        }
+      }
+    },
+    "FindingSeverity": {
+      "type": "string",
+      "enum": [
+        "critical",
+        "warning",
+        "insufficient_data",
+        "rule_conflict"
+      ]
+    },
+    "FindingRuleStatus": {
+      "type": "string",
+      "enum": [
+        "verified",
+        "needs_review"
+      ]
+    },
+    "Finding": {
+      "title": "Finding",
+      "description": "Порушення або попередження за результатами перевірки розміщення приладів пожежної безпеки.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "drawingId",
+        "roomId",
+        "deviceId",
+        "ruleId",
+        "severity",
+        "message",
+        "document",
+        "clause",
+        "ruleStatus"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "drawingId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "roomId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "deviceId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "ruleId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "Ідентифікатор правила (public.rules.id), на яке посилається знахідка, або null."
+        },
+        "severity": {
+          "$ref": "#/$defs/FindingSeverity"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "document": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clause": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Пункт нормативного документа; null, якщо правило не звірено або відсутнє."
+        },
+        "ruleStatus": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/FindingRuleStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "conflictDetails": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "details": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
         }
       }
     }

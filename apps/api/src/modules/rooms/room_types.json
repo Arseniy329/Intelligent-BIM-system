@@ -7,22 +7,54 @@
   {
     "code": "service_room",
     "name": "Службове приміщення",
-    "examples": ["Staff_Room", "Персонал"]
+    "examples": [
+      "Staff_Room",
+      "Персонал",
+      "Підсобне",
+      "Службове",
+      "Охорона",
+      "Кімната персоналу"
+    ]
   },
   {
     "code": "corridor",
     "name": "Коридор, шлях евакуації",
-    "examples": ["Corridor", "Main_Corridor", "Коридор"]
+    "examples": [
+      "Corridor",
+      "Main_Corridor",
+      "Коридор",
+      "Хол",
+      "Вестибюль",
+      "Тамбур",
+      "Lobby",
+      "Hallway"
+    ]
   },
   {
     "code": "staircase",
     "name": "Сходова клітка",
-    "examples": ["Stairs", "Сходи"]
+    "examples": [
+      "Stairs",
+      "Сходи",
+      "Сходова",
+      "Сходова клітка",
+      "Staircase",
+      "Stairwell"
+    ]
   },
   {
     "code": "hall",
     "name": "Зала, хол, кафе",
-    "examples": ["Hall", "Cafe_Hall", "Зал"]
+    "examples": [
+      "Hall",
+      "Cafe_Hall",
+      "Зал",
+      "Зала",
+      "Кафе",
+      "Цех",
+      "Виробничий цех",
+      "Workshop"
+    ]
   },
   {
     "code": "sleeping_room",
@@ -42,12 +74,33 @@
   {
     "code": "restroom",
     "name": "Санвузол, душова",
-    "examples": ["Restroom", "WC", "Санвузол"]
+    "examples": [
+      "Restroom",
+      "WC",
+      "Санвузол",
+      "Туалет",
+      "Вбиральня",
+      "Душова",
+      "Bathroom",
+      "Toilet"
+    ]
   },
   {
     "code": "technical",
     "name": "Технічне приміщення",
-    "examples": ["Electrical", "Server", "Електрощитова", "Серверна", "Венткамера"]
+    "examples": [
+      "Electrical",
+      "Server",
+      "Електрощитова",
+      "Серверна",
+      "Венткамера",
+      "Щитова",
+      "Котельня",
+      "Насосна",
+      "Технічне",
+      "Boiler",
+      "Technical"
+    ]
   },
   {
     "code": "unknown",

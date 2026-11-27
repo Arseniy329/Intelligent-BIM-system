@@ -11,9 +11,20 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding: 12px;
+  padding: 20px;
   border-bottom: 1px solid var(--viewer-border);
 }
+.toolbarTitle { margin-right: auto; display: grid; gap: 4px; min-width: 200px; }
+.toolbarTitle strong { font-size: 16px; line-height: 24px; font-weight: 600; }
+.toolbarTitle span { font-size: 12px; line-height: 16px; color: var(--viewer-muted); }
+.modes { display: flex; gap: 10px; margin-right: 32px; }
+.viewer .modes button { width: 166px; font-weight: 600; font-size: 16px; line-height: 24px; border-radius: 10px; }
+.viewer .modes button[aria-pressed="true"] { border-color: #e9f2ff; background: #e9f2ff; color: #2563eb; }
+.zoomControls { display: flex; align-items: center; gap: 4px; order: 2; padding: 2px 6px; border: 1px solid var(--viewer-border); border-radius: 8px; background: #f8fafc; }
+.zoomControls button { border: 0; padding: 4px; min-width: 32px; min-height: 36px; background: transparent; font-size: 20px; }
+.zoomControls button:first-child { order: 2; }
+.zoomControls button:last-child { order: 3; border-left: 1px solid var(--viewer-border); border-radius: 0; }
+.zoomControls output { font-size: 12px; min-width: 44px; text-align: center; }
 
 .viewer button {
   min-width: 40px;
@@ -28,15 +39,23 @@
 .viewer button:hover:not(:disabled) { background: var(--viewer-hover); }
 .viewer button:focus-visible { outline: 2px solid var(--viewer-focus); outline-offset: 2px; }
 .viewer button:disabled { opacity: 0.5; cursor: default; }
+.viewer .zoomControls button { border: 0; padding: 4px; min-width: 32px; min-height: 36px; background: transparent; font-size: 20px; }
+.viewer .zoomControls button:last-child { border-left: 1px solid var(--viewer-border); border-radius: 0; }
+.planBody { display: flex; align-items: center; min-width: 0; }
+.workPanel { flex: 0 0 238px; margin-left: 48px; margin-right: 24px; }
+.workPanel button { width: 100%; }
+.screenReaderStatus { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 .hint, .status { color: var(--viewer-muted); font-size: 14px; }
 .status { padding: 12px; border-top: 1px solid var(--viewer-border); }
 
 .stage {
+  flex: 1;
+  min-width: 0;
   position: relative;
   overflow: hidden;
-  height: clamp(320px, 65vh, 900px);
-  background: var(--viewer-background);
+  height: 535px;
+  background: white;
 }
 
 .toolbar button[aria-pressed="true"] { border-color: var(--viewer-focus); background: var(--viewer-hover); }
@@ -53,10 +72,10 @@
 .roomPolygons polygon[data-selected="true"],
 .roomPolygonSelected {
   stroke: var(--viewer-focus, #3b82f6) !important;
-  stroke-width: calc(var(--room-stroke-width, 1.5px) * 2.5) !important;
+  stroke-width: 2 !important;
   stroke-dasharray: none !important;
-  fill: var(--viewer-focus, #3b82f6) !important;
-  fill-opacity: 0.28 !important;
+  fill: white !important;
+  fill-opacity: 0.08 !important;
 }
 .roomLabel {
   position: absolute;
@@ -98,13 +117,12 @@
   pointer-events: auto;
 }
 .viewer .deviceMarker:hover:not(:disabled) { background: transparent; }
-.deviceMarker svg {
-  width: var(--marker-size);
-  height: var(--marker-size);
+.deviceMarker img {
+  width: 20px;
+  height: 20px;
   overflow: visible;
-  filter: drop-shadow(0 1px 1px var(--viewer-muted));
 }
-.deviceMarker:hover svg, .deviceMarker:focus-visible svg { width: var(--marker-hover-size); height: var(--marker-hover-size); }
+.deviceMarker:focus-visible { outline: 2px solid var(--viewer-focus); outline-offset: 2px; }
 .deviceTooltip {
   position: absolute;
   box-sizing: border-box;
@@ -136,9 +154,29 @@
   text-align: center;
 }
 
-.roomPolygons polygon[data-confirmed="true"] { stroke-dasharray: none; }
-.roomPolygons polygon[data-source="manual"] { stroke: #7c3aed; }
+.roomPolygons polygon[data-room-state="default"] { fill: #e2e8f0; fill-opacity: .08; stroke: #64748b; stroke-dasharray: none; }
+.roomPolygons polygon[data-room-state="confirmed"] { fill: #12b983; fill-opacity: .10; stroke: #0d8e64; stroke-dasharray: none; }
+.roomPolygons polygon[data-room-state="review"] { fill: #f09a20; fill-opacity: .12; stroke: #b45309; stroke-dasharray: 4 4; }
+.viewer .deviceMarker[data-selected="true"]::before { content: ""; position: absolute; width: 28px; height: 28px; border: 2px solid #2563eb; border-radius: 4px; }
 .editOverlay { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
 .editPolygon { fill: #2563eb; fill-opacity: .15; stroke: #2563eb; stroke-width: 2; pointer-events: none; }
 .editVertex { fill: white; stroke: #2563eb; stroke-width: 2; cursor: grab; }
 .editVertex:focus { outline: none; stroke-width: 4; }
+.zoneHeight {
+  fill: var(--viewer-text);
+  stroke: var(--viewer-surface);
+  stroke-width: 3px;
+  paint-order: stroke;
+  font-size: 12px;
+}
+.deviceLegend { border-top: 1px solid var(--viewer-border); padding: 24px 20px; font-size: 12px; color: var(--viewer-text); }
+.deviceLegend ul { display: flex; flex-wrap: wrap; gap: 12px 20px; margin: 0 0 8px; padding: 0; list-style: none; }
+.deviceLegend li { display: flex; align-items: center; gap: 6px; }
+.legendSymbol { display: inline-block; width: 20px; height: 20px; flex-shrink: 0; }
+.legendSymbol img { display: block; }
+.deviceLegend ul:last-child { margin-bottom: 0; }
+.ruleLegend { margin: 12px 0 0; color: var(--viewer-muted); }
+.ruleIndicator { position: absolute; top: 0; right: 0; width: 16px; height: 16px; border-radius: 50%; background: var(--viewer-surface); color: var(--viewer-muted); border: 1px solid currentColor; font: 700 12px/14px sans-serif; }
+.ruleIndicator[data-review="true"], .reviewKey { color: var(--bim-color-semantic-warning, #B45309); background: var(--bim-color-semantic-warning-bg, #FFFBEB); }
+@media(max-width: 1200px) { .modes { margin-right: 0; } .viewer .modes button { width: auto; } .workPanel { flex-basis: 190px; margin-left: 16px; margin-right: 16px; } }
+@media(max-width: 767px) { .planBody { flex-direction: column; align-items: stretch; } .stage { flex: auto; height: 420px; } .workPanel { flex: auto; margin: 16px; } }
