@@ -41,6 +41,16 @@ function makeViewer(load: () => Promise<void> = async () => {}) {
 }
 
 describe("drawing viewport adapter", () => {
+  it("focuses a finding in WCS without changing zoom or reloading the DXF", async () => {
+    const { adapter, viewer } = makeViewer();
+    await adapter.load("blob:findings");
+    adapter.focusPoint({ x: 1234, y: -1500 });
+    const [point, width] = vi.mocked(viewer.SetView).mock.calls[0];
+    expect({ x: point.x, y: point.y, width }).toEqual({ x: 234, y: 500, width: 100 });
+    expect(viewer.Load).toHaveBeenCalledOnce();
+    expect(viewer.FitView).not.toHaveBeenCalled();
+    adapter.dispose();
+  });
   it("supplies the self-hosted font again after closing and reopening a drawing", async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const { adapter, viewer } = makeViewer();

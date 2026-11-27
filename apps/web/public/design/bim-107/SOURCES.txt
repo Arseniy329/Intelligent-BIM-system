@@ -1,4 +1,5 @@
 Original, unmodified SVG exports supplied by the project owner on 2026-11-25.
+violation.svg = violation 3.svg (20 x 20), copied byte-for-byte from design/Design materials figma 1 on 2026-11-27. Critical finding marker, original dimensions preserved.
 Figma file: I9LwN7XZgyliKP6yhJwYOT
 Source folder: Design materials figma 1
 Reference screens: Desktop - 6 and Desktop - 10 through 19; final BIM-107 symbol sheet.

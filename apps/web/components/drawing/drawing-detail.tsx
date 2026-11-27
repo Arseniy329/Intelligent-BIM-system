@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchRules } from "@/lib/api/rules";
-import type { DrawingStatus, DrawingDetailStatus } from "@bim/contracts";
+import type { DrawingStatus, DrawingDetailStatus, Finding } from "@bim/contracts";
 import { DrawingViewer, type DrawingViewerProps } from "./drawing-viewer";
 import { EmptyState } from "@/components/ui/empty-state";
 import { drawingApi, drawingErrorMessage, drawingMetadata, downloadLink, fetchDrawingDownload, isDrawingResult, placementReport, processingErrorMessage,
@@ -20,8 +20,13 @@ import { PlanFeaturesPanel } from "./plan-features-panel";
 import { planFeaturesApi } from "@/lib/drawing/plan-features-api";
 import { cn } from "@/lib/utils";
 import workspaceStyles from "./drawing-workspace.module.css";
+import findingsStyles from "./findings-panel.module.css";
+import { FindingsPanel } from "./findings-panel";
+import { useFindings } from "@/lib/drawing/use-findings";
+import { findingTarget } from "@/lib/drawing/findings";
+import type { DrawingPoint, DrawingViewportController } from "@/lib/drawing/viewer-adapter";
 
-export type DrawingTab = "plan" | "rooms" | "rules" | "report";
+export type DrawingTab = "plan" | "rooms" | "rules" | "findings" | "report";
 
 const labels: Record<DrawingStatus | DrawingDetailStatus, string> = {
   pending: "Очікує завантаження", uploaded: "Готове до обробки", processing: "Обробляється",
@@ -77,6 +82,11 @@ function DrawingDetailContent({
   const updateRoomMutation = useUpdateRoomMutation(id);
   const [activeTab, setActiveTab] = useState<DrawingTab>(initialTab);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
+  const [markerActivation, setMarkerActivation] = useState<Pick<Finding, "id" | "severity"> | null>(null);
+  const [controller, setController] = useState<DrawingViewportController | null>(null);
+  const [focusRequest, setFocusRequest] = useState<{ point: DrawingPoint } | null>(null);
+  useEffect(() => { if (focusRequest && controller) controller.focusPoint?.(focusRequest.point); }, [controller, focusRequest]);
   const [layers, setLayers] = useState(INITIAL_PLAN_LAYERS);
   const [mode, setMode] = useState<"rooms" | "devices">("rooms");
   const [editingRoom, setEditingRoom] = useState<Room | null>(null);
@@ -95,7 +105,7 @@ function DrawingDetailContent({
   const rules = useQuery({
     queryKey: ["drawing-rules", id, state.detail.dataUpdatedAt],
     queryFn: ({ signal }) => fetchRules(signal),
-    enabled: !demo && !!loadedResult?.devices.some(device => device.ruleId),
+    enabled: !demo && (!!loadedResult?.devices.some(device => device.ruleId) || activeTab === "findings" && !!loadedResult),
     retry: false, refetchOnWindowFocus: false,
   });
   const editor = usePlanEditor({ drawingId: id, rooms: loadedResult?.rooms ?? [], devices: loadedResult?.devices ?? [], selectRoom: setSelectedRoomId,
@@ -106,6 +116,23 @@ function DrawingDetailContent({
     },
   });
   const [viewerAttempt, setViewerAttempt] = useState(0);
+  const findingsSuspended = state.busy || state.detail.isFetching || state.detail.isError || editor.busy || editor.uncertain || updateRoomMutation.isPending;
+  const findingsApplicable = loadedResult?.drawing.status === "processed";
+  const findings = useFindings(id, state.detail.dataUpdatedAt, !demo && findingsApplicable && !findingsSuspended);
+  const currentFindings = !demo && !findingsSuspended && !findings.isFetching && !findings.isError ? findings.data ?? [] : [];
+  const effectiveFindingId = currentFindings.some(f => f.id === selectedFindingId) ? selectedFindingId : null;
+  if (selectedFindingId && findings.isSuccess && !findings.isFetching && !findingsSuspended && !findings.data.some(f => f.id === selectedFindingId)) {
+    setSelectedFindingId(null);
+    setFocusRequest(null);
+  }
+  const selectFinding = (finding: Finding) => {
+    if (editor.blocked) return;
+    setSelectedFindingId(finding.id);
+    setActiveTab("findings");
+    setLayers(previous => ({ ...previous, findings: true }));
+    const target = findingTarget(finding, loadedResult?.rooms ?? [], loadedResult?.devices ?? []);
+    setFocusRequest(target ? { point: target.point } : null);
+  };
   const [confirmReprocess, setConfirmReprocess] = useState(false);
   const navigateTab = (tab: DrawingTab) => {
     if (!editor.blocked) setActiveTab(tab);
@@ -323,6 +350,8 @@ function DrawingDetailContent({
         >
           Правила й норми
         </button>
+        {!demo && <button disabled={editor.blocked} role="tab" type="button" aria-selected={activeTab === "findings"}
+          onClick={() => navigateTab("findings")} className={cn("px-4 py-2 text-sm border-b-2 -mb-px", activeTab === "findings" ? "border-blue-600 text-blue-600 font-semibold" : "border-transparent text-slate-600")}>Порушення</button>}
         <button
           disabled={editor.blocked}
           role="tab"
@@ -341,9 +370,9 @@ function DrawingDetailContent({
         {result && <span className={workspaceStyles.tabSummary}>{mappedRooms.length} {new Intl.PluralRules("uk").select(mappedRooms.length) === "one" ? "кімната" : new Intl.PluralRules("uk").select(mappedRooms.length) === "few" ? "кімнати" : "кімнат"}</span>}
       </div>
 
-      {activeTab === "plan" && (
+      {(activeTab === "plan" || activeTab === "findings") && (
         <div className="space-y-5">
-          <div className={workspaceStyles.sectionTitle}><h2>План</h2><p>Натисніть на кімнату, щоб побачити деталі</p></div>
+          <div className={workspaceStyles.sectionTitle}><h2>{activeTab === "findings" ? "Результати перевірки" : "План"}</h2><p>{activeTab === "findings" ? "Виберіть порушення у списку або на плані" : "Натисніть на кімнату, щоб побачити деталі"}</p></div>
           {result && <div className={workspaceStyles.summary}>
             <span><strong>{result.rooms.length}</strong> приміщень</span>
             <span><strong>{result.devices.filter(d => d.type === "smoke_detector" || d.type === "heat_detector").length}</strong> сповіщувачів</span>
@@ -422,10 +451,15 @@ function DrawingDetailContent({
           <section aria-label="План креслення" className="min-w-0 space-y-3">
             {rules.isFetching && <p role="status">Завантаження статусів правил…</p>}
             {rules.isError && <p role="alert">Не вдалося отримати статуси правил. Позначення «?» не означає, що правило перевірене. <button className={button} onClick={() => void rules.refetch()}>Повторити завантаження правил</button></p>}
-            <div className={cn(workspaceStyles.planLayout, mode === "rooms" && !demo && workspaceStyles.featureLayout)}>
+            <div className={cn(workspaceStyles.planLayout, activeTab === "findings" ? findingsStyles.layout : mode === "rooms" && !demo && workspaceStyles.featureLayout)}>
             <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
+              onReady={setController} findings={currentFindings} selectedFindingId={effectiveFindingId} onSelectFinding={finding => {
+                if (editor.blocked) return;
+                setMarkerActivation({ id: finding.id, severity: finding.severity });
+                selectFinding(finding);
+              }}
               layers={layers} mode={mode} onModeChange={setMode}
-              workPanel={result && !demo ? <PlanWorkPanel mode={mode} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
+              workPanel={result && !demo && activeTab === "plan" ? <PlanWorkPanel mode={mode} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
                 selectRoom={setSelectedRoomId} devicesEditable={metadata.status === "processed"} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching}
                 onPlace={api.placeDrawing ? state.startPlacement : undefined} placementDisabled={!result.rooms.length || hasPlacementBlocking} onExit={() => setMode("rooms")} /> : undefined}
               zones={features.data?.zones} exits={features.data?.exits}
@@ -433,6 +467,10 @@ function DrawingDetailContent({
               selectedRoomId={selectedRoomId} editor={demo ? undefined : editor} onSelectRoom={setSelectedRoomId} onSelectDevice={editor.selectDevice}
               onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
             <aside className={workspaceStyles.inspector}>
+              {activeTab === "findings" ? <FindingsPanel findings={currentFindings} rooms={result?.rooms ?? []} devices={result?.devices ?? []}
+                selectedId={effectiveFindingId} markerActivation={markerActivation} onSelect={selectFinding} loading={findingsSuspended || findingsApplicable && (findings.isPending || findings.isFetching)}
+                error={findings.error} checked={metadata.status === "processed" && !!result?.rooms.length} retry={() => void findings.refetch()}
+                blocked={editor.blocked} rules={rules.isError || rules.isFetching ? undefined : rules.data} rulesLoading={rules.isFetching} rulesError={rules.isError} retryRules={() => void rules.refetch()} /> : <>
               {result && !demo ? <PlanEditorPanel rules={rules.isError ? undefined : rules.data} mode={mode} onTable={() => navigateTab("rooms")} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
                 selectRoom={setSelectedRoomId} devicesEditable={metadata.status === "processed"} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching} />
                 : <section className={workspaceStyles.detailsCard}><h3>Деталі приміщення</h3><div>
@@ -444,6 +482,8 @@ function DrawingDetailContent({
                 zones={features.data?.zones ?? []} exits={features.data?.exits ?? []} loading={features.isPending || features.isFetching}
                 error={features.isError} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching}
                 retry={() => void features.refetch()} />}
+              </>}
+              {activeTab === "findings" && <PlanLayersPanel rooms={result?.rooms ?? []} devices={result?.devices ?? []} value={layers} onChange={setLayers} />}
             </aside>
             </div>
           </section>
