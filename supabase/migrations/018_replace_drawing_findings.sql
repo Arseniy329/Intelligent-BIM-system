@@ -25,27 +25,17 @@ create index if not exists idx_findings_drawing_id on public.findings(drawing_id
 
 alter table public.findings enable row level security;
 
+revoke all on table public.findings from public, anon, authenticated;
+grant select on table public.findings to authenticated;
+grant all on table public.findings to service_role;
+
 drop policy if exists "findings_own_or_admin" on public.findings;
-create policy "findings_own_or_admin"
+drop policy if exists "findings_select_own_or_admin" on public.findings;
+create policy "findings_select_own_or_admin"
 on public.findings
-for all
+for select
+to authenticated
 using (
-  exists (
-    select 1
-    from public.drawings d
-    where d.id = findings.drawing_id
-      and (
-        d.owner_id = auth.uid()
-        or exists (
-          select 1
-          from public.profiles p
-          where p.id = auth.uid()
-            and p.role = 'admin'
-        )
-      )
-  )
-)
-with check (
   exists (
     select 1
     from public.drawings d
@@ -117,6 +107,7 @@ begin
 end;
 $$;
 
-revoke all on function public.replace_drawing_findings(uuid, jsonb) from public, anon;
+revoke all on function public.replace_drawing_findings(uuid, jsonb)
+  from public, anon, authenticated;
 grant execute on function public.replace_drawing_findings(uuid, jsonb)
-  to authenticated, service_role;
+  to service_role;

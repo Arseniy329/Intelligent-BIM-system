@@ -1263,5 +1263,39 @@ class TestFindingsApiIntegration(unittest.TestCase):
         )
 
 
+class TestFindingsMigrationSecurity(unittest.TestCase):
+    def test_migration_018_enforces_read_only_rls_and_service_role_rpc(self) -> None:
+        migration_path = (
+            API_DIR.parent.parent
+            / "supabase"
+            / "migrations"
+            / "018_replace_drawing_findings.sql"
+        )
+        sql = migration_path.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        self.assertIn("for select", normalized)
+        self.assertNotIn("for all", normalized)
+        self.assertIn(
+            "revoke all on table public.findings from public, anon, authenticated",
+            normalized,
+        )
+        self.assertIn(
+            "grant select on table public.findings to authenticated", normalized
+        )
+        self.assertIn("grant all on table public.findings to service_role", normalized)
+        self.assertIn(
+            "revoke all on function public.replace_drawing_findings(uuid, jsonb) "
+            "from public, anon, authenticated",
+            normalized,
+        )
+        self.assertIn(
+            "grant execute on function public.replace_drawing_findings(uuid, jsonb) "
+            "to service_role",
+            normalized,
+        )
+        self.assertNotIn("to authenticated, service_role", normalized)
+
+
 if __name__ == "__main__":
     unittest.main()
