@@ -18,7 +18,7 @@ from src.core.auth import CurrentUser, get_current_user
 from src.infrastructure.supabase import get_supabase_client
 from src.modules.drawings.access import all_rows, first_row, get_drawing_for_user
 from src.modules.drawings.service import get_unit_scale_m
-from src.modules.findings.service import evaluate_and_persist_findings
+from src.modules.findings.service import sync_findings_after_mutation
 from src.modules.rooms.service import (
     get_room_types,
     room_from_row,
@@ -141,7 +141,7 @@ async def update_room(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Room not found"
         )
-    evaluate_and_persist_findings(supabase, str(drawing["id"]), drawing_row=drawing)
+    sync_findings_after_mutation(supabase, str(drawing["id"]), drawing_row=drawing)
     return room_from_row(updated)
 
 
@@ -179,7 +179,7 @@ async def create_room(
         "updated_at": now,
     }
     inserted = first_row(supabase.table("rooms").insert(values).execute())
-    evaluate_and_persist_findings(supabase, str(drawing_id), drawing_row=drawing)
+    sync_findings_after_mutation(supabase, str(drawing_id), drawing_row=drawing)
     return room_from_row(inserted if inserted is not None else values)
 
 
@@ -196,7 +196,7 @@ async def delete_room(
         "room_id", str(room_id)
     ).execute()
     supabase.table("rooms").delete().eq("id", str(room_id)).execute()
-    evaluate_and_persist_findings(supabase, str(drawing["id"]), drawing_row=drawing)
+    sync_findings_after_mutation(supabase, str(drawing["id"]), drawing_row=drawing)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -215,7 +215,7 @@ async def confirm_rooms(
         .eq("drawing_id", str(drawing_id))
         .execute()
     )
-    evaluate_and_persist_findings(supabase, str(drawing_id), drawing_row=drawing)
+    sync_findings_after_mutation(supabase, str(drawing_id), drawing_row=drawing)
     return [room_from_row(row) for row in rows if len(row_points(row)) >= 3]
 
 
@@ -312,9 +312,7 @@ async def create_room_zone(
         "updated_at": now,
     }
     inserted = first_row(supabase.table("room_zones").insert(values).execute())
-    evaluate_and_persist_findings(
-        supabase, str(room["drawing_id"]), drawing_row=drawing
-    )
+    sync_findings_after_mutation(supabase, str(room["drawing_id"]), drawing_row=drawing)
     return zone_from_row(inserted if inserted is not None else values)
 
 
@@ -356,9 +354,7 @@ async def update_room_zone(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Zone not found"
         )
-    evaluate_and_persist_findings(
-        supabase, str(room["drawing_id"]), drawing_row=drawing
-    )
+    sync_findings_after_mutation(supabase, str(room["drawing_id"]), drawing_row=drawing)
     return zone_from_row(updated)
 
 
@@ -371,7 +367,5 @@ async def delete_room_zone(
     _, room, drawing = _get_zone_for_user(supabase, zone_id, current_user)
 
     supabase.table("room_zones").delete().eq("id", str(zone_id)).execute()
-    evaluate_and_persist_findings(
-        supabase, str(room["drawing_id"]), drawing_row=drawing
-    )
+    sync_findings_after_mutation(supabase, str(room["drawing_id"]), drawing_row=drawing)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

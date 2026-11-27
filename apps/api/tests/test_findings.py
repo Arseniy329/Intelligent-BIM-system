@@ -20,7 +20,7 @@ from src.infrastructure.supabase import get_supabase_client
 from src.main import app
 from src.modules.cad.exits import find_door_points, find_exit_points
 from src.modules.cad.parser import parse_dxf_rooms_with_scale
-from src.modules.findings.service import evaluate_drawing_findings
+from src.modules.findings.service import _persist_findings, evaluate_drawing_findings
 from tests.fakes import FakeTable, fake_supabase
 
 FIXTURES_DXF1 = API_DIR / "tests" / "fixtures" / "test_drawing_dxf"
@@ -112,10 +112,27 @@ def _dxf_circles_as_device_rows(
 class _SchemaErrorTable(FakeTable):
     """FakeTable raising PostgREST missing-table error PGRST205."""
 
+    def __init__(
+        self, rows: list[dict[str, Any]], table_name: str = "findings"
+    ) -> None:
+        super().__init__(rows)
+        self._table_name = table_name
+
     def execute(self) -> Any:
         raise RuntimeError(
-            "PGRST205: Could not find the table 'public.findings' in the schema cache"
+            f"PGRST205: Could not find the table 'public.{self._table_name}' "
+            "in the schema cache"
         )
+
+
+class _FailingInsertFindingsTable(FakeTable):
+    """FakeTable that fails during insert to test non-destructive persistence."""
+
+    def execute(self) -> Any:
+        if self._operation == "insert":
+            self._reset()
+            raise RuntimeError("simulated insert failure")
+        return super().execute()
 
 
 class TestFindingsEngine(unittest.TestCase):
@@ -791,9 +808,15 @@ class TestFindingsApiIntegration(unittest.TestCase):
             )
         )
 
-        # DELETE smoke detector -> critical missing detector finding
+        # DELETE smoke detector -> critical missing detector persisted BEFORE GET
         del_resp = self.client.delete(f"/api/v1/devices/{self.device_id}")
         self.assertEqual(del_resp.status_code, 204)
+        self.assertTrue(
+            any(
+                row["severity"] == "critical" and row["room_id"] == self.room_id
+                for row in self.findings_table.rows
+            )
+        )
         after_delete = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
         self.assertEqual(after_delete.status_code, 200)
         self.assertTrue(
@@ -804,12 +827,19 @@ class TestFindingsApiIntegration(unittest.TestCase):
         )
         self.assertEqual(len(self.findings_table.rows), len(after_delete.json()))
 
-        # PATCH room height to null -> insufficient_data finding
+        # PATCH room height to null -> insufficient_data persisted BEFORE GET
         patch_room = self.client.patch(
             f"/api/v1/rooms/{self.room_id}",
             json={"height": None},
         )
         self.assertEqual(patch_room.status_code, 200)
+        self.assertTrue(
+            any(
+                row["severity"] == "insufficient_data"
+                and "Не введено висоту приміщення" in row["message"]
+                for row in self.findings_table.rows
+            )
+        )
         after_room_patch = self.client.get(
             f"/api/v1/drawings/{self.drawing_id}/findings"
         )
@@ -842,6 +872,264 @@ class TestFindingsApiIntegration(unittest.TestCase):
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["severity"], "critical")
         Finding.model_validate(data[0])
+
+    def test_get_findings_is_strictly_read_only(self) -> None:
+        # 1. With unmigrated findings table (evaluates in memory, zero writes)
+        self.supabase = fake_supabase(
+            {
+                "drawings": self.drawings_table,
+                "rooms": self.rooms_table,
+                "devices": FakeTable([self.sounder_row]),
+                "rules": self.rules_table,
+                "room_zones": self.zones_table,
+                "exits": self.exits_table,
+                "passages": self.passages_table,
+                "findings": _SchemaErrorTable([]),
+            }
+        )
+        resp = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
+        self.assertEqual(resp.status_code, 200)
+        for table in (
+            self.drawings_table,
+            self.rooms_table,
+            self.rules_table,
+            self.zones_table,
+            self.exits_table,
+            self.passages_table,
+        ):
+            self.assertEqual(table.inserts, [])
+            self.assertEqual(table.updates, [])
+            self.assertEqual(table.deleted, [])
+        self.supabase.rpc.assert_not_called()
+
+        # 2. With persisted snapshot in public.findings (reads snapshot, zero writes)
+        snapshot_id = str(uuid4())
+        persisted_findings = FakeTable(
+            [
+                {
+                    "id": snapshot_id,
+                    "drawing_id": self.drawing_id,
+                    "room_id": self.room_id,
+                    "device_id": None,
+                    "rule_id": self.smoke_rule["id"],
+                    "severity": "critical",
+                    "message": "Збережене порушення",
+                    "document": "ДСТУ EN 54-14:2021",
+                    "clause": "6.5.2, таблиця A.1",
+                    "rule_status": "verified",
+                }
+            ]
+        )
+        self.supabase = fake_supabase(
+            {
+                "drawings": self.drawings_table,
+                "rooms": self.rooms_table,
+                "devices": self.devices_table,
+                "rules": self.rules_table,
+                "room_zones": self.zones_table,
+                "exits": self.exits_table,
+                "passages": self.passages_table,
+                "findings": persisted_findings,
+            }
+        )
+        resp_persisted = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
+        self.assertEqual(resp_persisted.status_code, 200)
+        self.assertEqual(len(resp_persisted.json()), 1)
+        self.assertEqual(resp_persisted.json()[0]["id"], snapshot_id)
+        self.assertEqual(persisted_findings.inserts, [])
+        self.assertEqual(persisted_findings.updates, [])
+        self.assertEqual(persisted_findings.deleted, [])
+        self.supabase.rpc.assert_not_called()
+
+    def test_atomic_persistence_preserves_previous_snapshot_on_failure(self) -> None:
+        previous_row = {
+            "id": str(uuid4()),
+            "drawing_id": self.drawing_id,
+            "room_id": self.room_id,
+            "device_id": None,
+            "rule_id": self.smoke_rule["id"],
+            "severity": "critical",
+            "message": "Попередній знімок аудиту",
+            "document": "ДСТУ EN 54-14:2021",
+            "clause": "6.5.2",
+            "rule_status": "verified",
+        }
+        new_finding = Finding(
+            id=str(uuid4()),
+            drawingId=self.drawing_id,
+            roomId=self.room_id,
+            deviceId=None,
+            ruleId=self.smoke_rule["id"],
+            severity=FindingSeverity.warning,
+            message="Нове попередження",
+            document="ДСТУ EN 54-14:2021",
+            clause="6.5.2",
+            ruleStatus="verified",
+        )
+
+        # 1. RPC failure keeps previous snapshot intact
+        findings_tbl_rpc = FakeTable([dict(previous_row)])
+
+        def failing_rpc(_params: dict[str, Any]) -> Any:
+            raise RuntimeError("simulated RPC failure")
+
+        supa_rpc = fake_supabase(
+            {"findings": findings_tbl_rpc},
+            rpc={"replace_drawing_findings": failing_rpc},
+        )
+        with self.assertRaises(RuntimeError):
+            _persist_findings(supa_rpc, self.drawing_id, [new_finding])
+        self.assertEqual(len(findings_tbl_rpc.rows), 1)
+        self.assertEqual(findings_tbl_rpc.rows[0]["id"], previous_row["id"])
+        self.assertEqual(findings_tbl_rpc.deleted, [])
+
+        # 2. Fallback insert failure keeps previous snapshot intact
+        findings_tbl_fallback = _FailingInsertFindingsTable([dict(previous_row)])
+        supa_fallback = fake_supabase({"findings": findings_tbl_fallback})
+        with self.assertRaises(RuntimeError):
+            _persist_findings(supa_fallback, self.drawing_id, [new_finding])
+        self.assertEqual(len(findings_tbl_fallback.rows), 1)
+        self.assertEqual(findings_tbl_fallback.rows[0]["id"], previous_row["id"])
+        self.assertEqual(findings_tbl_fallback.deleted, [])
+
+    def test_place_isolates_audit_persistence_failure(self) -> None:
+        self.drawing_row["status"] = "processing"
+        self.drawing_row["storage_path"] = f"{self.user_id}/{self.drawing_id}/src.dxf"
+        previous_row = {
+            "id": str(uuid4()),
+            "drawing_id": self.drawing_id,
+            "room_id": self.room_id,
+            "device_id": None,
+            "rule_id": None,
+            "severity": "critical",
+            "message": "Застарілий знімок",
+            "document": None,
+            "clause": None,
+            "rule_status": None,
+        }
+        findings_tbl = FakeTable([previous_row])
+
+        def failing_rpc(_params: dict[str, Any]) -> Any:
+            raise RuntimeError("audit DB down")
+
+        self.supabase = fake_supabase(
+            {
+                "drawings": self.drawings_table,
+                "rooms": self.rooms_table,
+                "devices": self.devices_table,
+                "rules": self.rules_table,
+                "room_zones": self.zones_table,
+                "exits": self.exits_table,
+                "passages": self.passages_table,
+                "findings": findings_tbl,
+            },
+            rpc={"replace_drawing_findings": failing_rpc},
+        )
+
+        with patch(
+            "src.modules.drawings.router.generate_and_upload_result_dxf",
+            return_value=f"{self.user_id}/{self.drawing_id}/result.dxf",
+        ):
+            resp = self.client.post(f"/api/v1/drawings/{self.drawing_id}/place")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "processed")
+        self.assertTrue(body["result_path"].endswith("/result.dxf"))
+        self.assertEqual(body["audit_status"], "failed")
+        self.assertIn("audit_warning", body)
+        self.assertEqual(self.drawing_row["status"], "processed")
+        self.assertEqual(self.drawing_row["placement_report"]["audit_status"], "failed")
+
+        # GET /findings must ignore the stale snapshot when audit_status == "failed"
+        get_resp = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
+        self.assertEqual(get_resp.status_code, 200)
+        self.assertFalse(any(f["id"] == previous_row["id"] for f in get_resp.json()))
+
+    def test_missing_data_and_unprocessed_never_return_empty_list(self) -> None:
+        # 1. Mandatory table read error (rooms PGRST205) -> 503
+        self.supabase = fake_supabase(
+            {
+                "drawings": self.drawings_table,
+                "rooms": _SchemaErrorTable([], "rooms"),
+                "devices": self.devices_table,
+                "rules": self.rules_table,
+            }
+        )
+        resp_rooms_err = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
+        self.assertEqual(resp_rooms_err.status_code, 503)
+
+        # 2. Mandatory table read error (rules PGRST205) -> 503
+        self.supabase = fake_supabase(
+            {
+                "drawings": self.drawings_table,
+                "rooms": self.rooms_table,
+                "devices": self.devices_table,
+                "rules": _SchemaErrorTable([], "rules"),
+            }
+        )
+        resp_rules_err = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
+        self.assertEqual(resp_rules_err.status_code, 503)
+
+        # 3. Unprocessed drawing (uploaded / processing) -> insufficient_data (never [])
+        for raw_status in ("uploaded", "processing"):
+            self.drawing_row["status"] = raw_status
+            self.supabase = fake_supabase(
+                {
+                    "drawings": self.drawings_table,
+                    "rooms": self.rooms_table,
+                    "devices": self.devices_table,
+                    "rules": self.rules_table,
+                }
+            )
+            resp_unproc = self.client.get(
+                f"/api/v1/drawings/{self.drawing_id}/findings"
+            )
+            self.assertEqual(resp_unproc.status_code, 200)
+            data = resp_unproc.json()
+            self.assertEqual(len(data), 1)
+            self.assertEqual(data[0]["severity"], "insufficient_data")
+
+        # 4. Missing optional exits table -> insufficient_data for MCP (never [])
+        self.drawing_row["status"] = "processed"
+        self.supabase = fake_supabase(
+            {
+                "drawings": self.drawings_table,
+                "rooms": self.rooms_table,
+                "devices": self.devices_table,
+                "rules": self.rules_table,
+                "room_zones": self.zones_table,
+                "exits": _SchemaErrorTable([], "exits"),
+                "passages": self.passages_table,
+                "findings": FakeTable([]),
+            }
+        )
+        resp_no_exits = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
+        self.assertEqual(resp_no_exits.status_code, 200)
+        self.assertTrue(
+            any(
+                f["severity"] == "insufficient_data"
+                and "таблиця виходів/проходів відсутня" in f["message"]
+                for f in resp_no_exits.json()
+            )
+        )
+
+        # 5. Processed and compliant with all tables available -> []
+        self.supabase = fake_supabase(
+            {
+                "drawings": self.drawings_table,
+                "rooms": self.rooms_table,
+                "devices": self.devices_table,
+                "rules": self.rules_table,
+                "room_zones": self.zones_table,
+                "exits": self.exits_table,
+                "passages": self.passages_table,
+                "findings": FakeTable([]),
+            }
+        )
+        resp_clean = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
+        self.assertEqual(resp_clean.status_code, 200)
+        self.assertEqual(resp_clean.json(), [])
 
 
 if __name__ == "__main__":

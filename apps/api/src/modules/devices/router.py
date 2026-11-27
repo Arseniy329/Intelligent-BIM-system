@@ -20,7 +20,7 @@ from src.core.auth import CurrentUser, get_current_user
 from src.infrastructure.supabase import get_supabase_client
 from src.modules.drawings.access import first_row, get_drawing_for_user
 from src.modules.drawings.service import generate_and_upload_result_dxf
-from src.modules.findings.service import evaluate_and_persist_findings
+from src.modules.findings.service import sync_findings_after_mutation
 
 router = APIRouter(tags=["devices"])
 
@@ -136,7 +136,7 @@ async def create_device(
     supabase: Annotated[Client, Depends(get_supabase_client)],
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Device:
-    _get_editable_drawing(supabase, drawing_id, current_user)
+    drawing = _get_editable_drawing(supabase, drawing_id, current_user)
     _check_room_in_drawing(supabase, payload.roomId, str(drawing_id))
 
     values: dict[str, Any] = {
@@ -151,7 +151,7 @@ async def create_device(
     }
     inserted = first_row(supabase.table("devices").insert(values).execute())
     _regenerate_result(supabase, str(drawing_id))
-    evaluate_and_persist_findings(supabase, str(drawing_id))
+    sync_findings_after_mutation(supabase, str(drawing_id), drawing_row=drawing)
     return device_from_row(inserted if inserted is not None else values)
 
 
@@ -211,7 +211,7 @@ async def update_device(
             status_code=status.HTTP_404_NOT_FOUND, detail="Device not found"
         )
     _regenerate_result(supabase, drawing_id)
-    evaluate_and_persist_findings(supabase, drawing_id)
+    sync_findings_after_mutation(supabase, drawing_id)
     return device_from_row(updated)
 
 
@@ -226,5 +226,5 @@ async def delete_device(
     supabase.table("devices").delete().eq("id", str(device_id)).execute()
     drawing_id = str(device["drawing_id"])
     _regenerate_result(supabase, drawing_id)
-    evaluate_and_persist_findings(supabase, drawing_id)
+    sync_findings_after_mutation(supabase, drawing_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

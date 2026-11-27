@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from fastapi import HTTPException, status
 from shapely.geometry import LineString, Polygon
 from shapely.geometry import Point as ShapelyPoint
 from shapely.ops import unary_union
@@ -22,7 +23,7 @@ from supabase import Client
 from src.contracts.generated import Finding, FindingRuleStatus, FindingSeverity
 from src.contracts.norms import is_disallowed_document
 from src.modules.drawings.access import all_rows
-from src.modules.drawings.service import is_missing_schema_error, stored_unit_scale_m
+from src.modules.drawings.service import stored_unit_scale_m
 from src.modules.placement.manual_call_points import (
     ROUTE_UNCONFIRMED,
     CallPointRoom,
@@ -74,7 +75,7 @@ class _DevicePoint:
     y_m: float
 
 
-def _is_undefined_column_error(exc: Exception) -> bool:
+def _error_haystack(exc: Exception) -> str:
     parts = [str(exc)]
     for attr in ("code", "message", "details", "hint"):
         val = getattr(exc, attr, None)
@@ -82,18 +83,36 @@ def _is_undefined_column_error(exc: Exception) -> bool:
             parts.append(str(val))
     for arg in getattr(exc, "args", ()):
         parts.append(str(arg))
-    return "42703" in " ".join(parts)
+    return " ".join(parts).upper()
 
 
-def _is_unavailable_schema_or_fake(exc: Exception) -> bool:
+def _is_missing_table_error(exc: Exception) -> bool:
+    haystack = _error_haystack(exc)
     return (
-        isinstance(exc, KeyError)
-        or is_missing_schema_error(exc)
-        or _is_undefined_column_error(exc)
+        "PGRST205" in haystack
+        or "42P01" in haystack
+        or "DOES NOT EXIST" in haystack
+        or "COULD NOT FIND THE TABLE" in haystack
     )
 
 
-def _safe_select_rows(
+def _is_missing_column_error(exc: Exception) -> bool:
+    haystack = _error_haystack(exc)
+    return "PGRST204" in haystack or "42703" in haystack
+
+
+def _is_missing_rpc_error(exc: Exception) -> bool:
+    if isinstance(exc, KeyError):
+        return True
+    haystack = _error_haystack(exc)
+    return (
+        "PGRST202" in haystack
+        or "42883" in haystack
+        or "COULD NOT FIND THE FUNCTION" in haystack
+    )
+
+
+def _select_mandatory_rows(
     supabase: Client,
     table_name: str,
     *,
@@ -105,10 +124,27 @@ def _safe_select_rows(
             query = query.eq("drawing_id", drawing_id)
         response = query.execute()
     except Exception as exc:
-        if _is_unavailable_schema_or_fake(exc):
-            return []
-        raise
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Аудит недоступний: не вдалося прочитати обов'язкові дані креслення",
+        ) from exc
     return all_rows(response)
+
+
+def _select_optional_rows(
+    supabase: Client,
+    table_name: str,
+    *,
+    drawing_id: str | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    try:
+        query = supabase.table(table_name).select("*")
+        if drawing_id is not None:
+            query = query.eq("drawing_id", drawing_id)
+        response = query.execute()
+    except Exception:
+        return [], False
+    return all_rows(response), True
 
 
 def _finding_id(*parts: object) -> str:
@@ -244,7 +280,18 @@ def _make_finding(
     details: dict[str, Any] | None = None,
 ) -> Finding:
     return Finding(
-        id=_finding_id(drawing_uuid, *key_parts),
+        id=_finding_id(
+            drawing_uuid,
+            *key_parts,
+            severity.value,
+            message,
+            room_id,
+            device_id,
+            rule_id,
+            document,
+            clause,
+            rule_status.value if rule_status else None,
+        ),
         drawingId=drawing_uuid,
         roomId=room_id,
         deviceId=device_id,
@@ -1391,6 +1438,9 @@ def evaluate_drawing_findings(
     exit_rows: Sequence[Mapping[str, Any]] = (),
     passage_rows: Sequence[Mapping[str, Any]] = (),
     unit_scale_m: float | None = None,
+    exits_available: bool = True,
+    passages_available: bool = True,
+    zones_available: bool = True,
 ) -> list[Finding]:
     """Evaluate all fire-safety compliance checks for a drawing layout."""
     drawing_uuid = UUID(str(drawing_id))
@@ -1399,6 +1449,15 @@ def evaluate_drawing_findings(
     devices = _parse_devices(device_rows, scale)
 
     findings: list[Finding] = []
+    if not zones_available:
+        findings.append(
+            _make_finding(
+                drawing_uuid=drawing_uuid,
+                key_parts=("zones", "table_unavailable"),
+                severity=FindingSeverity.insufficient_data,
+                message="Аудит зон приміщень недоступний: таблиця зон відсутня",
+            )
+        )
     emitted_conflict_keys: set[tuple[str, str, tuple[str, ...]]] = set()
     emitted_unverified: set[tuple[str, str | None]] = set()
 
@@ -1628,21 +1687,72 @@ def evaluate_drawing_findings(
             )
 
     mcp_devices = [d for d in devices if d.type == "manual_call_point"]
-    findings.extend(
-        _evaluate_mcp_findings(
-            drawing_uuid=drawing_uuid,
-            room_rows=room_rows,
-            exit_rows=exit_rows,
-            passage_rows=passage_rows,
-            mcp_devices=mcp_devices,
-            valid_rules=valid_rules,
-            unit_scale_m=scale,
-            emitted_conflict_keys=emitted_conflict_keys,
-            emitted_unverified=emitted_unverified,
+    if not exits_available or not passages_available:
+        findings.append(
+            _make_finding(
+                drawing_uuid=drawing_uuid,
+                key_parts=("mcp", "tables_unavailable"),
+                severity=FindingSeverity.insufficient_data,
+                message=(
+                    "Аудит ручних сповіщувачів недоступний: "
+                    "таблиця виходів/проходів відсутня"
+                ),
+            )
         )
-    )
+    else:
+        findings.extend(
+            _evaluate_mcp_findings(
+                drawing_uuid=drawing_uuid,
+                room_rows=room_rows,
+                exit_rows=exit_rows,
+                passage_rows=passage_rows,
+                mcp_devices=mcp_devices,
+                valid_rules=valid_rules,
+                unit_scale_m=scale,
+                emitted_conflict_keys=emitted_conflict_keys,
+                emitted_unverified=emitted_unverified,
+            )
+        )
 
     return findings
+
+
+def _finding_from_db_row(row: Mapping[str, Any]) -> Finding:
+    raw_status = row.get("rule_status")
+    rule_status = _normalize_rule_status(raw_status) if raw_status is not None else None
+    return Finding(
+        id=str(row["id"]),
+        drawingId=UUID(str(row["drawing_id"])),
+        roomId=str(row["room_id"]) if row.get("room_id") else None,
+        deviceId=str(row["device_id"]) if row.get("device_id") else None,
+        ruleId=str(row["rule_id"]) if row.get("rule_id") else None,
+        severity=FindingSeverity(str(row["severity"])),
+        message=str(row["message"]),
+        document=str(row["document"]) if row.get("document") is not None else None,
+        clause=str(row["clause"]) if row.get("clause") is not None else None,
+        ruleStatus=rule_status,
+        conflictDetails=(
+            dict(row["conflict_details"])
+            if isinstance(row.get("conflict_details"), Mapping)
+            else None
+        ),
+        details=(
+            dict(row["details"]) if isinstance(row.get("details"), Mapping) else None
+        ),
+    )
+
+
+def _unprocessed_finding(
+    drawing_id: str, drawing_status: str, room_count: int
+) -> Finding:
+    return _make_finding(
+        drawing_uuid=UUID(str(drawing_id)),
+        key_parts=("audit_unavailable", drawing_status, room_count),
+        severity=FindingSeverity.insufficient_data,
+        message=(
+            "Аудит недоступний: креслення ще не оброблено або відсутні приміщення"
+        ),
+    )
 
 
 def _finding_to_db_row(finding: Finding, *, include_details: bool) -> dict[str, Any]:
@@ -1667,64 +1777,122 @@ def _finding_to_db_row(finding: Finding, *, include_details: bool) -> dict[str, 
 def _persist_findings(
     supabase: Client, drawing_id: str, findings: Sequence[Finding]
 ) -> None:
-    """Persist findings to ``public.findings`` when the table is migrated."""
-    try:
-        supabase.table("findings").delete().eq("drawing_id", drawing_id).execute()
-    except Exception as exc:
-        if _is_unavailable_schema_or_fake(exc):
-            logger.debug("Skipping findings delete for %s: %s", drawing_id, exc)
-            return
-        raise
-
-    if not findings:
-        return
-
+    """Atomically replace persisted findings snapshot for ``drawing_id``."""
     full_rows = [_finding_to_db_row(item, include_details=True) for item in findings]
+
     try:
-        supabase.table("findings").insert(full_rows).execute()
+        supabase.rpc(
+            "replace_drawing_findings",
+            {"p_drawing_id": drawing_id, "p_findings": full_rows},
+        ).execute()
         return
     except Exception as exc:
-        if not _is_unavailable_schema_or_fake(exc):
+        if not _is_missing_rpc_error(exc):
             raise
         logger.debug(
-            "Retrying findings insert without details columns for %s: %s",
+            "replace_drawing_findings RPC unavailable for %s, using safe fallback: %s",
             drawing_id,
             exc,
         )
 
-    core_rows = [_finding_to_db_row(item, include_details=False) for item in findings]
     try:
-        supabase.table("findings").insert(core_rows).execute()
+        existing_resp = (
+            supabase.table("findings")
+            .select("id")
+            .eq("drawing_id", drawing_id)
+            .execute()
+        )
     except Exception as exc:
-        if _is_unavailable_schema_or_fake(exc):
-            logger.debug("Skipping findings insert for %s: %s", drawing_id, exc)
+        if isinstance(exc, KeyError) or _is_missing_table_error(exc):
+            logger.debug("Skipping findings persistence for %s: %s", drawing_id, exc)
             return
         raise
 
+    old_ids = [str(row["id"]) for row in all_rows(existing_resp) if row.get("id")]
+    old_id_set = set(old_ids)
+    new_id_set = {str(row["id"]) for row in full_rows}
 
-def evaluate_and_persist_findings(
+    rows_to_insert = [row for row in full_rows if str(row["id"]) not in old_id_set]
+    stale_ids = [oid for oid in old_ids if oid not in new_id_set]
+
+    if rows_to_insert:
+        try:
+            supabase.table("findings").insert(rows_to_insert).execute()
+        except Exception as exc:
+            if not _is_missing_column_error(exc):
+                raise
+            core_rows = [
+                _finding_to_db_row(item, include_details=False)
+                for item in findings
+                if item.id not in old_id_set
+            ]
+            supabase.table("findings").insert(core_rows).execute()
+
+    if stale_ids:
+        supabase.table("findings").delete().in_("id", stale_ids).execute()
+
+
+def get_findings_for_drawing(
     supabase: Client,
     drawing_id: str,
     *,
     drawing_row: Mapping[str, Any] | None = None,
-    persist: bool = True,
 ) -> list[Finding]:
-    """Load drawing state from Supabase, compute findings, and persist safely."""
+    """Read-only compliance audit view for ``GET /drawings/{id}/findings``."""
     resolved_drawing = drawing_row
     if resolved_drawing is None:
-        rows = _safe_select_rows(supabase, "drawings")
+        rows = _select_mandatory_rows(supabase, "drawings")
         resolved_drawing = next(
             (r for r in rows if str(r.get("id")) == str(drawing_id)), None
         )
+    if resolved_drawing is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Аудит недоступний: не вдалося прочитати обов'язкові дані креслення",
+        )
 
-    room_rows = _safe_select_rows(supabase, "rooms", drawing_id=drawing_id)
-    device_rows = _safe_select_rows(supabase, "devices", drawing_id=drawing_id)
-    zone_rows = _safe_select_rows(supabase, "room_zones", drawing_id=drawing_id)
-    exit_rows = _safe_select_rows(supabase, "exits", drawing_id=drawing_id)
-    passage_rows = _safe_select_rows(supabase, "passages", drawing_id=drawing_id)
-    rule_rows = _safe_select_rows(supabase, "rules")
+    room_rows = _select_mandatory_rows(supabase, "rooms", drawing_id=drawing_id)
+    device_rows = _select_mandatory_rows(supabase, "devices", drawing_id=drawing_id)
+    rule_rows = _select_mandatory_rows(supabase, "rules")
 
-    findings = evaluate_drawing_findings(
+    drawing_status = str(resolved_drawing.get("status") or "")
+    if drawing_status != "processed" or len(room_rows) == 0:
+        return [_unprocessed_finding(drawing_id, drawing_status, len(room_rows))]
+
+    zone_rows, zones_available = _select_optional_rows(
+        supabase, "room_zones", drawing_id=drawing_id
+    )
+    exit_rows, exits_available = _select_optional_rows(
+        supabase, "exits", drawing_id=drawing_id
+    )
+    passage_rows, passages_available = _select_optional_rows(
+        supabase, "passages", drawing_id=drawing_id
+    )
+
+    placement_report = resolved_drawing.get("placement_report")
+    audit_failed = (
+        isinstance(placement_report, Mapping)
+        and placement_report.get("audit_status") == "failed"
+    )
+
+    if not audit_failed:
+        try:
+            persisted_resp = (
+                supabase.table("findings")
+                .select("*")
+                .eq("drawing_id", drawing_id)
+                .execute()
+            )
+            persisted_rows = all_rows(persisted_resp)
+        except Exception as exc:
+            if not (isinstance(exc, KeyError) or _is_missing_table_error(exc)):
+                raise
+            persisted_rows = []
+
+        if persisted_rows:
+            return [_finding_from_db_row(row) for row in persisted_rows]
+
+    return evaluate_drawing_findings(
         drawing_id=drawing_id,
         drawing_row=resolved_drawing,
         room_rows=room_rows,
@@ -1733,7 +1901,122 @@ def evaluate_and_persist_findings(
         zone_rows=zone_rows,
         exit_rows=exit_rows,
         passage_rows=passage_rows,
+        exits_available=exits_available,
+        passages_available=passages_available,
+        zones_available=zones_available,
     )
+
+
+def evaluate_and_persist_findings(
+    supabase: Client,
+    drawing_id: str,
+    *,
+    drawing_row: Mapping[str, Any] | None = None,
+    room_rows: Sequence[Mapping[str, Any]] | None = None,
+    device_rows: Sequence[Mapping[str, Any]] | None = None,
+    rule_rows: Sequence[Mapping[str, Any]] | None = None,
+    zone_rows: Sequence[Mapping[str, Any]] | None = None,
+    exit_rows: Sequence[Mapping[str, Any]] | None = None,
+    passage_rows: Sequence[Mapping[str, Any]] | None = None,
+    persist: bool = True,
+) -> list[Finding]:
+    """Compute findings from drawing state and atomically persist snapshot."""
+    resolved_drawing = drawing_row
+    if resolved_drawing is None:
+        rows = _select_mandatory_rows(supabase, "drawings")
+        resolved_drawing = next(
+            (r for r in rows if str(r.get("id")) == str(drawing_id)), None
+        )
+    if resolved_drawing is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Аудит недоступний: не вдалося прочитати обов'язкові дані креслення",
+        )
+
+    resolved_rooms = (
+        list(room_rows)
+        if room_rows is not None
+        else _select_mandatory_rows(supabase, "rooms", drawing_id=drawing_id)
+    )
+    resolved_devices = (
+        list(device_rows)
+        if device_rows is not None
+        else _select_mandatory_rows(supabase, "devices", drawing_id=drawing_id)
+    )
+    resolved_rules = (
+        list(rule_rows)
+        if rule_rows is not None
+        else _select_mandatory_rows(supabase, "rules")
+    )
+
+    drawing_status = str(resolved_drawing.get("status") or "")
+    if drawing_status != "processed" or len(resolved_rooms) == 0:
+        findings = [
+            _unprocessed_finding(drawing_id, drawing_status, len(resolved_rooms))
+        ]
+    else:
+        resolved_zones: Sequence[Mapping[str, Any]]
+        if zone_rows is not None:
+            resolved_zones, zones_available = zone_rows, True
+        else:
+            resolved_zones, zones_available = _select_optional_rows(
+                supabase, "room_zones", drawing_id=drawing_id
+            )
+        resolved_exits: Sequence[Mapping[str, Any]]
+        if exit_rows is not None:
+            resolved_exits, exits_available = exit_rows, True
+        else:
+            resolved_exits, exits_available = _select_optional_rows(
+                supabase, "exits", drawing_id=drawing_id
+            )
+        resolved_passages: Sequence[Mapping[str, Any]]
+        if passage_rows is not None:
+            resolved_passages, passages_available = passage_rows, True
+        else:
+            resolved_passages, passages_available = _select_optional_rows(
+                supabase, "passages", drawing_id=drawing_id
+            )
+        findings = evaluate_drawing_findings(
+            drawing_id=drawing_id,
+            drawing_row=resolved_drawing,
+            room_rows=resolved_rooms,
+            device_rows=resolved_devices,
+            rule_rows=resolved_rules,
+            zone_rows=resolved_zones,
+            exit_rows=resolved_exits,
+            passage_rows=resolved_passages,
+            exits_available=exits_available,
+            passages_available=passages_available,
+            zones_available=zones_available,
+        )
+
     if persist:
         _persist_findings(supabase, drawing_id, findings)
     return findings
+
+
+def sync_findings_after_mutation(
+    supabase: Client,
+    drawing_id: str,
+    *,
+    drawing_row: Mapping[str, Any] | None = None,
+) -> list[Finding]:
+    """Recompute and persist findings right after a manual edit mutation."""
+    try:
+        return evaluate_and_persist_findings(
+            supabase,
+            drawing_id,
+            drawing_row=drawing_row,
+            persist=True,
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE and isinstance(
+            exc.__cause__, KeyError
+        ):
+            logger.debug(
+                "Skipping findings sync in minimal fake environment for %s: %s",
+                drawing_id,
+                exc.__cause__,
+            )
+            return []
+        raise

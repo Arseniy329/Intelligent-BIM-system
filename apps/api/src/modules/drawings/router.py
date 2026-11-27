@@ -729,19 +729,56 @@ async def place_drawing_devices(
 
         result_storage_path = generate_and_upload_result_dxf(drawing_id, supabase)
 
-        evaluate_and_persist_findings(
-            supabase,
-            drawing_id,
-            drawing_row=drawing_data,
-        )
+        audit_status = "ok"
+        audit_warning: str | None = None
+        try:
+            evaluate_and_persist_findings(
+                supabase,
+                drawing_id,
+                drawing_row={**drawing_data, "status": "processed"},
+                room_rows=[r for r in rooms_data if isinstance(r, dict)],
+                device_rows=new_device_rows,
+                rule_rows=rule_rows,
+                zone_rows=zone_rows,
+                exit_rows=exit_rows,
+                passage_rows=passage_rows,
+            )
+        except Exception as audit_exc:
+            logger.warning(
+                "Compliance audit failed after placement for drawing %s: %s",
+                drawing_id,
+                audit_exc,
+                exc_info=True,
+            )
+            audit_status = "failed"
+            audit_warning = (
+                "Розміщення виконано, але не вдалося зберегти результати перевірки "
+                "відповідності нормам"
+            )
+            placement_report["audit_status"] = audit_status
+            placement_report["audit_warning"] = audit_warning
+            try:
+                supabase.table("drawings").update(
+                    {"placement_report": placement_report}
+                ).eq("id", drawing_id).execute()
+            except Exception:
+                logger.warning(
+                    "Failed to record audit_status=failed in placement_report for %s",
+                    drawing_id,
+                    exc_info=True,
+                )
 
-        return {
+        response_payload: dict[str, Any] = {
             "drawing_id": drawing_id,
             "status": "processed",
             "result_path": result_storage_path,
             "placements": [describe_outcome(outcome) for outcome in outcomes],
             **placement_report,
+            "audit_status": audit_status,
         }
+        if audit_warning is not None:
+            response_payload["audit_warning"] = audit_warning
+        return response_payload
     except Exception as exc:
         if not (
             isinstance(exc, HTTPException)

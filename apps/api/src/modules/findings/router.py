@@ -10,7 +10,7 @@ from src.core.auth import CurrentUser, get_current_user
 from src.infrastructure.supabase import get_supabase_client
 from src.modules.drawings.access import get_drawing_for_user
 from src.modules.findings.schemas import Finding
-from src.modules.findings.service import evaluate_and_persist_findings
+from src.modules.findings.service import get_findings_for_drawing
 
 router = APIRouter(tags=["findings"])
 
@@ -21,8 +21,6 @@ async def get_drawing_findings(
     supabase: Annotated[Client, Depends(get_supabase_client)],
     current_user: CurrentUser = Depends(get_current_user),
 ) -> list[Finding]:
-    """Return up-to-date fire-safety compliance findings for a drawing."""
+    """Return read-only fire-safety compliance findings for a drawing."""
     drawing = get_drawing_for_user(supabase, drawing_id, current_user)
-    return evaluate_and_persist_findings(
-        supabase, str(drawing_id), drawing_row=drawing, persist=True
-    )
+    return get_findings_for_drawing(supabase, str(drawing_id), drawing_row=drawing)

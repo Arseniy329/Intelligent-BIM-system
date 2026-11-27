@@ -5,6 +5,8 @@ from src.modules.findings.schemas import Finding, FindingRuleStatus, FindingSeve
 from src.modules.findings.service import (
     evaluate_and_persist_findings,
     evaluate_drawing_findings,
+    get_findings_for_drawing,
+    sync_findings_after_mutation,
 )
 
 __all__ = [
@@ -13,5 +15,7 @@ __all__ = [
     "FindingSeverity",
     "evaluate_and_persist_findings",
     "evaluate_drawing_findings",
+    "get_findings_for_drawing",
     "router",
+    "sync_findings_after_mutation",
 ]
