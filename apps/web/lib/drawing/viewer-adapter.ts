@@ -11,6 +11,7 @@ export type DrawingViewport = Readonly<{
 }>;
 
 export interface DrawingViewportController {
+  focusPoint?(point: DrawingPoint): void;
   fitToDrawing(): void;
   zoomBy(factor: number): void;
   getViewport(): DrawingViewport;
@@ -106,6 +107,15 @@ export class DrawingViewerAdapter implements DrawingViewportController {
     const width = (camera.right - camera.left) / camera.zoom / factor;
     if (!Number.isFinite(width) || width < 1e-6 || width > 1e15) return;
     this.viewer.SetView(new Vector3(camera.position.x, camera.position.y, 0), width);
+    this.viewer.Render();
+  }
+
+  /** Pan in original DXF coordinates while retaining the engineer's zoom. */
+  focusPoint(point: DrawingPoint): void {
+    this.ensureReady();
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+    const origin = this.viewer.GetOrigin();
+    this.viewer.SetView(new Vector3(point.x - origin.x, point.y - origin.y, 0), this.getViewport().width);
     this.viewer.Render();
   }
 
