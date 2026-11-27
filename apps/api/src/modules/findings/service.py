@@ -1003,7 +1003,42 @@ def _evaluate_sounder_for_target(
             value_kind="min_sound_level_dba",
         )
     if sounder_rule is None:
-        return findings
+        has_any_sounder_rule = any(
+            str(row.get("device_type") or "") == "sounder"
+            and str(row.get("value_kind") or "")
+            in ("max_grid_spacing_m", "min_sound_level_dba")
+            for row in valid_rules
+        )
+        suffix = f" ({zone_label})" if zone_label else ""
+        room_type_label = room_type or "не визначено"
+        height_label = f"{height_m:g} м" if height_m is not None else "не вказано"
+        if has_any_sounder_rule:
+            message = (
+                f"Неможливо перевірити оповіщувачі (sounder){suffix}: "
+                f"не знайдено правила для оповіщувачів для типу приміщення "
+                f"'{room_type_label}' та висоти {height_label}"
+            )
+        else:
+            message = (
+                f"Неможливо перевірити оповіщувачі (sounder){suffix}: "
+                "у каталозі відсутні правила для оповіщувачів"
+            )
+        return [
+            _make_finding(
+                drawing_uuid=drawing_uuid,
+                key_parts=("sounder", "missing_rule", room_id, zone_id or ""),
+                severity=FindingSeverity.insufficient_data,
+                message=message,
+                room_id=room_id,
+                details={
+                    "deviceType": "sounder",
+                    "roomType": room_type,
+                    "heightM": height_m,
+                    "zoneId": zone_id,
+                    "zoneName": zone_label,
+                },
+            )
+        ]
 
     findings.extend(
         _detect_rule_conflicts(
@@ -1126,16 +1161,37 @@ def _evaluate_detector_target(
         value_kind="max_grid_spacing_m",
     )
     if grid_rule is None:
+        has_any_detector_rule = any(
+            str(row.get("device_type") or "") == primary_type
+            and str(row.get("value_kind") or "") == "max_grid_spacing_m"
+            for row in valid_rules
+        )
+        room_type_label = room_type or "не визначено"
+        if has_any_detector_rule:
+            det_message = (
+                f"Відсутнє правило розміщення ({primary_type}){suffix} "
+                f"для типу приміщення '{room_type_label}' та висоти {height_m:g} м"
+            )
+        else:
+            det_message = (
+                f"Неможливо перевірити сповіщувачі ({primary_type}){suffix}: "
+                f"у каталозі відсутні правила розміщення для типу '{primary_type}' "
+                f"(висота {height_m:g} м)"
+            )
         findings.append(
             _make_finding(
                 drawing_uuid=drawing_uuid,
                 key_parts=("missing_rule", primary_type, room_id, zone_id or ""),
                 severity=FindingSeverity.insufficient_data,
-                message=(
-                    f"Відсутнє правило розміщення ({primary_type}) для висоти "
-                    f"{height_m:g} м{suffix}"
-                ),
+                message=det_message,
                 room_id=room_id,
+                details={
+                    "deviceType": primary_type,
+                    "roomType": room_type,
+                    "heightM": height_m,
+                    "zoneId": zone_id,
+                    "zoneName": zone_label,
+                },
             )
         )
         return findings

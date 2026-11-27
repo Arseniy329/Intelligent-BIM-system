@@ -229,13 +229,160 @@ class TestFindingsEngine(unittest.TestCase):
             drawing_id=self.drawing_id,
             drawing_row={"id": self.drawing_id, "units": "mm", "unit_scale_m": 0.001},
             room_rows=[room],
-            device_rows=[],
-            rule_rows=[self.smoke_rule],
+            device_rows=[
+                {
+                    "id": "snd-tall",
+                    "room_id": "room-tall",
+                    "type": "sounder",
+                    "x": 4000,
+                    "y": 3000,
+                }
+            ],
+            rule_rows=[self.smoke_rule, self.sounder_rule],
         )
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].severity, FindingSeverity.insufficient_data)
         self.assertEqual(findings[0].roomId, "room-tall")
         self.assertIn("18", findings[0].message)
+
+    def test_missing_sounder_rule_in_catalog_emits_insufficient_data(self) -> None:
+        room = {
+            "id": "room-no-snd-rule",
+            "name": "Офіс 102",
+            "type": "office",
+            "height": 3.0,
+            "area": 48.0,
+            "polygon": _rect(0, 0, 8000, 6000),
+            "confirmed": True,
+        }
+        smoke_dev = {
+            "id": "sd-1",
+            "room_id": "room-no-snd-rule",
+            "type": "smoke_detector",
+            "x": 4000,
+            "y": 3000,
+        }
+        sounder_dev = {
+            "id": "snd-1",
+            "room_id": "room-no-snd-rule",
+            "type": "sounder",
+            "x": 4000,
+            "y": 3000,
+        }
+        # Catalog has NO sounder rules at all — both with and without sounder placed
+        for has_sounder, devs in (
+            (True, [smoke_dev, sounder_dev]),
+            (False, [smoke_dev]),
+        ):
+            with self.subTest(has_sounder=has_sounder):
+                findings = evaluate_drawing_findings(
+                    drawing_id=self.drawing_id,
+                    drawing_row={
+                        "id": self.drawing_id,
+                        "units": "mm",
+                        "unit_scale_m": 0.001,
+                    },
+                    room_rows=[room],
+                    device_rows=devs,
+                    rule_rows=[self.smoke_rule, self.wall_rule],
+                )
+                self.assertNotEqual(findings, [])
+                self.assertFalse(
+                    any(f.severity == FindingSeverity.critical for f in findings)
+                )
+                self.assertTrue(
+                    any(
+                        f.severity == FindingSeverity.insufficient_data
+                        and f.roomId == "room-no-snd-rule"
+                        and "sounder" in f.message
+                        and "відсутні правила для оповіщувачів" in f.message
+                        for f in findings
+                    )
+                )
+
+    def test_unmatched_sounder_rule_for_type_or_height_emits_insufficient_data(
+        self,
+    ) -> None:
+        room = {
+            "id": "room-mismatch",
+            "name": "Офіс 201",
+            "type": "office",
+            "height": 4.5,
+            "area": 48.0,
+            "polygon": _rect(0, 0, 8000, 6000),
+            "confirmed": True,
+        }
+        smoke_tall = _rule_row(
+            rule_id="SMOKE_GRID_HEIGHT_3_5_6",
+            value=8.5,
+            max_area=70.0,
+            min_height_m=3.5,
+            max_height_m=6.0,
+        )
+        wall_tall = _rule_row(
+            rule_id="SMOKE_WALL_HEIGHT_3_5_6",
+            value_kind="max_wall_distance_m",
+            value=4.0,
+            max_area=None,
+            min_clearance=0.5,
+            min_height_m=3.5,
+            max_height_m=6.0,
+            clause="6.5.2",
+        )
+        restricted_sounder_rule = _rule_row(
+            rule_id="SOUNDER_SLEEPING_ONLY",
+            device_type="sounder",
+            value_kind="max_grid_spacing_m",
+            value=10.0,
+            max_area=None,
+            room_types=["sleeping_room"],
+            max_height_m=3.0,
+            clause="6.7.2",
+        )
+        smoke_dev = {
+            "id": "sd-1",
+            "room_id": "room-mismatch",
+            "type": "smoke_detector",
+            "x": 4000,
+            "y": 3000,
+        }
+        sounder_dev = {
+            "id": "snd-1",
+            "room_id": "room-mismatch",
+            "type": "sounder",
+            "x": 4000,
+            "y": 3000,
+        }
+        for has_sounder, devs in (
+            (True, [smoke_dev, sounder_dev]),
+            (False, [smoke_dev]),
+        ):
+            with self.subTest(has_sounder=has_sounder):
+                findings = evaluate_drawing_findings(
+                    drawing_id=self.drawing_id,
+                    drawing_row={
+                        "id": self.drawing_id,
+                        "units": "mm",
+                        "unit_scale_m": 0.001,
+                    },
+                    room_rows=[room],
+                    device_rows=devs,
+                    rule_rows=[smoke_tall, wall_tall, restricted_sounder_rule],
+                )
+                self.assertNotEqual(findings, [])
+                self.assertFalse(
+                    any(f.severity == FindingSeverity.critical for f in findings)
+                )
+                self.assertTrue(
+                    any(
+                        f.severity == FindingSeverity.insufficient_data
+                        and f.roomId == "room-mismatch"
+                        and "office" in f.message
+                        and "4.5" in f.message
+                        and "оповіщувачів" in f.message
+                        for f in findings
+                    )
+                )
 
     def test_critical_coverage_area_spacing_and_disallowed_norm_filtered(
         self,
@@ -1300,200 +1447,20 @@ class TestFindingsMigrationSecurity(unittest.TestCase):
         self.assertNotIn("to authenticated, service_role", normalized)
 
     def test_migration_018_real_postgres_rls_and_privileges(self) -> None:
-        migration_path = (
-            API_DIR.parent.parent
-            / "supabase"
-            / "migrations"
-            / "018_replace_drawing_findings.sql"
+        supabase_dir = API_DIR.parent.parent / "supabase"
+        migrations = sorted((supabase_dir / "migrations").glob("*.sql"))
+        stubs_sql = (supabase_dir / "tests" / "supabase_stubs.sql").read_text(
+            encoding="utf-8"
         )
-        migration_sql = migration_path.read_text(encoding="utf-8")
-
-        stubs_and_checks = (
-            """
-create role anon nologin;
-create role authenticated nologin;
-create role service_role nologin bypassrls;
-create schema auth;
-create function auth.uid() returns uuid language sql stable as $$
-  select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
-$$;
-grant usage on schema auth to anon, authenticated, service_role;
-grant usage on schema public to anon, authenticated, service_role;
-alter default privileges in schema public
-  grant all on tables to anon, authenticated, service_role;
-
-create table public.profiles (
-  id uuid primary key,
-  role text not null default 'engineer'
-);
-create table public.drawings (
-  id uuid primary key,
-  owner_id uuid not null
-);
-"""
-            + migration_sql
-            + """
-insert into public.profiles (id, role) values
-  ('11111111-0000-0000-0000-000000000001', 'engineer'),
-  ('11111111-0000-0000-0000-000000000002', 'engineer'),
-  ('11111111-0000-0000-0000-000000000003', 'admin');
-insert into public.drawings (id, owner_id) values
-  ('aaaaaaaa-0000-0000-0000-000000000001', '11111111-0000-0000-0000-000000000001'),
-  ('aaaaaaaa-0000-0000-0000-000000000002', '11111111-0000-0000-0000-000000000002');
-
-begin;
-set local role service_role;
-select public.replace_drawing_findings(
-  'aaaaaaaa-0000-0000-0000-000000000001',
-  '[{"id": "bbbbbbbb-0000-0000-0000-000000000001",
-     "severity": "critical", "message": "Old"}]'::jsonb
-);
-select public.replace_drawing_findings(
-  'aaaaaaaa-0000-0000-0000-000000000001',
-  '[{"id": "bbbbbbbb-0000-0000-0000-000000000011",
-     "severity": "warning", "message": "Owner finding"}]'::jsonb
-);
-select public.replace_drawing_findings(
-  'aaaaaaaa-0000-0000-0000-000000000002',
-  '[{"id": "bbbbbbbb-0000-0000-0000-000000000002",
-     "severity": "critical", "message": "Other finding"}]'::jsonb
-);
-commit;
-
-do $$
-declare
-  owner_cnt int;
-  other_cnt int;
-  admin_cnt int;
-  denied boolean;
-begin
-  if has_table_privilege('anon', 'public.findings', 'SELECT,INSERT,UPDATE,DELETE') then
-    raise exception 'anon must have no table privileges on public.findings';
-  end if;
-  if not has_table_privilege('authenticated', 'public.findings', 'SELECT')
-     or has_table_privilege('authenticated', 'public.findings', 'INSERT')
-     or has_table_privilege('authenticated', 'public.findings', 'UPDATE')
-     or has_table_privilege('authenticated', 'public.findings', 'DELETE') then
-    raise exception 'authenticated must only have SELECT on public.findings';
-  end if;
-  if not has_table_privilege(
-       'service_role', 'public.findings', 'SELECT,INSERT,UPDATE,DELETE'
-     ) then
-    raise exception 'service_role must have full privileges on public.findings';
-  end if;
-  if has_function_privilege(
-       'anon', 'public.replace_drawing_findings(uuid, jsonb)', 'EXECUTE'
-     )
-     or has_function_privilege(
-       'authenticated', 'public.replace_drawing_findings(uuid, jsonb)', 'EXECUTE'
-     )
-     or not has_function_privilege(
-       'service_role', 'public.replace_drawing_findings(uuid, jsonb)', 'EXECUTE'
-     ) then
-    raise exception 'replace_drawing_findings EXECUTE privileges mismatch';
-  end if;
-
-  set local role authenticated;
-  perform set_config(
-    'request.jwt.claim.sub', '11111111-0000-0000-0000-000000000001', true
-  );
-  select count(*) into owner_cnt from public.findings;
-  if owner_cnt <> 1 then
-    raise exception 'owner_user expected 1 row, got %', owner_cnt;
-  end if;
-
-  perform set_config(
-    'request.jwt.claim.sub', '99999999-0000-0000-0000-000000000099', true
-  );
-  select count(*) into other_cnt from public.findings;
-  if other_cnt <> 0 then
-    raise exception 'other_user expected 0 rows, got %', other_cnt;
-  end if;
-
-  perform set_config(
-    'request.jwt.claim.sub', '11111111-0000-0000-0000-000000000003', true
-  );
-  select count(*) into admin_cnt from public.findings;
-  if admin_cnt <> 2 then
-    raise exception 'admin_user expected 2 rows, got %', admin_cnt;
-  end if;
-
-  denied := false;
-  begin
-    insert into public.findings (drawing_id, severity, message)
-    values ('aaaaaaaa-0000-0000-0000-000000000001', 'warning', 'denied');
-  exception when insufficient_privilege then denied := true;
-  end;
-  if not denied then raise exception 'authenticated INSERT must fail'; end if;
-
-  denied := false;
-  begin
-    update public.findings set message = 'denied';
-  exception when insufficient_privilege then denied := true;
-  end;
-  if not denied then raise exception 'authenticated UPDATE must fail'; end if;
-
-  denied := false;
-  begin
-    delete from public.findings;
-  exception when insufficient_privilege then denied := true;
-  end;
-  if not denied then raise exception 'authenticated DELETE must fail'; end if;
-
-  denied := false;
-  begin
-    perform public.replace_drawing_findings(
-      'aaaaaaaa-0000-0000-0000-000000000001', '[]'::jsonb
-    );
-  exception when insufficient_privilege then denied := true;
-  end;
-  if not denied then raise exception 'authenticated RPC EXECUTE must fail'; end if;
-
-  reset role;
-  set local role anon;
-
-  denied := false;
-  begin
-    perform count(*) from public.findings;
-  exception when insufficient_privilege then denied := true;
-  end;
-  if not denied then raise exception 'anon SELECT must fail'; end if;
-
-  denied := false;
-  begin
-    insert into public.findings (drawing_id, severity, message)
-    values ('aaaaaaaa-0000-0000-0000-000000000001', 'warning', 'denied');
-  exception when insufficient_privilege then denied := true;
-  end;
-  if not denied then raise exception 'anon INSERT must fail'; end if;
-
-  denied := false;
-  begin
-    update public.findings set message = 'denied';
-  exception when insufficient_privilege then denied := true;
-  end;
-  if not denied then raise exception 'anon UPDATE must fail'; end if;
-
-  denied := false;
-  begin
-    delete from public.findings;
-  exception when insufficient_privilege then denied := true;
-  end;
-  if not denied then raise exception 'anon DELETE must fail'; end if;
-
-  denied := false;
-  begin
-    perform public.replace_drawing_findings(
-      'aaaaaaaa-0000-0000-0000-000000000001', '[]'::jsonb
-    );
-  exception when insufficient_privilege then denied := true;
-  end;
-  if not denied then raise exception 'anon RPC EXECUTE must fail'; end if;
-
-  reset role;
-end
-$$;
-"""
+        assertions_sql = (supabase_dir / "tests" / "assertions.sql").read_text(
+            encoding="utf-8"
+        )
+        full_chain_sql = "\n".join(
+            [
+                stubs_sql,
+                *(path.read_text(encoding="utf-8") for path in migrations),
+                assertions_sql,
+            ]
         )
 
         if shutil.which("initdb") and shutil.which("pg_ctl") and shutil.which("psql"):
@@ -1537,7 +1504,7 @@ $$;
                             "-v",
                             "ON_ERROR_STOP=1",
                         ],
-                        input=stubs_and_checks,
+                        input=full_chain_sql,
                         text=True,
                         capture_output=True,
                         check=False,
@@ -1620,7 +1587,7 @@ $$;
                             "-v",
                             "ON_ERROR_STOP=1",
                         ],
-                        input=stubs_and_checks,
+                        input=full_chain_sql,
                         text=True,
                         capture_output=True,
                         check=False,
