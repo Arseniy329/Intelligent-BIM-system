@@ -1,7 +1,7 @@
 """In-memory stand-in for the Supabase query builder used by API tests."""
 
 import copy
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -30,6 +30,7 @@ class FakeTable:
         self._operation = "select"
         self._values: Any = None
         self._filters: list[tuple[str, Any]] = []
+        self._in_filters: list[tuple[str, set[str]]] = []
         self._single = False
 
     def select(self, *_args: Any) -> "FakeTable":
@@ -50,6 +51,9 @@ class FakeTable:
         self.inserts.extend(values if isinstance(values, list) else [values])
         return self
 
+    def upsert(self, values: dict[str, Any] | list[dict[str, Any]]) -> "FakeTable":
+        return self.insert(values)
+
     def delete(self) -> "FakeTable":
         self._reset()
         self._operation = "delete"
@@ -57,6 +61,10 @@ class FakeTable:
 
     def eq(self, column: str, value: Any) -> "FakeTable":
         self._filters.append((column, value))
+        return self
+
+    def in_(self, column: str, values: Iterable[Any]) -> "FakeTable":
+        self._in_filters.append((column, {str(v) for v in values}))
         return self
 
     def limit(self, *_args: Any) -> "FakeTable":
@@ -68,12 +76,14 @@ class FakeTable:
 
     def execute(self) -> MagicMock:
         operation, values, filters = self._operation, self._values, self._filters
+        in_filters = self._in_filters
         single = self._single
         self._reset()
         matched = [
             row
             for row in self.rows
             if all(str(row.get(column)) == str(value) for column, value in filters)
+            and all(str(row.get(column)) in allowed for column, allowed in in_filters)
         ]
 
         if operation == "insert":
