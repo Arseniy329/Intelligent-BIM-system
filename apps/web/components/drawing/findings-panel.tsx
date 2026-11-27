@@ -66,21 +66,26 @@ export function FindingConflict({ finding }: { finding: Finding }) {
 }
 
 export type FindingsPanelProps = {
+  /** A new activation object for every explicit marker click, including the same ID. */
+  markerActivation?: Pick<Finding, "id" | "severity"> | null;
   findings: Finding[]; rooms: Room[]; devices: Device[]; selectedId: string | null;
   onSelect: (finding: Finding) => void; loading?: boolean; error?: unknown;
   checked: boolean; retry: () => void; blocked?: boolean;
   rules?: Rule[]; rulesLoading?: boolean; rulesError?: boolean; retryRules?: () => void;
 };
 
-export function FindingsPanel({ findings, rooms, devices, selectedId, onSelect, loading, error, checked, retry, blocked,
+export function FindingsPanel({ findings, rooms, devices, selectedId, markerActivation = null, onSelect, loading, error, checked, retry, blocked,
   rules = [], rulesLoading, rulesError, retryRules }: FindingsPanelProps) {
-  const [filterState, setFilter] = useState<{ value: Finding["severity"] | "all"; selection: string | null }>({ value: "all", selection: selectedId });
+  const [filterState, setFilter] = useState<{ value: Finding["severity"] | "all"; activation: typeof markerActivation }>({ value: "all", activation: markerActivation });
   const [ruleId, setRuleId] = useState<string | null>(null);
   const selectedRow = useRef<HTMLLIElement | null>(null);
-  const selected = findings.find(item => item.id === selectedId);
-  // Always expose a marker-selected row, even if the previous filter hid it.
-  const effectiveFilter = selected && filterState.selection !== selectedId ? "all" : filterState.value;
-  useEffect(() => { selectedRow.current?.scrollIntoView?.({ block: "nearest" }); }, [selectedId, loading]);
+  // Consume explicit activation once, before committing the visible rows. Selection
+  // alone must not undo an intentional filter or reset a compatible severity.
+  if (filterState.activation !== markerActivation) {
+    setFilter({ value: markerActivation && filterState.value !== "all" && filterState.value !== markerActivation.severity ? "all" : filterState.value, activation: markerActivation });
+  }
+  const effectiveFilter = filterState.value;
+  useEffect(() => { selectedRow.current?.scrollIntoView?.({ block: "nearest" }); }, [selectedId, markerActivation, loading]);
   return <section className={styles.panel} aria-label="Порушення" aria-busy={loading}>
     <h3>Порушення</h3>
     {loading ? <p role="status">Завантаження результатів перевірки…</p> : error ? <div role="alert"><p>{drawingErrorMessage(error)}</p><Button variant="outline" onClick={retry}>Повторити перевірку</Button></div> : <>
@@ -89,9 +94,9 @@ export function FindingsPanel({ findings, rooms, devices, selectedId, onSelect, 
       {findings.length > 0 && <>
         <p className={styles.muted}>{findings.length} {resultForms[plural.select(findings.length)]} · критичність із перевірки</p>
         <div className={styles.filters} aria-label="Фільтр порушень">
-          <button aria-pressed={effectiveFilter === "all"} onClick={() => setFilter({ value: "all", selection: selectedId })}>Усі результати</button>
+          <button aria-pressed={effectiveFilter === "all"} onClick={() => setFilter({ value: "all", activation: markerActivation })}>Усі результати</button>
           {(Object.keys(FINDING_LABELS) as Finding["severity"][]).filter(severity => findings.some(f => f.severity === severity)).map(severity =>
-            <button key={severity} aria-pressed={effectiveFilter === severity} onClick={() => setFilter({ value: severity, selection: selectedId })}>{FINDING_LABELS[severity]} · {findings.filter(f => f.severity === severity).length}</button>)}
+            <button key={severity} aria-pressed={effectiveFilter === severity} onClick={() => setFilter({ value: severity, activation: markerActivation })}>{FINDING_LABELS[severity]} · {findings.filter(f => f.severity === severity).length}</button>)}
         </div>
         <ul className={styles.list} aria-label="Список порушень">
           {findings.filter(f => effectiveFilter === "all" || f.severity === effectiveFilter).map(finding => {

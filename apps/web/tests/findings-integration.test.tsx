@@ -33,6 +33,69 @@ function wrapper() {
 }
 afterEach(() => { cleanup(); clients.splice(0).forEach(c => c.clear()); vi.clearAllMocks(); bridge.deferReady = false; });
 
+it("reveals and scrolls the same critical marker after an intentional warning filter", async () => {
+  const critical = { ...finding, id: "A", severity: "critical" as const, message: "Критичне A" };
+  const warning = { ...finding, id: "B", message: "Попередження B" };
+  vi.mocked(fetchFindings).mockResolvedValue([critical, warning]);
+  const scroll = vi.fn();
+  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scroll });
+  try {
+    const result = { ...DEMO_RESULT, drawing: { ...DEMO_RESULT.drawing, status: "processed" as const }, sourceDownloadUrl: "https://example.test/source.dxf", sourceDownloadUrlExpiresAt: "2099-01-01T00:00:00Z" };
+    render(<DrawingDetail id={finding.drawingId} api={{ getDrawing: async () => result, processDrawing: async () => result }} initialTab="findings" />, { wrapper: wrapper() });
+    await screen.findByText(critical.message);
+    fireEvent.click(screen.getByRole("button", { name: "Маркер A" }));
+    expect(screen.getByText(critical.message)).toBeVisible();
+    expect(screen.getByText(critical.message).closest("li")).toHaveAttribute("data-selected", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Попередження · 1" }));
+    expect(screen.queryByText(critical.message)).not.toBeInTheDocument();
+    expect(screen.getByText(warning.message)).toBeVisible();
+    scroll.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Маркер A" }));
+    expect(screen.getByText(critical.message)).toBeVisible();
+    const card = screen.getByText(critical.message).closest("li");
+    expect(card).toHaveAttribute("data-selected", "true");
+    expect(screen.getByRole("button", { name: "Усі результати" })).toHaveAttribute("aria-pressed", "true");
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+    expect(scroll.mock.contexts).toContain(card);
+
+    // A repeated activation while visible must still scroll.
+    scroll.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Маркер A" }));
+    expect(scroll.mock.contexts).toContain(card);
+    const canvas = screen.getByTestId("canvas");
+    const focusCalls = bridge.focusPoint.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Попередження · 1" }));
+    expect(screen.queryByText(critical.message)).not.toBeInTheDocument();
+    expect(bridge.focusPoint).toHaveBeenCalledTimes(focusCalls);
+
+    // B shares A's room, but its compatible filter must survive activation.
+    fireEvent.click(screen.getByRole("button", { name: "Маркер B" }));
+    expect(screen.getByRole("button", { name: "Попередження · 1" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(warning.message).closest("li")).toHaveAttribute("data-selected", "true");
+    expect(screen.queryByText(critical.message)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(warning.message) }));
+    expect(bridge.props?.selectedFindingId).toBe("B");
+    expect(bridge.focusPoint).toHaveBeenCalledTimes(focusCalls + 2);
+    expect(screen.getByRole("button", { name: "Попередження · 1" })).toHaveAttribute("aria-pressed", "true");
+
+    // A different, hidden marker must also reset the incompatible filter.
+    fireEvent.click(screen.getByRole("button", { name: "Маркер A" }));
+    expect(screen.getByText(critical.message)).toBeVisible();
+    expect(screen.getByText(critical.message).closest("li")).toHaveAttribute("data-selected", "true");
+    expect(screen.getByRole("button", { name: "Усі результати" })).toHaveAttribute("aria-pressed", "true");
+    const beforeTabs = bridge.focusPoint.mock.calls.length;
+    fireEvent.click(screen.getByRole("tab", { name: "План" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Порушення" }));
+    expect(screen.getByTestId("canvas")).toBe(canvas);
+    expect(bridge.mounted).toHaveBeenCalledOnce();
+    expect(bridge.focusPoint).toHaveBeenCalledTimes(beforeTabs);
+  } finally {
+    if (previous) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previous);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+  }
+});
+
 it("honors a list selection made before the DXF is ready", async () => {
   bridge.deferReady = true;
   vi.mocked(fetchFindings).mockResolvedValue([finding]);

@@ -93,7 +93,7 @@ describe("findings panel", () => {
     const view = render(<FindingsPanel {...defaults} findings={[base, second]} />);
     fireEvent.click(screen.getByRole("button", { name: /Критичне · 1/ }));
     expect(screen.queryByText(second.message)).not.toBeInTheDocument();
-    view.rerender(<FindingsPanel {...defaults} findings={[base, second]} selectedId="second" />);
+    view.rerender(<FindingsPanel {...defaults} findings={[base, second]} selectedId="second" markerActivation={second} />);
     expect(screen.getByText(second.message)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: new RegExp(second.message) }));
     expect(defaults.onSelect).toHaveBeenCalledWith(second);

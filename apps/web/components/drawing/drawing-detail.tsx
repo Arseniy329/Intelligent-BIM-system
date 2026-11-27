@@ -83,6 +83,7 @@ function DrawingDetailContent({
   const [activeTab, setActiveTab] = useState<DrawingTab>(initialTab);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
+  const [markerActivation, setMarkerActivation] = useState<Pick<Finding, "id" | "severity"> | null>(null);
   const [controller, setController] = useState<DrawingViewportController | null>(null);
   const [focusRequest, setFocusRequest] = useState<{ point: DrawingPoint } | null>(null);
   useEffect(() => { if (focusRequest && controller) controller.focusPoint?.(focusRequest.point); }, [controller, focusRequest]);
@@ -452,7 +453,11 @@ function DrawingDetailContent({
             {rules.isError && <p role="alert">Не вдалося отримати статуси правил. Позначення «?» не означає, що правило перевірене. <button className={button} onClick={() => void rules.refetch()}>Повторити завантаження правил</button></p>}
             <div className={cn(workspaceStyles.planLayout, activeTab === "findings" ? findingsStyles.layout : mode === "rooms" && !demo && workspaceStyles.featureLayout)}>
             <StableViewer candidate={url} attempt={viewerAttempt} fileName={metadata.originalFileName} rooms={result?.rooms} devices={result?.devices}
-              onReady={setController} findings={currentFindings} selectedFindingId={effectiveFindingId} onSelectFinding={selectFinding}
+              onReady={setController} findings={currentFindings} selectedFindingId={effectiveFindingId} onSelectFinding={finding => {
+                if (editor.blocked) return;
+                setMarkerActivation({ id: finding.id, severity: finding.severity });
+                selectFinding(finding);
+              }}
               layers={layers} mode={mode} onModeChange={setMode}
               workPanel={result && !demo && activeTab === "plan" ? <PlanWorkPanel mode={mode} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
                 selectRoom={setSelectedRoomId} devicesEditable={metadata.status === "processed"} disabled={state.busy || updateRoomMutation.isPending || state.detail.isFetching}
@@ -463,7 +468,7 @@ function DrawingDetailContent({
               onRetry={demo ? undefined : refreshFile} retryPending={state.detail.isFetching} />
             <aside className={workspaceStyles.inspector}>
               {activeTab === "findings" ? <FindingsPanel findings={currentFindings} rooms={result?.rooms ?? []} devices={result?.devices ?? []}
-                selectedId={effectiveFindingId} onSelect={selectFinding} loading={findingsSuspended || findingsApplicable && (findings.isPending || findings.isFetching)}
+                selectedId={effectiveFindingId} markerActivation={markerActivation} onSelect={selectFinding} loading={findingsSuspended || findingsApplicable && (findings.isPending || findings.isFetching)}
                 error={findings.error} checked={metadata.status === "processed" && !!result?.rooms.length} retry={() => void findings.refetch()}
                 blocked={editor.blocked} rules={rules.isError || rules.isFetching ? undefined : rules.data} rulesLoading={rules.isFetching} rulesError={rules.isError} retryRules={() => void rules.refetch()} /> : <>
               {result && !demo ? <PlanEditorPanel rules={rules.isError ? undefined : rules.data} mode={mode} onTable={() => navigateTab("rooms")} editor={editor} rooms={result.rooms} devices={result.devices} selectedRoomId={selectedRoomId}
