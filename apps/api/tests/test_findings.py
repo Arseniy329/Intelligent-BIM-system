@@ -902,18 +902,19 @@ class TestFindingsApiIntegration(unittest.TestCase):
             self.assertEqual(table.deleted, [])
         self.supabase.rpc.assert_not_called()
 
-        # 2. With persisted snapshot in public.findings (reads snapshot, zero writes)
-        snapshot_id = str(uuid4())
+        # 2. Even with a stale snapshot in public.findings, GET evaluates live
+        #    from current DB state with zero writes.
+        stale_id = str(uuid4())
         persisted_findings = FakeTable(
             [
                 {
-                    "id": snapshot_id,
+                    "id": stale_id,
                     "drawing_id": self.drawing_id,
                     "room_id": self.room_id,
                     "device_id": None,
                     "rule_id": self.smoke_rule["id"],
                     "severity": "critical",
-                    "message": "Збережене порушення",
+                    "message": "Застаріле порушення",
                     "document": "ДСТУ EN 54-14:2021",
                     "clause": "6.5.2, таблиця A.1",
                     "rule_status": "verified",
@@ -934,8 +935,7 @@ class TestFindingsApiIntegration(unittest.TestCase):
         )
         resp_persisted = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
         self.assertEqual(resp_persisted.status_code, 200)
-        self.assertEqual(len(resp_persisted.json()), 1)
-        self.assertEqual(resp_persisted.json()[0]["id"], snapshot_id)
+        self.assertEqual(resp_persisted.json(), [])
         self.assertEqual(persisted_findings.inserts, [])
         self.assertEqual(persisted_findings.updates, [])
         self.assertEqual(persisted_findings.deleted, [])
@@ -1130,6 +1130,137 @@ class TestFindingsApiIntegration(unittest.TestCase):
         resp_clean = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
         self.assertEqual(resp_clean.status_code, 200)
         self.assertEqual(resp_clean.json(), [])
+
+    def test_get_findings_ignores_stale_snapshot_when_zones_or_exits_unavailable(
+        self,
+    ) -> None:
+        stale_row = {
+            "id": str(uuid4()),
+            "drawing_id": self.drawing_id,
+            "room_id": self.room_id,
+            "device_id": None,
+            "rule_id": None,
+            "severity": "warning",
+            "message": "Застарілий кешований запис",
+            "document": None,
+            "clause": None,
+            "rule_status": None,
+        }
+
+        # 1. room_zones becomes unavailable -> must NOT return stale snapshot
+        self.supabase = fake_supabase(
+            {
+                "drawings": self.drawings_table,
+                "rooms": self.rooms_table,
+                "devices": self.devices_table,
+                "rules": self.rules_table,
+                "room_zones": _SchemaErrorTable([], "room_zones"),
+                "exits": self.exits_table,
+                "passages": self.passages_table,
+                "findings": FakeTable([dict(stale_row)]),
+            }
+        )
+        resp_no_zones = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
+        self.assertEqual(resp_no_zones.status_code, 200)
+        data_zones = resp_no_zones.json()
+        self.assertFalse(any(f["id"] == stale_row["id"] for f in data_zones))
+        self.assertTrue(
+            any(
+                f["severity"] == "insufficient_data"
+                and "таблиця зон відсутня" in f["message"]
+                for f in data_zones
+            )
+        )
+
+        # 2. exits becomes unavailable -> must NOT return stale snapshot
+        self.supabase = fake_supabase(
+            {
+                "drawings": self.drawings_table,
+                "rooms": self.rooms_table,
+                "devices": self.devices_table,
+                "rules": self.rules_table,
+                "room_zones": self.zones_table,
+                "exits": _SchemaErrorTable([], "exits"),
+                "passages": self.passages_table,
+                "findings": FakeTable([dict(stale_row)]),
+            }
+        )
+        resp_no_exits = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
+        self.assertEqual(resp_no_exits.status_code, 200)
+        data_exits = resp_no_exits.json()
+        self.assertFalse(any(f["id"] == stale_row["id"] for f in data_exits))
+        self.assertTrue(
+            any(
+                f["severity"] == "insufficient_data"
+                and "таблиця виходів/проходів відсутня" in f["message"]
+                for f in data_exits
+            )
+        )
+
+    def test_manual_zone_edit_with_rpc_failure_succeeds_and_get_stays_fresh(
+        self,
+    ) -> None:
+        zone_id = str(uuid4())
+        zone_row = {
+            "id": zone_id,
+            "room_id": self.room_id,
+            "drawing_id": self.drawing_id,
+            "name": "Основна зона",
+            "height": 3.0,
+            "area": 48.0,
+            "polygon": _rect(0, 0, 8000, 6000),
+        }
+        stale_row = {
+            "id": str(uuid4()),
+            "drawing_id": self.drawing_id,
+            "room_id": self.room_id,
+            "device_id": None,
+            "rule_id": None,
+            "severity": "warning",
+            "message": "Застарілий запис до редагування зони",
+            "document": None,
+            "clause": None,
+            "rule_status": None,
+        }
+        zones_tbl = FakeTable([zone_row])
+        findings_tbl = FakeTable([stale_row])
+
+        def failing_rpc(_params: dict[str, Any]) -> Any:
+            raise RuntimeError("replace_drawing_findings transient RPC failure")
+
+        self.supabase = fake_supabase(
+            {
+                "drawings": self.drawings_table,
+                "rooms": self.rooms_table,
+                "devices": self.devices_table,
+                "rules": self.rules_table,
+                "room_zones": zones_tbl,
+                "exits": self.exits_table,
+                "passages": self.passages_table,
+                "findings": findings_tbl,
+            },
+            rpc={"replace_drawing_findings": failing_rpc},
+        )
+
+        # Updating zone height to 18.0 m triggers missing-rule finding; RPC fails.
+        patch_resp = self.client.patch(
+            f"/api/v1/zones/{zone_id}",
+            json={"height": 18.0},
+        )
+        self.assertEqual(patch_resp.status_code, 200, patch_resp.text)
+        self.assertEqual(patch_resp.json()["height"], 18.0)
+
+        # GET /findings computes live from updated zone (ignores stale snapshot).
+        get_resp = self.client.get(f"/api/v1/drawings/{self.drawing_id}/findings")
+        self.assertEqual(get_resp.status_code, 200, get_resp.text)
+        findings = get_resp.json()
+        self.assertFalse(any(f["id"] == stale_row["id"] for f in findings))
+        self.assertTrue(
+            any(
+                f["severity"] == "insufficient_data" and "18" in f["message"]
+                for f in findings
+            )
+        )
 
 
 if __name__ == "__main__":

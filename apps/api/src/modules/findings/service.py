@@ -1717,31 +1717,6 @@ def evaluate_drawing_findings(
     return findings
 
 
-def _finding_from_db_row(row: Mapping[str, Any]) -> Finding:
-    raw_status = row.get("rule_status")
-    rule_status = _normalize_rule_status(raw_status) if raw_status is not None else None
-    return Finding(
-        id=str(row["id"]),
-        drawingId=UUID(str(row["drawing_id"])),
-        roomId=str(row["room_id"]) if row.get("room_id") else None,
-        deviceId=str(row["device_id"]) if row.get("device_id") else None,
-        ruleId=str(row["rule_id"]) if row.get("rule_id") else None,
-        severity=FindingSeverity(str(row["severity"])),
-        message=str(row["message"]),
-        document=str(row["document"]) if row.get("document") is not None else None,
-        clause=str(row["clause"]) if row.get("clause") is not None else None,
-        ruleStatus=rule_status,
-        conflictDetails=(
-            dict(row["conflict_details"])
-            if isinstance(row.get("conflict_details"), Mapping)
-            else None
-        ),
-        details=(
-            dict(row["details"]) if isinstance(row.get("details"), Mapping) else None
-        ),
-    )
-
-
 def _unprocessed_finding(
     drawing_id: str, drawing_status: str, room_count: int
 ) -> Finding:
@@ -1869,29 +1844,6 @@ def get_findings_for_drawing(
         supabase, "passages", drawing_id=drawing_id
     )
 
-    placement_report = resolved_drawing.get("placement_report")
-    audit_failed = (
-        isinstance(placement_report, Mapping)
-        and placement_report.get("audit_status") == "failed"
-    )
-
-    if not audit_failed:
-        try:
-            persisted_resp = (
-                supabase.table("findings")
-                .select("*")
-                .eq("drawing_id", drawing_id)
-                .execute()
-            )
-            persisted_rows = all_rows(persisted_resp)
-        except Exception as exc:
-            if not (isinstance(exc, KeyError) or _is_missing_table_error(exc)):
-                raise
-            persisted_rows = []
-
-        if persisted_rows:
-            return [_finding_from_db_row(row) for row in persisted_rows]
-
     return evaluate_drawing_findings(
         drawing_id=drawing_id,
         drawing_row=resolved_drawing,
@@ -2001,7 +1953,11 @@ def sync_findings_after_mutation(
     *,
     drawing_row: Mapping[str, Any] | None = None,
 ) -> list[Finding]:
-    """Recompute and persist findings right after a manual edit mutation."""
+    """Best-effort audit sync after a committed manual edit mutation.
+
+    Errors during audit re-evaluation or persistence are logged and isolated so
+    an already-committed edit never returns HTTP 500.
+    """
     try:
         return evaluate_and_persist_findings(
             supabase,
@@ -2009,14 +1965,11 @@ def sync_findings_after_mutation(
             drawing_row=drawing_row,
             persist=True,
         )
-    except HTTPException as exc:
-        if exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE and isinstance(
-            exc.__cause__, KeyError
-        ):
-            logger.debug(
-                "Skipping findings sync in minimal fake environment for %s: %s",
-                drawing_id,
-                exc.__cause__,
-            )
-            return []
-        raise
+    except Exception as exc:
+        logger.warning(
+            "Post-mutation compliance audit sync failed for drawing %s: %s",
+            drawing_id,
+            exc,
+            exc_info=True,
+        )
+        return []
