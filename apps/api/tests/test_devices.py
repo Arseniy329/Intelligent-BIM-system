@@ -229,11 +229,13 @@ class TestDevicesApi(unittest.TestCase):
     # PATCH /devices/{id}
 
     def get_persisted_device(self) -> dict[str, Any]:
-        self.drawing_row.update({
-            "created_at": "2026-11-15T10:00:00Z",
-            "original_file_name": "source.dxf",
-            "storage_path": "source.dxf",
-        })
+        self.drawing_row.update(
+            {
+                "created_at": "2026-11-15T10:00:00Z",
+                "original_file_name": "source.dxf",
+                "storage_path": "source.dxf",
+            }
+        )
         self.supabase.storage.from_.return_value.create_signed_url.return_value = {
             "signedUrl": "https://storage.example/source.dxf"
         }
@@ -243,9 +245,12 @@ class TestDevicesApi(unittest.TestCase):
 
     def test_relevant_edits_clear_persisted_rule_association(self) -> None:
         other_room = str(uuid4())
-        self.rooms_table.rows.append({
-            "id": other_room, "drawing_id": self.drawing_id,
-        })
+        self.rooms_table.rows.append(
+            {
+                "id": other_room,
+                "drawing_id": self.drawing_id,
+            }
+        )
         original = dict(self.device_row)
         for payload in (
             {"type": "sounder"},

@@ -18,6 +18,7 @@ from src.core.auth import CurrentUser, get_current_user
 from src.infrastructure.supabase import get_supabase_client
 from src.modules.drawings.access import all_rows, first_row, get_drawing_for_user
 from src.modules.drawings.service import get_unit_scale_m
+from src.modules.findings.service import evaluate_and_persist_findings
 from src.modules.rooms.service import (
     get_room_types,
     room_from_row,
@@ -140,6 +141,7 @@ async def update_room(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Room not found"
         )
+    evaluate_and_persist_findings(supabase, str(drawing["id"]), drawing_row=drawing)
     return room_from_row(updated)
 
 
@@ -177,6 +179,7 @@ async def create_room(
         "updated_at": now,
     }
     inserted = first_row(supabase.table("rooms").insert(values).execute())
+    evaluate_and_persist_findings(supabase, str(drawing_id), drawing_row=drawing)
     return room_from_row(inserted if inserted is not None else values)
 
 
@@ -186,13 +189,14 @@ async def delete_room(
     supabase: Annotated[Client, Depends(get_supabase_client)],
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Response:
-    _get_room_for_user(supabase, room_id, current_user)
+    _, drawing = _get_room_for_user(supabase, room_id, current_user)
 
     # devices.room_id has no foreign key, so detach the devices explicitly.
     supabase.table("devices").update({"room_id": None}).eq(
         "room_id", str(room_id)
     ).execute()
     supabase.table("rooms").delete().eq("id", str(room_id)).execute()
+    evaluate_and_persist_findings(supabase, str(drawing["id"]), drawing_row=drawing)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -203,7 +207,7 @@ async def confirm_rooms(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> list[Room]:
     """Confirm the outlines of all rooms of the drawing."""
-    get_drawing_for_user(supabase, drawing_id, current_user)
+    drawing = get_drawing_for_user(supabase, drawing_id, current_user)
 
     rows = all_rows(
         supabase.table("rooms")
@@ -211,6 +215,7 @@ async def confirm_rooms(
         .eq("drawing_id", str(drawing_id))
         .execute()
     )
+    evaluate_and_persist_findings(supabase, str(drawing_id), drawing_row=drawing)
     return [room_from_row(row) for row in rows if len(row_points(row)) >= 3]
 
 
@@ -307,6 +312,9 @@ async def create_room_zone(
         "updated_at": now,
     }
     inserted = first_row(supabase.table("room_zones").insert(values).execute())
+    evaluate_and_persist_findings(
+        supabase, str(room["drawing_id"]), drawing_row=drawing
+    )
     return zone_from_row(inserted if inserted is not None else values)
 
 
@@ -348,6 +356,9 @@ async def update_room_zone(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Zone not found"
         )
+    evaluate_and_persist_findings(
+        supabase, str(room["drawing_id"]), drawing_row=drawing
+    )
     return zone_from_row(updated)
 
 
@@ -357,7 +368,10 @@ async def delete_room_zone(
     supabase: Annotated[Client, Depends(get_supabase_client)],
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Response:
-    _get_zone_for_user(supabase, zone_id, current_user)
+    _, room, drawing = _get_zone_for_user(supabase, zone_id, current_user)
 
     supabase.table("room_zones").delete().eq("id", str(zone_id)).execute()
+    evaluate_and_persist_findings(
+        supabase, str(room["drawing_id"]), drawing_row=drawing
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

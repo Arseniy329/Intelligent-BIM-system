@@ -41,6 +41,7 @@ from src.modules.drawings.service import (
     list_drawings_for_user,
     stored_unit_scale_m,
 )
+from src.modules.findings.service import evaluate_and_persist_findings
 from src.modules.placement.manual_call_points import (
     describe_call_point_outcome,
     exits_from_rows,
@@ -727,6 +728,12 @@ async def place_drawing_devices(
         ).eq("id", drawing_id).execute()
 
         result_storage_path = generate_and_upload_result_dxf(drawing_id, supabase)
+
+        evaluate_and_persist_findings(
+            supabase,
+            drawing_id,
+            drawing_row=drawing_data,
+        )
 
         return {
             "drawing_id": drawing_id,

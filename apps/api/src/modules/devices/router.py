@@ -20,6 +20,7 @@ from src.core.auth import CurrentUser, get_current_user
 from src.infrastructure.supabase import get_supabase_client
 from src.modules.drawings.access import first_row, get_drawing_for_user
 from src.modules.drawings.service import generate_and_upload_result_dxf
+from src.modules.findings.service import evaluate_and_persist_findings
 
 router = APIRouter(tags=["devices"])
 
@@ -150,6 +151,7 @@ async def create_device(
     }
     inserted = first_row(supabase.table("devices").insert(values).execute())
     _regenerate_result(supabase, str(drawing_id))
+    evaluate_and_persist_findings(supabase, str(drawing_id))
     return device_from_row(inserted if inserted is not None else values)
 
 
@@ -195,9 +197,7 @@ async def update_device(
         "room_id": str(UUID(str(device["room_id"]))) if device.get("room_id") else None,
     }
     if any(
-        values[key] != previous
-        for key, previous in persisted.items()
-        if key in values
+        values[key] != previous for key, previous in persisted.items() if key in values
     ):
         values["rule_id"] = None
 
@@ -211,6 +211,7 @@ async def update_device(
             status_code=status.HTTP_404_NOT_FOUND, detail="Device not found"
         )
     _regenerate_result(supabase, drawing_id)
+    evaluate_and_persist_findings(supabase, drawing_id)
     return device_from_row(updated)
 
 
@@ -223,5 +224,7 @@ async def delete_device(
     device = _get_device_for_user(supabase, device_id, current_user)
 
     supabase.table("devices").delete().eq("id", str(device_id)).execute()
-    _regenerate_result(supabase, str(device["drawing_id"]))
+    drawing_id = str(device["drawing_id"])
+    _regenerate_result(supabase, drawing_id)
+    evaluate_and_persist_findings(supabase, drawing_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
