@@ -3,12 +3,13 @@
 import * as React from "react";
 import type { RoomType } from "@bim/contracts";
 import { cn } from "@/lib/utils";
-import type { Room } from "@/types/rooms";
+import type { Room, RoomZone } from "@/types/rooms";
 import { useRoomTypes } from "@/lib/rooms/room-types-api";
 import { parseHeightInput, HEIGHT_ERROR_MESSAGE } from "@/lib/rooms/validation";
 
 export interface RoomEditFormProps {
   room: Room;
+  zones?: RoomZone[];
   roomTypes?: RoomType[];
   onSave?: (updatedRoom: Room) => void | Promise<void>;
   onCancel?: () => void;
