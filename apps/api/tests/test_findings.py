@@ -1,6 +1,9 @@
 """Unit & integration tests for BIM-77 fire-safety compliance findings."""
 
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -1295,6 +1298,348 @@ class TestFindingsMigrationSecurity(unittest.TestCase):
             normalized,
         )
         self.assertNotIn("to authenticated, service_role", normalized)
+
+    def test_migration_018_real_postgres_rls_and_privileges(self) -> None:
+        migration_path = (
+            API_DIR.parent.parent
+            / "supabase"
+            / "migrations"
+            / "018_replace_drawing_findings.sql"
+        )
+        migration_sql = migration_path.read_text(encoding="utf-8")
+
+        stubs_and_checks = (
+            """
+create role anon nologin;
+create role authenticated nologin;
+create role service_role nologin bypassrls;
+create schema auth;
+create function auth.uid() returns uuid language sql stable as $$
+  select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+$$;
+grant usage on schema auth to anon, authenticated, service_role;
+grant usage on schema public to anon, authenticated, service_role;
+alter default privileges in schema public
+  grant all on tables to anon, authenticated, service_role;
+
+create table public.profiles (
+  id uuid primary key,
+  role text not null default 'engineer'
+);
+create table public.drawings (
+  id uuid primary key,
+  owner_id uuid not null
+);
+"""
+            + migration_sql
+            + """
+insert into public.profiles (id, role) values
+  ('11111111-0000-0000-0000-000000000001', 'engineer'),
+  ('11111111-0000-0000-0000-000000000002', 'engineer'),
+  ('11111111-0000-0000-0000-000000000003', 'admin');
+insert into public.drawings (id, owner_id) values
+  ('aaaaaaaa-0000-0000-0000-000000000001', '11111111-0000-0000-0000-000000000001'),
+  ('aaaaaaaa-0000-0000-0000-000000000002', '11111111-0000-0000-0000-000000000002');
+
+begin;
+set local role service_role;
+select public.replace_drawing_findings(
+  'aaaaaaaa-0000-0000-0000-000000000001',
+  '[{"id": "bbbbbbbb-0000-0000-0000-000000000001",
+     "severity": "critical", "message": "Old"}]'::jsonb
+);
+select public.replace_drawing_findings(
+  'aaaaaaaa-0000-0000-0000-000000000001',
+  '[{"id": "bbbbbbbb-0000-0000-0000-000000000011",
+     "severity": "warning", "message": "Owner finding"}]'::jsonb
+);
+select public.replace_drawing_findings(
+  'aaaaaaaa-0000-0000-0000-000000000002',
+  '[{"id": "bbbbbbbb-0000-0000-0000-000000000002",
+     "severity": "critical", "message": "Other finding"}]'::jsonb
+);
+commit;
+
+do $$
+declare
+  owner_cnt int;
+  other_cnt int;
+  admin_cnt int;
+  denied boolean;
+begin
+  if has_table_privilege('anon', 'public.findings', 'SELECT,INSERT,UPDATE,DELETE') then
+    raise exception 'anon must have no table privileges on public.findings';
+  end if;
+  if not has_table_privilege('authenticated', 'public.findings', 'SELECT')
+     or has_table_privilege('authenticated', 'public.findings', 'INSERT')
+     or has_table_privilege('authenticated', 'public.findings', 'UPDATE')
+     or has_table_privilege('authenticated', 'public.findings', 'DELETE') then
+    raise exception 'authenticated must only have SELECT on public.findings';
+  end if;
+  if not has_table_privilege(
+       'service_role', 'public.findings', 'SELECT,INSERT,UPDATE,DELETE'
+     ) then
+    raise exception 'service_role must have full privileges on public.findings';
+  end if;
+  if has_function_privilege(
+       'anon', 'public.replace_drawing_findings(uuid, jsonb)', 'EXECUTE'
+     )
+     or has_function_privilege(
+       'authenticated', 'public.replace_drawing_findings(uuid, jsonb)', 'EXECUTE'
+     )
+     or not has_function_privilege(
+       'service_role', 'public.replace_drawing_findings(uuid, jsonb)', 'EXECUTE'
+     ) then
+    raise exception 'replace_drawing_findings EXECUTE privileges mismatch';
+  end if;
+
+  set local role authenticated;
+  perform set_config(
+    'request.jwt.claim.sub', '11111111-0000-0000-0000-000000000001', true
+  );
+  select count(*) into owner_cnt from public.findings;
+  if owner_cnt <> 1 then
+    raise exception 'owner_user expected 1 row, got %', owner_cnt;
+  end if;
+
+  perform set_config(
+    'request.jwt.claim.sub', '99999999-0000-0000-0000-000000000099', true
+  );
+  select count(*) into other_cnt from public.findings;
+  if other_cnt <> 0 then
+    raise exception 'other_user expected 0 rows, got %', other_cnt;
+  end if;
+
+  perform set_config(
+    'request.jwt.claim.sub', '11111111-0000-0000-0000-000000000003', true
+  );
+  select count(*) into admin_cnt from public.findings;
+  if admin_cnt <> 2 then
+    raise exception 'admin_user expected 2 rows, got %', admin_cnt;
+  end if;
+
+  denied := false;
+  begin
+    insert into public.findings (drawing_id, severity, message)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'warning', 'denied');
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'authenticated INSERT must fail'; end if;
+
+  denied := false;
+  begin
+    update public.findings set message = 'denied';
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'authenticated UPDATE must fail'; end if;
+
+  denied := false;
+  begin
+    delete from public.findings;
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'authenticated DELETE must fail'; end if;
+
+  denied := false;
+  begin
+    perform public.replace_drawing_findings(
+      'aaaaaaaa-0000-0000-0000-000000000001', '[]'::jsonb
+    );
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'authenticated RPC EXECUTE must fail'; end if;
+
+  reset role;
+  set local role anon;
+
+  denied := false;
+  begin
+    perform count(*) from public.findings;
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'anon SELECT must fail'; end if;
+
+  denied := false;
+  begin
+    insert into public.findings (drawing_id, severity, message)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'warning', 'denied');
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'anon INSERT must fail'; end if;
+
+  denied := false;
+  begin
+    update public.findings set message = 'denied';
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'anon UPDATE must fail'; end if;
+
+  denied := false;
+  begin
+    delete from public.findings;
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'anon DELETE must fail'; end if;
+
+  denied := false;
+  begin
+    perform public.replace_drawing_findings(
+      'aaaaaaaa-0000-0000-0000-000000000001', '[]'::jsonb
+    );
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'anon RPC EXECUTE must fail'; end if;
+
+  reset role;
+end
+$$;
+"""
+        )
+
+        if shutil.which("initdb") and shutil.which("pg_ctl") and shutil.which("psql"):
+            with tempfile.TemporaryDirectory(prefix="bim_pg_test_") as tmp_dir:
+                data_dir = Path(tmp_dir) / "data"
+                log_file = Path(tmp_dir) / "pg.log"
+                port = "55438"
+                subprocess.run(
+                    ["initdb", "-D", str(data_dir), "-U", "postgres", "--auth=trust"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                subprocess.run(
+                    [
+                        "pg_ctl",
+                        "-D",
+                        str(data_dir),
+                        "-l",
+                        str(log_file),
+                        "-o",
+                        f"-k {tmp_dir} -p {port} -c listen_addresses=127.0.0.1",
+                        "start",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                try:
+                    proc = subprocess.run(
+                        [
+                            "psql",
+                            "-h",
+                            "127.0.0.1",
+                            "-p",
+                            port,
+                            "-U",
+                            "postgres",
+                            "-d",
+                            "postgres",
+                            "-v",
+                            "ON_ERROR_STOP=1",
+                        ],
+                        input=stubs_and_checks,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        proc.returncode,
+                        0,
+                        f"PostgreSQL check failed:\n{proc.stdout}\n{proc.stderr}",
+                    )
+                finally:
+                    subprocess.run(
+                        ["pg_ctl", "-D", str(data_dir), "-m", "immediate", "stop"],
+                        check=False,
+                        capture_output=True,
+                    )
+            return
+
+        docker = shutil.which("docker")
+        if docker:
+            info = subprocess.run(
+                [docker, "info"], capture_output=True, text=True, check=False
+            )
+            img = subprocess.run(
+                [docker, "image", "inspect", "postgres:16-alpine"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if info.returncode == 0 and img.returncode == 0:
+                run = subprocess.run(
+                    [
+                        docker,
+                        "run",
+                        "--rm",
+                        "-e",
+                        "POSTGRES_PASSWORD=postgres",
+                        "-d",
+                        "postgres:16-alpine",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                cid = run.stdout.strip()
+                try:
+                    for _ in range(40):
+                        ready = subprocess.run(
+                            [
+                                docker,
+                                "exec",
+                                cid,
+                                "psql",
+                                "-h",
+                                "127.0.0.1",
+                                "-U",
+                                "postgres",
+                                "-d",
+                                "postgres",
+                                "-c",
+                                "SELECT 1",
+                            ],
+                            capture_output=True,
+                            check=False,
+                        )
+                        if ready.returncode == 0:
+                            break
+                    proc = subprocess.run(
+                        [
+                            docker,
+                            "exec",
+                            "-i",
+                            cid,
+                            "psql",
+                            "-h",
+                            "127.0.0.1",
+                            "-U",
+                            "postgres",
+                            "-d",
+                            "postgres",
+                            "-v",
+                            "ON_ERROR_STOP=1",
+                        ],
+                        input=stubs_and_checks,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        proc.returncode,
+                        0,
+                        f"Docker PG check failed:\n{proc.stdout}\n{proc.stderr}",
+                    )
+                finally:
+                    subprocess.run(
+                        [docker, "rm", "-f", cid], check=False, capture_output=True
+                    )
+                return
+
+        self.skipTest(
+            "Neither local PostgreSQL (initdb/pg_ctl/psql) nor cached Docker "
+            "postgres:16-alpine is available"
+        )
 
 
 if __name__ == "__main__":
