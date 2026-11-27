@@ -84,15 +84,11 @@ export function RoomsTable({
   const unconfirmedCount = rooms.filter(
     (r) => r.isConfirmed === false || r.status === "unconfirmed"
   ).length;
-<<<<<<< HEAD
   const incompleteCount = rooms.filter(
     (r) =>
-      !isRoomDataComplete(r) ||
+      !roomDataComplete(r) ||
       isInsufficientDataStatus(getRoomRuleStatusAndReason(r).status)
   ).length;
-=======
-  const incompleteCount = rooms.filter((r) => !roomDataComplete(r)).length;
->>>>>>> origin/dev
 
   // Check blocking reasons for the bottom warning banner
   const blockingReasons = getRoomBlockingReasons(rooms, hasUnsavedChanges, new Set(zones.map(zone => zone.roomId)));
@@ -177,8 +173,7 @@ export function RoomsTable({
                     rawRecord.review_status ??
                     rawRecord.reviewStatus
                 );
-                const showRuleBadge =
-                  hasExplicitRuleData || isInsufficient || Boolean(ruleReason);
+                const showRuleBadge = hasExplicitRuleData;
                 const displayReason =
                   ruleReason ??
                   (isInsufficient ? MISSING_REASON_FALLBACK : null);
@@ -251,18 +246,18 @@ export function RoomsTable({
 
                     {/* Column 6: Дані */}
                     <TableCell>
-<<<<<<< HEAD
                       {showRuleBadge ? (
                         <RuleStatusBadge
                           status={ruleStatus}
                           reason={displayReason}
                         />
+                      ) : zones.some(zone => zone.roomId === room.id) ? (
+                        <span className={isComplete ? "text-xs text-emerald-700" : "text-xs text-amber-800"}>
+                          {isComplete ? "Висоти зон задано" : "Недостатньо даних зон"}
+                        </span>
                       ) : (
                         <CompletenessBadge room={room} />
                       )}
-=======
-                      {zones.some(zone => zone.roomId === room.id) ? <span className={isComplete ? "text-xs text-emerald-700" : "text-xs text-amber-800"}>{isComplete ? "Висоти зон задано" : "Недостатньо даних зон"}</span> : <CompletenessBadge room={room} />}
->>>>>>> origin/dev
                     </TableCell>
 
                     {/* Column 7: Дія */}
@@ -365,14 +360,10 @@ export function RoomsTable({
         </div>
       </div>
 
-<<<<<<< HEAD
-      {/* 3. Bottom Soft Amber Warning Banner matching Figma 02-rooms */}
-=======
       {/* 3. Bottom Blocking Banner matching 02-rooms */}
       {zones.length > 0 && <p className="text-sm text-slate-600">Зони створюються на плані; тут редагується висота. Зони належать одному приміщенню.</p>}
       {zoneEditor?.draft?.kind === "zone" && zoneEditor.error && <p role="alert" className="rounded-lg bg-amber-50 p-3 text-amber-900">{zoneEditor.error}</p>}
       {zoneEditor?.uncertain && <button type="button" disabled={zoneEditor.busy} onClick={() => void zoneEditor.reconcile()}>Оновити дані після помилки</button>}
->>>>>>> origin/dev
       {hasBlocking && (
         <section
           role="alert"

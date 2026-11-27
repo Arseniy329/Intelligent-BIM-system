@@ -52,19 +52,13 @@ from src.modules.placement.manual_call_points import (
     rooms_from_rows,
 )
 from src.modules.placement.service import (
+    RuleRecord,
     build_placement_targets,
     describe_outcome,
     place_targets,
+    select_rule_for_room,
     summarize_outcomes,
 )
-<<<<<<< HEAD
-from src.modules.placement.service import (
-    RuleRecord,
-    place_devices_from_rule,
-    select_rule_for_room,
-)
-=======
->>>>>>> origin/dev
 from src.modules.rooms.service import room_from_row, row_points
 
 router = APIRouter(prefix="/drawings", tags=["drawings"])
@@ -600,14 +594,6 @@ async def place_drawing_devices(
                 detail="No rooms found for this drawing",
             )
 
-<<<<<<< HEAD
-        rules_response = supabase.table("rules").select("*").limit(100).execute()
-        if (
-            not rules_response.data
-            or not isinstance(rules_response.data, list)
-            or len(rules_response.data) == 0
-        ):
-=======
         rules_response = supabase.table("rules").select("*").execute()
         rule_rows = (
             [row for row in rules_response.data if isinstance(row, dict)]
@@ -615,140 +601,11 @@ async def place_drawing_devices(
             else []
         )
         if not rule_rows:
->>>>>>> origin/dev
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No fire safety rules available",
             )
 
-<<<<<<< HEAD
-        rules_list = [r for r in rules_response.data if isinstance(r, dict)]
-
-        new_device_rows: list[dict[str, Any]] = []
-        outcomes: list[dict[str, Any]] = []
-
-        for room in rooms_data:
-            if not isinstance(room, dict):
-                continue
-
-            room_id = str(room["id"]) if room.get("id") else None
-            room_name = str(room.get("name") or "")
-
-            raw_h = room.get("height")
-            height_m: float | None = None
-            if raw_h is not None:
-                try:
-                    height_m = float(raw_h)
-                except (TypeError, ValueError):
-                    height_m = None
-
-            if height_m is None or height_m <= 0:
-                outcomes.append(
-                    {
-                        "room_id": room_id,
-                        "name": room_name,
-                        "height_m": height_m,
-                        "status": "insufficient_data",
-                        "reason": "Не введено висоту",
-                        "device_count": 0,
-                        "rule": None,
-                    }
-                )
-                continue
-
-            poly_data = room.get("polygon")
-            coords: list[tuple[float, float]] = []
-            if isinstance(poly_data, list):
-                for pt in poly_data:
-                    if isinstance(pt, dict) and "x" in pt and "y" in pt:
-                        coords.append((float(pt["x"]), float(pt["y"])))
-                    elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                        coords.append((float(pt[0]), float(pt[1])))
-
-            if len(coords) < 3:
-                outcomes.append(
-                    {
-                        "room_id": room_id,
-                        "name": room_name,
-                        "height_m": height_m,
-                        "status": "insufficient_data",
-                        "reason": "Некоректний контур",
-                        "device_count": 0,
-                        "rule": None,
-                    }
-                )
-                continue
-
-            matched_rule = select_rule_for_room(
-                rules_list,
-                device_type="smoke_detector",
-                room_type=room.get("type"),
-                room_height_m=height_m,
-            )
-            if (
-                matched_rule is None
-                and len(rules_list) == 1
-                and "threshold" in rules_list[0]
-                and "device_type" not in rules_list[0]
-            ):
-                rule_fallback = rules_list[0]
-                try:
-                    th = float(rule_fallback["threshold"])
-                    matched_rule = RuleRecord(
-                        id=str(rule_fallback["id"]),
-                        threshold=th,
-                        status=str(rule_fallback.get("status") or "needs_review"),
-                    )
-                except (ValueError, TypeError):
-                    matched_rule = None
-
-            if matched_rule is None:
-                outcomes.append(
-                    {
-                        "room_id": room_id,
-                        "name": room_name,
-                        "height_m": height_m,
-                        "status": "insufficient_data",
-                        "reason": f"Немає правила для висоти {height_m:g} м",
-                        "device_count": 0,
-                        "rule": None,
-                    }
-                )
-                continue
-
-            try:
-                placed_devices = place_devices_from_rule(coords, matched_rule)
-            except ValueError:
-                outcomes.append(
-                    {
-                        "room_id": room_id,
-                        "name": room_name,
-                        "height_m": height_m,
-                        "status": "insufficient_data",
-                        "reason": (
-                            "Не вдалося розмістити прилади: контур некоректний"
-                            " або сітка надто щільна"
-                        ),
-                        "device_count": 0,
-                        "rule": None,
-                    }
-                )
-                continue
-
-            for d in placed_devices:
-                new_device_rows.append(
-                    {
-                        "id": str(uuid4()),
-                        "drawing_id": drawing_id,
-                        "room_id": room_id,
-                        "rule_id": str(matched_rule.id),
-                        "type": "smoke_detector",
-                        "layer": "SYS_FIRE_SENSORS",
-                        "x": float(d.x),
-                        "y": float(d.y),
-                    }
-                )
-=======
         zone_rows = _select_drawing_rows_strict(supabase, "room_zones", drawing_id)
         exit_rows = _select_drawing_rows_strict(supabase, "exits", drawing_id)
         passage_rows = _select_drawing_rows_strict(supabase, "passages", drawing_id)
@@ -832,24 +689,6 @@ async def place_drawing_devices(
                 }
                 for placed in call_points.devices
             )
->>>>>>> origin/dev
-
-            outcomes.append(
-                {
-                    "room_id": room_id,
-                    "name": room_name,
-                    "height_m": height_m,
-                    "status": "placed",
-                    "reason": None,
-                    "device_count": len(placed_devices),
-                    "rule": {
-                        "id": matched_rule.id,
-                        "rule_id": matched_rule.rule_id,
-                        "name": matched_rule.name,
-                        "verification_status": matched_rule.status,
-                    },
-                }
-            )
 
         supabase.table("devices").delete().eq("drawing_id", drawing_id).execute()
 
@@ -892,35 +731,6 @@ async def place_drawing_devices(
 
         result_storage_path = generate_and_upload_result_dxf(drawing_id, supabase)
 
-<<<<<<< HEAD
-        skipped = [
-            {
-                "room_id": o["room_id"],
-                "name": o["name"],
-                "scope": "room",
-                "reason": o["reason"],
-                "status": o["status"],
-            }
-            for o in outcomes
-            if o["status"] != "placed"
-        ]
-
-        if not skipped:
-            placement_status = "complete"
-        elif not new_device_rows:
-            placement_status = "insufficient_data"
-        else:
-            placement_status = "partial"
-
-        return {
-            "drawing_id": drawing_id,
-            "status": "processed",
-            "result_path": result_storage_path,
-            "placement_status": placement_status,
-            "device_count": len(new_device_rows),
-            "placements": outcomes,
-            "skipped": skipped,
-=======
         audit_status = "ok"
         audit_warning: str | None = None
         try:
@@ -967,7 +777,6 @@ async def place_drawing_devices(
             "placements": [describe_outcome(outcome) for outcome in outcomes],
             **placement_report,
             "audit_status": audit_status,
->>>>>>> origin/dev
         }
         if audit_warning is not None:
             response_payload["audit_warning"] = audit_warning

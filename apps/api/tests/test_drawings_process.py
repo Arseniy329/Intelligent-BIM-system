@@ -1227,12 +1227,8 @@ class TestDrawingsProcessEndpoint(unittest.TestCase):
         self.assertTrue(mid_data["sourceDownloadUrl"].endswith("/source.dxf"))
         self.assertIsNotNone(mid_data["sourceDownloadUrlExpiresAt"])
 
-<<<<<<< HEAD
-        # Without height devices are not placed, so engineer sets it before placement
-=======
         # BIM-73: без висоти сповіщувачі не розміщуються, тож інженер вводить її
         # (PATCH /rooms/{id}) до розміщення.
->>>>>>> origin/dev
         for room_row in db["rooms"]:
             room_row["height"] = 3.0
 
