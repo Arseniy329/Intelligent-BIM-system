@@ -231,6 +231,48 @@
         },
         "confirmed": {
           "type": "boolean"
+        },
+        "rule_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "verified",
+            "needs_review",
+            "review_needed",
+            "insufficient_data",
+            null
+          ],
+          "description": "Статус верифікації або розміщення правила для приміщення"
+        },
+        "rule_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Причина пропуску розміщення або невизначеності правила"
+        },
+        "ruleStatus": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "verified",
+            "needs_review",
+            "review_needed",
+            "insufficient_data",
+            null
+          ],
+          "description": "Аліас для rule_status (camelCase)"
+        },
+        "ruleReason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Аліас для rule_reason (camelCase)"
         }
       }
     },

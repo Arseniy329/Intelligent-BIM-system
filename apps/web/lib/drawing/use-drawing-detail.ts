@@ -24,7 +24,8 @@ export function useDrawingDetail(id: string, api: DrawingApi, demo: boolean) {
     queryFn: ({ signal }) => api.getDrawing(id, signal),
     retry: false,
     refetchOnWindowFocus: false,
-    gcTime: 0,
+    staleTime: 5000,
+    gcTime: 5000,
     refetchInterval: query => !!api.getJob && !timedOut && !query.state.error &&
       (query.state.data && drawingMetadata(query.state.data).status === "processing" ||
         job?.status !== "failed" && !!job && query.state.data && !["processed", "failed", "error"].includes(drawingMetadata(query.state.data).status))
