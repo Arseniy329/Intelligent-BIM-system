@@ -1,18 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchRules } from "@/lib/api/rules";
+import { fetchRules, type Rule } from "@/lib/api/rules";
 import type { DrawingStatus, DrawingDetailStatus, Finding } from "@bim/contracts";
 import { DrawingViewer, type DrawingViewerProps } from "./drawing-viewer";
 import { EmptyState } from "@/components/ui/empty-state";
 import { drawingApi, drawingErrorMessage, drawingMetadata, downloadLink, fetchDrawingDownload, isDrawingResult, placementReport, processingErrorMessage,
-  type DownloadKind, type DrawingApi, type DrawingResponse } from "@/lib/drawing/drawing-api";
+  type DownloadKind, type DrawingApi, type DrawingResponse, type DrawingResultView } from "@/lib/drawing/drawing-api";
 import { useDrawingDetail } from "@/lib/drawing/use-drawing-detail";
 import { RoomsTable, RoomEditForm } from "@/components/rooms";
 import { mapContractRoomToRoom, getRoomBlockingReasons, type Room } from "@/types/rooms";
 import { useUpdateRoomMutation } from "@/lib/rooms/rooms-api";
+import { useRoomTypes } from "@/lib/rooms/room-types-api";
 import { usePlanEditor } from "@/lib/drawing/use-plan-editor";
 import { PlanEditorPanel, PlanWorkPanel } from "./plan-editor-panel";
 import { INITIAL_PLAN_LAYERS, PlanLayersPanel } from "./plan-layers";
@@ -21,9 +22,12 @@ import { planFeaturesApi } from "@/lib/drawing/plan-features-api";
 import { cn } from "@/lib/utils";
 import workspaceStyles from "./drawing-workspace.module.css";
 import findingsStyles from "./findings-panel.module.css";
+import reportStyles from "./engineering-report.module.css";
 import { FindingsPanel } from "./findings-panel";
+import { EngineeringReport } from "./engineering-report";
 import { useFindings } from "@/lib/drawing/use-findings";
-import { findingTarget } from "@/lib/drawing/findings";
+import { fetchFindings, findingTarget } from "@/lib/drawing/findings";
+import { buildEngineeringReportData, downloadHtmlReport, triggerBlobDownload } from "@/lib/drawing/report";
 import type { DrawingPoint, DrawingViewportController } from "@/lib/drawing/viewer-adapter";
 
 export type DrawingTab = "plan" | "rooms" | "rules" | "findings" | "report";
@@ -105,7 +109,7 @@ function DrawingDetailContent({
   const rules = useQuery({
     queryKey: ["drawing-rules", id, state.detail.dataUpdatedAt],
     queryFn: ({ signal }) => fetchRules(signal),
-    enabled: !demo && (!!loadedResult?.devices.some(device => device.ruleId) || activeTab === "findings" && !!loadedResult),
+    enabled: !demo && (!!loadedResult?.devices.some(device => device.ruleId) || (activeTab === "findings" || activeTab === "report") && !!loadedResult),
     retry: false, refetchOnWindowFocus: false,
   });
   const editor = usePlanEditor({ drawingId: id, rooms: loadedResult?.rooms ?? [], devices: loadedResult?.devices ?? [], selectRoom: setSelectedRoomId,
@@ -151,26 +155,56 @@ function DrawingDetailContent({
   const fileOperation = useRef<AbortController | null>(null);
   const downloadLock = useRef(false);
   useEffect(() => () => fileOperation.current?.abort(), []);
+  type DownloadAction = DownloadKind | "report-bundle";
   const download = useMutation({
-    mutationFn: async (kind: DownloadKind) => {
+    mutationFn: async (kind: DownloadAction): Promise<"dxf" | "bundle" | "html-only"> => {
       fileOperation.current = new AbortController();
       const { signal } = fileOperation.current;
+      if (kind === "report-bundle") {
+        const snapshot = state.detail.data;
+        if (!snapshot || !isDrawingResult(snapshot)) {
+          throw new Error("Результат обробки ще недоступний.");
+        }
+        const canDownloadDxf = snapshot.drawing.status === "processed" && !!snapshot.downloadUrl;
+        let dxfFile: { blob: Blob; fileName: string } | null = null;
+        if (canDownloadDxf) {
+          dxfFile = await fetchDrawingDownload(api, id, "result", signal);
+          if (signal.aborted) return "bundle";
+        }
+        let reportFindings: Finding[] = findings.data ?? [];
+        if (!demo && findings.data === undefined && !findings.isError && snapshot.drawing.status === "processed") {
+          reportFindings = await fetchFindings(id, signal).catch(() => []);
+          if (signal.aborted) return "bundle";
+        }
+        let reportRules: Rule[] = rules.data ?? [];
+        if (!demo && rules.data === undefined && !rules.isError &&
+          (reportFindings.some(f => f.ruleId) || snapshot.devices.some(d => d.ruleId))) {
+          reportRules = await fetchRules(signal).catch(() => []);
+          if (signal.aborted) return "bundle";
+        }
+        const reportData = buildEngineeringReportData({
+          drawing: snapshot.drawing,
+          rooms: snapshot.rooms,
+          devices: snapshot.devices,
+          findings: reportFindings,
+          rules: reportRules,
+          placementWarnings: placementReport(snapshot)?.warnings ?? [],
+        });
+        if (dxfFile) {
+          triggerBlobDownload(dxfFile.blob, dxfFile.fileName);
+        }
+        downloadHtmlReport(reportData);
+        return dxfFile ? "bundle" : "html-only";
+      }
       const file = await fetchDrawingDownload(api, id, kind, signal);
-      if (signal.aborted) return;
-      const url = URL.createObjectURL(file.blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = file.fileName;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      // Give the browser time to start consuming the blob, then release it.
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      if (signal.aborted) return "dxf";
+      triggerBlobDownload(file.blob, file.fileName);
+      return "dxf";
     },
     onSettled: () => { downloadLock.current = false; },
   });
-  const startDownload = (kind: DownloadKind) => {
-    if (downloadLock.current || kind === "result" && editor.blocked) return;
+  const startDownload = (kind: DownloadAction) => {
+    if (downloadLock.current || (kind === "result" || kind === "report-bundle") && editor.blocked) return;
     downloadLock.current = true;
     download.mutate(kind);
   };
@@ -220,21 +254,47 @@ function DrawingDetailContent({
 
   return (
     <div className={workspaceStyles.workspace} data-drawing-workspace="">
-      <nav aria-label="Шлях до креслення" className={workspaceStyles.breadcrumb}>
+      <nav aria-label="Шлях до креслення" className={workspaceStyles.breadcrumb} data-print-hide="true">
         {["Робочий простір", "Креслення"].map(label => <Fragment key={label}>
           <Link href="/drawings" aria-disabled={editor.blocked || undefined}
             onClick={event => { if (editor.blocked) event.preventDefault(); }}>{label}</Link><span>/</span>
         </Fragment>)}
         <span>{metadata.originalFileName}</span>
       </nav>
-      {demo && <p role="status" className="rounded-lg border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-subtle)] p-3">Демонстраційний режим. Локальний тестовий DXF та ілюстративні дані; реальна обробка не виконується.</p>}
-      <div className={workspaceStyles.heading}>
+      {demo && <p role="status" data-print-hide="true" className="rounded-lg border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-subtle)] p-3">Демонстраційний режим. Локальний тестовий DXF та ілюстративні дані; реальна обробка не виконується.</p>}
+      <div className={workspaceStyles.heading} data-print-hide="true">
         <div className="min-w-0 space-y-2">
           <p className={workspaceStyles.eyebrow}>КРЕСЛЕННЯ</p>
           <h1 className="break-all text-2xl font-semibold">{metadata.originalFileName.replace(/\.dxf$/i, "")}</h1>
           <p className={workspaceStyles.fileName}>{metadata.originalFileName}</p>
         </div>
         <div className={workspaceStyles.headingActions}>
+        <button
+          type="button"
+          className={primaryButton}
+          disabled={
+            download.isPending ||
+            metadata.status !== "processed" ||
+            !result ||
+            state.busy ||
+            editor.blocked
+          }
+          onClick={() => startDownload("report-bundle")}
+        >
+          {download.isPending && download.variables === "report-bundle"
+            ? "Підготовка звіту…"
+            : "Завантажити звіт"}
+        </button>
+        {!demo && metadata.status === "processed" && !!result && (
+          <Link
+            className={button}
+            href={`/drawings/${id}/report`}
+            aria-disabled={editor.blocked || undefined}
+            onClick={event => { if (editor.blocked) event.preventDefault(); }}
+          >
+            Відкрити звіт
+          </Link>
+        )}
         <Link className={button} href="/upload" aria-disabled={editor.blocked || undefined}
           onClick={event => { if (editor.blocked) event.preventDefault(); }}>Замінити файл</Link>
         <details className={workspaceStyles.operations}><summary aria-label="Дії з кресленням">⋯</summary><div className="flex flex-wrap gap-2">
@@ -296,13 +356,21 @@ function DrawingDetailContent({
       {error && <p role="alert" className={errorMessage}>{drawingErrorMessage(error)}</p>}
       {(metadata.status === "failed" || metadata.status === "error" || processingFailed) && <p role="alert" className={errorMessage}>{processingErrorMessage(result?.drawing.errorMessage ?? state.currentJob?.errorMessage)}</p>}
       {state.timedOut && <p role="status">Автоматичне оновлення зупинено через 2 хвилини. Обробка може тривати на сервері. Натисніть «Оновити стан», щоб перевірити результат.</p>}
-      {download.isError && <p role="alert" className={errorMessage}>{drawingErrorMessage(download.error)}</p>}
-      {download.isSuccess && <p role="status">DXF передано браузеру для збереження.</p>}
+      {download.isError && <p role="alert" data-print-hide="true" className={errorMessage}>{drawingErrorMessage(download.error)}</p>}
+      {download.isSuccess && (
+        <p role="status" data-print-hide="true">
+          {download.data === "bundle"
+            ? "Звіт та DXF результату передано браузеру для збереження."
+            : download.data === "html-only"
+              ? "HTML-звіт передано браузеру для збереження."
+              : "DXF передано браузеру для збереження."}
+        </p>
+      )}
 
-      {/* Preserve the existing rules/report functionality; BIM-78 is outside this change. */}
       <div
         role="tablist"
         aria-label="Розділи креслення"
+        data-print-hide="true"
         className="flex border-b border-[var(--bim-color-border-default)] gap-1 pt-2"
       >
         <button
@@ -594,14 +662,125 @@ function DrawingDetailContent({
       )}
 
       {activeTab === "report" && (
-        <section aria-label="Звіт" className="rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-6 space-y-3">
-          <h2 className="text-xl font-semibold">Звіт</h2>
-          <p className="text-sm text-[var(--bim-color-text-secondary)]">
-            Зведений звіт про відповідність проекту вимогам безпеки.
-          </p>
-        </section>
+        <DrawingReportTab
+          id={id}
+          demo={demo}
+          data={data}
+          result={result}
+          findings={currentFindings}
+          findingsLoading={!demo && (findingsSuspended || findingsApplicable && (findings.isPending || findings.isFetching))}
+          findingsError={findings.error}
+          onRetryFindings={() => void findings.refetch()}
+          rules={rules.isError ? [] : rules.data ?? []}
+          placementWarnings={stepWarnings}
+        />
       )}
-      <footer className={workspaceStyles.footer}>Інтелектуальна BIM · Пожежна безпека</footer>
+      <footer className={workspaceStyles.footer} data-print-hide="true">Інтелектуальна BIM · Пожежна безпека</footer>
+    </div>
+  );
+}
+
+function DrawingReportTab({
+  id,
+  demo,
+  data,
+  result,
+  findings,
+  findingsLoading,
+  findingsError,
+  onRetryFindings,
+  rules,
+  placementWarnings,
+}: {
+  id: string;
+  demo: boolean;
+  data: DrawingResponse;
+  result: DrawingResultView | null;
+  findings: Finding[];
+  findingsLoading: boolean;
+  findingsError: unknown;
+  onRetryFindings: () => void;
+  rules: Rule[];
+  placementWarnings: string[];
+}) {
+  const roomTypes = useRoomTypes();
+  const [htmlSaved, setHtmlSaved] = useState(false);
+  const metadata = drawingMetadata(data);
+
+  const reportData = useMemo(
+    () =>
+      buildEngineeringReportData({
+        drawing: metadata,
+        rooms: result?.rooms ?? [],
+        devices: result?.devices ?? [],
+        findings,
+        rules,
+        roomTypes: roomTypes.data,
+        placementWarnings,
+      }),
+    [metadata, result, findings, rules, roomTypes.data, placementWarnings],
+  );
+
+  if (!result) {
+    return (
+      <EmptyState
+        title="Звіт ще недоступний"
+        description="Спочатку виконайте обробку креслення та розміщення приладів, щоб сформувати інженерний звіт."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className={reportStyles.actionsBar} data-print-hide="true">
+        <div className={reportStyles.actionsGroup}>
+          <button
+            type="button"
+            className={primaryButton}
+            onClick={() => window.print()}
+          >
+            Друк / Зберегти як PDF
+          </button>
+          <button
+            type="button"
+            className={button}
+            onClick={() => {
+              downloadHtmlReport(reportData);
+              setHtmlSaved(true);
+            }}
+          >
+            Завантажити HTML-звіт
+          </button>
+          {!demo && (
+            <Link className={button} href={`/drawings/${id}/report`}>
+              Окрема сторінка звіту
+            </Link>
+          )}
+        </div>
+        {htmlSaved && (
+          <p role="status" className="text-sm text-[var(--bim-color-text-secondary)]">
+            HTML-звіт передано браузеру для збереження.
+          </p>
+        )}
+      </div>
+
+      {metadata.status !== "processed" && (
+        <div
+          role="status"
+          data-print-hide="true"
+          className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+        >
+          Розміщення приладів і перевірка норм ще не завершені. Після завершення розміщення у звіті з’являться повні дані перевірки.
+        </div>
+      )}
+
+      <EngineeringReport
+        data={reportData}
+        findingsLoading={findingsLoading}
+        findingsError={findingsError}
+        onRetryFindings={onRetryFindings}
+        headingLevel="h2"
+      />
     </div>
   );
 }

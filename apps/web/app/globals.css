@@ -125,3 +125,22 @@ main:has([data-drawing-workspace]) { max-width: 1440px; padding: 32px 40px 40px;
   .drawing-workspace-brand strong { font-size: 14px; }
   .drawing-workspace-new { padding: 8px; }
 }
+@media print {
+  .drawing-workspace-header,
+  .app-footer,
+  [data-print-hide] {
+    display: none !important;
+  }
+  html,
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+  main,
+  .app-main,
+  main:has([data-drawing-workspace]) {
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+}
