@@ -6,6 +6,7 @@ import {
 } from "@/lib/drawing/report";
 import { drawingErrorMessage } from "@/lib/drawing/drawing-api";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import styles from "./engineering-report.module.css";
 
 function severityTone(
@@ -60,6 +61,44 @@ export function EngineeringReport({
         </div>
       </header>
 
+      {(data.auditStatus === "unavailable" || !!findingsError) && (
+        <div
+          role="alert"
+          className={cn(styles.auditBanner, styles.auditBannerUnavailable)}
+        >
+          <strong>Неповний звіт: результати аудиту недоступні</strong>
+          <p>
+            Аудит нормативних вимог недоступний — перевірку не виконано.
+            Відсутність записів нижче не підтверджує відповідність нормам.
+          </p>
+          {(data.auditError || findingsError != null) && (
+            <p className={styles.auditBannerDetail}>
+              {data.auditError ?? drawingErrorMessage(findingsError)}
+            </p>
+          )}
+          {onRetryFindings && (
+            <div data-print-hide="true" className="mt-3">
+              <Button variant="outline" size="sm" onClick={onRetryFindings}>
+                Повторити перевірку
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {data.auditStatus === "pending" && !findingsError && (
+        <div
+          role="status"
+          className={cn(styles.auditBanner, styles.auditBannerPending)}
+        >
+          <strong>Очікується завершення аудиту</strong>
+          <p>
+            Перевірку відповідності нормативним вимогам ще не завершено. Дані
+            про порушення можуть бути неповними.
+          </p>
+        </div>
+      )}
+
       <section className={styles.summaryGrid} aria-label="Зведення проєкту">
         <div className={styles.summaryCard}>
           <span className={styles.summaryLabel}>Приміщення</span>
@@ -81,12 +120,18 @@ export function EngineeringReport({
         <div className={styles.summaryCard}>
           <span className={styles.summaryLabel}>Виявлені порушення</span>
           <span className={styles.summaryValue}>
-            {data.summary.findingCount}
+            {data.auditStatus === "unavailable" || !!findingsError
+              ? "Недоступно"
+              : data.auditStatus === "pending" || findingsLoading
+                ? "Очікується"
+                : data.summary.findingCount}
           </span>
           <span className={styles.summarySub}>
-            Критичних: {data.summary.criticalCount} · Попереджень:{" "}
-            {data.summary.warningCount} · Конфліктів:{" "}
-            {data.summary.conflictCount}
+            {data.auditStatus === "unavailable" || !!findingsError
+              ? "Аудит не виконано — звіт неповний"
+              : data.auditStatus === "pending" || findingsLoading
+                ? "Очікується завершення аудиту"
+                : `Критичних: ${data.summary.criticalCount} · Попереджень: ${data.summary.warningCount} · Конфліктів: ${data.summary.conflictCount}`}
           </span>
         </div>
         <div className={styles.summaryCard}>
@@ -212,13 +257,19 @@ export function EngineeringReport({
         <h2 className={styles.sectionHeading}>
           Порушення та нормативні посилання
         </h2>
-        {findingsLoading ? (
-          <p role="status" className={styles.emptyBox}>
-            Завантаження результатів перевірки…
-          </p>
-        ) : findingsError ? (
-          <div role="alert" className={styles.emptyBox}>
-            <p>{drawingErrorMessage(findingsError)}</p>
+        {data.auditStatus === "unavailable" || !!findingsError ? (
+          <div
+            role="alert"
+            className={cn(styles.auditBanner, styles.auditBannerUnavailable)}
+          >
+            <strong>
+              Аудит нормативних вимог недоступний — перевірку не виконано.
+            </strong>
+            {(data.auditError || findingsError != null) && (
+              <p className={styles.auditBannerDetail}>
+                {data.auditError ?? drawingErrorMessage(findingsError)}
+              </p>
+            )}
             {onRetryFindings && (
               <div data-print-hide="true" className="mt-3">
                 <Button variant="outline" size="sm" onClick={onRetryFindings}>
@@ -226,6 +277,14 @@ export function EngineeringReport({
                 </Button>
               </div>
             )}
+          </div>
+        ) : data.auditStatus === "pending" || findingsLoading ? (
+          <div
+            role="status"
+            className={cn(styles.auditBanner, styles.auditBannerPending)}
+          >
+            <strong>Очікується завершення аудиту.</strong>
+            <p>Результати перевірки з’являться після завершення обробки.</p>
           </div>
         ) : data.findings.length === 0 ? (
           <p className={styles.emptyBox}>

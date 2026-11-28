@@ -23,6 +23,7 @@ import { ApiHttpError } from "@/lib/api";
 import {
   buildEngineeringReportData,
   downloadHtmlReport,
+  resolveFindingsAuditState,
   triggerBlobDownload,
 } from "@/lib/drawing/report";
 
@@ -81,6 +82,15 @@ export function DrawingReportRoute({
     if (!state.detail.data) return null;
     const metadata = drawingMetadata(state.detail.data);
     const placement = placementReport(state.detail.data);
+    const auditState = resolveFindingsAuditState({
+      drawingStatus: metadata.status,
+      suspended: state.detail.isFetching || state.detail.isError,
+      isPending: findings.isPending,
+      isFetching: findings.isFetching,
+      isError: findings.isError,
+      isSuccess: findings.isSuccess,
+      errorMessage: findings.isError ? drawingErrorMessage(findings.error) : null,
+    });
     return buildEngineeringReportData({
       drawing: metadata,
       rooms: loadedResult?.rooms ?? [],
@@ -89,11 +99,20 @@ export function DrawingReportRoute({
       rules: rules.data ?? [],
       roomTypes: roomTypes.data,
       placementWarnings: placement?.warnings ?? [],
+      auditStatus: auditState.auditStatus,
+      auditError: auditState.auditError,
     });
   }, [
     state.detail.data,
+    state.detail.isFetching,
+    state.detail.isError,
     loadedResult,
     findings.data,
+    findings.isPending,
+    findings.isFetching,
+    findings.isError,
+    findings.isSuccess,
+    findings.error,
     rules.data,
     roomTypes.data,
   ]);
@@ -224,17 +243,6 @@ export function DrawingReportRoute({
         >
           {downloadStatus}
         </p>
-      )}
-
-      {metadata.status !== "processed" && (
-        <div
-          role="status"
-          className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
-          data-print-hide="true"
-        >
-          Розміщення приладів і перевірка норм ще не завершені. Після завершення
-          обробки у звіті з’являться повні результати перевірки.
-        </div>
       )}
 
       <EngineeringReport

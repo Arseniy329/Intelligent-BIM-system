@@ -46,6 +46,8 @@ export const REPORT_SEVERITY_LABELS: Record<string, string> = {
 
 export type ReportFindingStatus = "verified" | "needs_verification" | "unknown";
 
+export type ReportAuditStatus = "pending" | "unavailable" | "completed";
+
 export interface ReportDeviceCounts {
   smoke_detector: number;
   heat_detector: number;
@@ -98,6 +100,8 @@ export interface EngineeringReportData {
   unitsLabel: string;
   generatedAtIso: string;
   generatedAtLabel: string;
+  auditStatus: ReportAuditStatus;
+  auditError: string | null;
   totalAreaM2: number;
   rooms: ReportRoomRow[];
   unassignedDevices: ReportDeviceCounts;
@@ -137,6 +141,49 @@ export interface BuildReportInput {
   roomTypes?: readonly RoomType[];
   placementWarnings?: readonly string[];
   generatedAt?: Date;
+  auditStatus?: ReportAuditStatus;
+  auditError?: string | null;
+}
+
+/**
+ * Resolves the report audit state from a drawing status and findings query flags
+ * so pending or errored audits can never masquerade as a clean result.
+ */
+export function resolveFindingsAuditState(params: {
+  drawingStatus: string;
+  demo?: boolean;
+  suspended?: boolean;
+  isPending: boolean;
+  isFetching: boolean;
+  isError: boolean;
+  isSuccess: boolean;
+  errorMessage?: string | null;
+}): { auditStatus: ReportAuditStatus; auditError: string | null } {
+  if (params.demo) {
+    return {
+      auditStatus:
+        params.drawingStatus === "processed" ? "completed" : "pending",
+      auditError: null,
+    };
+  }
+  if (params.drawingStatus !== "processed") {
+    return { auditStatus: "pending", auditError: null };
+  }
+  if (params.isError) {
+    return {
+      auditStatus: "unavailable",
+      auditError: params.errorMessage?.trim() || null,
+    };
+  }
+  if (
+    params.suspended ||
+    params.isPending ||
+    params.isFetching ||
+    !params.isSuccess
+  ) {
+    return { auditStatus: "pending", auditError: null };
+  }
+  return { auditStatus: "completed", auditError: null };
 }
 
 function emptyDeviceCounts(): ReportDeviceCounts {
@@ -321,7 +368,16 @@ export function buildEngineeringReportData({
   roomTypes = DEFAULT_ROOM_TYPES,
   placementWarnings = [],
   generatedAt = new Date(),
+  auditStatus,
+  auditError = null,
 }: BuildReportInput): EngineeringReportData {
+  const effectiveAuditStatus: ReportAuditStatus =
+    auditStatus ??
+    (String(drawing.status) === "processed" ? "completed" : "pending");
+  const effectiveAuditError =
+    effectiveAuditStatus === "unavailable" ? auditError?.trim() || null : null;
+  const effectiveFindings =
+    effectiveAuditStatus === "completed" ? findings : [];
   const roomNamesById = new Map<string, string>();
   const devicesByRoomId = new Map<string, Device[]>();
   const knownRoomIds = new Set<string>();
@@ -369,7 +425,7 @@ export function buildEngineeringReportData({
   ]);
   const totalAreaM2 = roomRows.reduce((sum, row) => sum + row.areaM2, 0);
 
-  const reportFindings: ReportFindingItem[] = findings.map((finding) => {
+  const reportFindings: ReportFindingItem[] = effectiveFindings.map((finding) => {
     const rawRecord = finding as unknown as Record<string, unknown>;
     const catalogRule = findMatchingRule(finding.ruleId, rules);
     const findingStatus = normalizeVerificationStatus(
@@ -462,6 +518,8 @@ export function buildEngineeringReportData({
       dateStyle: "long",
       timeStyle: "short",
     }).format(generatedAt),
+    auditStatus: effectiveAuditStatus,
+    auditError: effectiveAuditError,
     totalAreaM2,
     rooms: roomRows,
     unassignedDevices,
@@ -559,10 +617,48 @@ export function generateReportHtml(data: EngineeringReportData): string {
         </tr>`
       : "";
 
+  const auditBannerHtml =
+    data.auditStatus === "unavailable"
+      ? `<div class="audit-banner audit-banner-unavailable" role="alert">
+      <strong>Неповний звіт: результати аудиту недоступні</strong>
+      <p>Аудит нормативних вимог недоступний — перевірку не виконано. Відсутність записів нижче не підтверджує відповідність нормам.</p>
+      ${data.auditError ? `<p class="audit-banner-detail">${escapeHtml(data.auditError)}</p>` : ""}
+    </div>`
+      : data.auditStatus === "pending"
+        ? `<div class="audit-banner audit-banner-pending" role="status">
+      <strong>Очікується завершення аудиту</strong>
+      <p>Перевірку відповідності нормативним вимогам ще не завершено. Дані про порушення можуть бути неповними.</p>
+    </div>`
+        : "";
+
+  const findingsSummaryValueHtml =
+    data.auditStatus === "unavailable"
+      ? "Недоступно"
+      : data.auditStatus === "pending"
+        ? "Очікується"
+        : String(data.summary.findingCount);
+
+  const findingsSummarySubHtml =
+    data.auditStatus === "unavailable"
+      ? "Аудит не виконано — звіт неповний"
+      : data.auditStatus === "pending"
+        ? "Очікується завершення аудиту"
+        : `Критичних: ${data.summary.criticalCount} · Попереджень: ${data.summary.warningCount} · Конфліктів: ${data.summary.conflictCount}`;
+
   const findingsHtml =
-    data.findings.length === 0
-      ? `<p class="empty-box">Порушень відповідності нормативним вимогам не виявлено.</p>`
-      : data.findings
+    data.auditStatus === "unavailable"
+      ? `<div class="audit-banner audit-banner-unavailable" role="alert">
+          <strong>Аудит нормативних вимог недоступний — перевірку не виконано.</strong>
+          ${data.auditError ? `<p class="audit-banner-detail">${escapeHtml(data.auditError)}</p>` : ""}
+        </div>`
+      : data.auditStatus === "pending"
+        ? `<div class="audit-banner audit-banner-pending" role="status">
+          <strong>Очікується завершення аудиту.</strong>
+          <p>Результати перевірки з’являться після завершення обробки.</p>
+        </div>`
+        : data.findings.length === 0
+          ? `<p class="empty-box">Порушень відповідності нормативним вимогам не виявлено.</p>`
+          : data.findings
           .map((item) => {
             const clauseText = item.isNeedsVerification
               ? "Пункт не підтверджено"
@@ -908,6 +1004,37 @@ export function generateReportHtml(data: EngineeringReportData): string {
       background: #f8fafc;
       color: #334155;
     }
+    .audit-banner {
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      break-inside: avoid;
+      page-break-inside: avoid;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .audit-banner strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+    .audit-banner p {
+      margin: 0;
+    }
+    .audit-banner-detail {
+      margin-top: 6px !important;
+      font-size: 12px;
+    }
+    .audit-banner-unavailable {
+      border: 1px solid #fca5a5;
+      background: #fef2f2;
+      color: #991b1b;
+    }
+    .audit-banner-pending {
+      border: 1px solid #fcd34d;
+      background: #fffbeb;
+      color: #92400e;
+    }
     .warnings-list {
       margin: 0;
       padding-left: 20px;
@@ -952,6 +1079,8 @@ export function generateReportHtml(data: EngineeringReportData): string {
       </div>
     </header>
 
+    ${auditBannerHtml}
+
     <section class="summary-grid" aria-label="Зведення проєкту">
       <div class="summary-card">
         <span class="label">Приміщення</span>
@@ -965,8 +1094,8 @@ export function generateReportHtml(data: EngineeringReportData): string {
       </div>
       <div class="summary-card">
         <span class="label">Виявлені порушення</span>
-        <span class="value">${data.summary.findingCount}</span>
-        <span class="sub">Критичних: ${data.summary.criticalCount} · Попереджень: ${data.summary.warningCount} · Конфліктів: ${data.summary.conflictCount}</span>
+        <span class="value">${findingsSummaryValueHtml}</span>
+        <span class="sub">${findingsSummarySubHtml}</span>
       </div>
       <div class="summary-card">
         <span class="label">Правила до перевірки</span>

@@ -27,7 +27,7 @@ import { FindingsPanel } from "./findings-panel";
 import { EngineeringReport } from "./engineering-report";
 import { useFindings } from "@/lib/drawing/use-findings";
 import { fetchFindings, findingTarget } from "@/lib/drawing/findings";
-import { buildEngineeringReportData, downloadHtmlReport, triggerBlobDownload } from "@/lib/drawing/report";
+import { buildEngineeringReportData, downloadHtmlReport, resolveFindingsAuditState, triggerBlobDownload, type ReportAuditStatus } from "@/lib/drawing/report";
 import type { DrawingPoint, DrawingViewportController } from "@/lib/drawing/viewer-adapter";
 
 export type DrawingTab = "plan" | "rooms" | "rules" | "findings" | "report";
@@ -171,10 +171,29 @@ function DrawingDetailContent({
           dxfFile = await fetchDrawingDownload(api, id, "result", signal);
           if (signal.aborted) return "bundle";
         }
-        let reportFindings: Finding[] = findings.data ?? [];
-        if (!demo && findings.data === undefined && !findings.isError && snapshot.drawing.status === "processed") {
-          reportFindings = await fetchFindings(id, signal).catch(() => []);
-          if (signal.aborted) return "bundle";
+        let reportFindings: Finding[] = [];
+        let auditStatus: ReportAuditStatus = "pending";
+        let auditError: string | null = null;
+        if (demo) {
+          auditStatus = snapshot.drawing.status === "processed" ? "completed" : "pending";
+        } else if (snapshot.drawing.status !== "processed") {
+          auditStatus = "pending";
+        } else if (findings.isError) {
+          auditStatus = "unavailable";
+          auditError = drawingErrorMessage(findings.error);
+        } else if (findings.isSuccess && !findings.isFetching && !findingsSuspended) {
+          reportFindings = findings.data;
+          auditStatus = "completed";
+        } else {
+          try {
+            reportFindings = await fetchFindings(id, signal);
+            if (signal.aborted) return "bundle";
+            auditStatus = "completed";
+          } catch (err) {
+            if (signal.aborted) return "bundle";
+            auditStatus = "unavailable";
+            auditError = drawingErrorMessage(err);
+          }
         }
         let reportRules: Rule[] = rules.data ?? [];
         if (!demo && rules.data === undefined && !rules.isError &&
@@ -189,6 +208,8 @@ function DrawingDetailContent({
           findings: reportFindings,
           rules: reportRules,
           placementWarnings: placementReport(snapshot)?.warnings ?? [],
+          auditStatus,
+          auditError,
         });
         if (dxfFile) {
           triggerBlobDownload(dxfFile.blob, dxfFile.fileName);
@@ -661,20 +682,34 @@ function DrawingDetailContent({
         </section>
       )}
 
-      {activeTab === "report" && (
-        <DrawingReportTab
-          id={id}
-          demo={demo}
-          data={data}
-          result={result}
-          findings={currentFindings}
-          findingsLoading={!demo && (findingsSuspended || findingsApplicable && (findings.isPending || findings.isFetching))}
-          findingsError={findings.error}
-          onRetryFindings={() => void findings.refetch()}
-          rules={rules.isError ? [] : rules.data ?? []}
-          placementWarnings={stepWarnings}
-        />
-      )}
+      {activeTab === "report" && (() => {
+        const auditState = resolveFindingsAuditState({
+          drawingStatus: metadata.status,
+          demo,
+          suspended: findingsSuspended,
+          isPending: findings.isPending,
+          isFetching: findings.isFetching,
+          isError: findings.isError,
+          isSuccess: findings.isSuccess,
+          errorMessage: findings.isError ? drawingErrorMessage(findings.error) : null,
+        });
+        return (
+          <DrawingReportTab
+            id={id}
+            demo={demo}
+            data={data}
+            result={result}
+            findings={currentFindings}
+            auditStatus={auditState.auditStatus}
+            auditError={auditState.auditError}
+            findingsLoading={!demo && (findingsSuspended || findingsApplicable && (findings.isPending || findings.isFetching))}
+            findingsError={findings.error}
+            onRetryFindings={() => void findings.refetch()}
+            rules={rules.isError ? [] : rules.data ?? []}
+            placementWarnings={stepWarnings}
+          />
+        );
+      })()}
       <footer className={workspaceStyles.footer} data-print-hide="true">Інтелектуальна BIM · Пожежна безпека</footer>
     </div>
   );
@@ -686,6 +721,8 @@ function DrawingReportTab({
   data,
   result,
   findings,
+  auditStatus,
+  auditError,
   findingsLoading,
   findingsError,
   onRetryFindings,
@@ -697,6 +734,8 @@ function DrawingReportTab({
   data: DrawingResponse;
   result: DrawingResultView | null;
   findings: Finding[];
+  auditStatus: ReportAuditStatus;
+  auditError: string | null;
   findingsLoading: boolean;
   findingsError: unknown;
   onRetryFindings: () => void;
@@ -717,8 +756,10 @@ function DrawingReportTab({
         rules,
         roomTypes: roomTypes.data,
         placementWarnings,
+        auditStatus,
+        auditError,
       }),
-    [metadata, result, findings, rules, roomTypes.data, placementWarnings],
+    [metadata, result, findings, rules, roomTypes.data, placementWarnings, auditStatus, auditError],
   );
 
   if (!result) {
@@ -763,16 +804,6 @@ function DrawingReportTab({
           </p>
         )}
       </div>
-
-      {metadata.status !== "processed" && (
-        <div
-          role="status"
-          data-print-hide="true"
-          className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
-        >
-          Розміщення приладів і перевірка норм ще не завершені. Після завершення розміщення у звіті з’являться повні дані перевірки.
-        </div>
-      )}
 
       <EngineeringReport
         data={reportData}

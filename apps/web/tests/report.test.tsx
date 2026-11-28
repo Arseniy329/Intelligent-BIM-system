@@ -17,6 +17,7 @@ import DrawingReportPage from "@/app/(protected)/drawings/[id]/report/page";
 import type { DrawingViewerProps } from "@/components/drawing/drawing-viewer";
 import { fetchFindings } from "@/lib/drawing/findings";
 import { fetchRules } from "@/lib/api/rules";
+import { ApiHttpError } from "@/lib/api";
 
 vi.mock("@/lib/drawing/findings", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/drawing/findings")>()),
@@ -600,5 +601,225 @@ describe("Download alongside DXF & printable report routes (AC 1-3, AC 6)", () =
     expect(screen.getAllByText("ДБН В.2.5-56:2014").length).toBeGreaterThan(0);
     expect(screen.getByText("Треба перевірити")).toBeVisible();
     expect(screen.getAllByText("Потрібне рішення інженера").length).toBeGreaterThan(0);
+  });
+});
+
+describe("BIM-79 blocker: unavailable or pending audit never reports zero violations", () => {
+  it("marks unavailable and pending report models as incomplete without zero-violations text", () => {
+    const unavailable = buildEngineeringReportData({
+      drawing: sampleResult.drawing,
+      rooms: sampleResult.rooms,
+      devices: sampleResult.devices,
+      findings: [],
+      auditStatus: "unavailable",
+      auditError: "Сервер не зміг виконати запит.",
+    });
+    const unavailableHtml = generateReportHtml(unavailable);
+    expect(unavailableHtml).toContain("Неповний звіт: результати аудиту недоступні");
+    expect(unavailableHtml).toContain("Аудит нормативних вимог недоступний — перевірку не виконано");
+    expect(unavailableHtml).toContain("Сервер не зміг виконати запит.");
+    expect(unavailableHtml).not.toMatch(/Порушень[\s\S]*не виявлено/i);
+
+    const pending = buildEngineeringReportData({
+      drawing: sampleResult.drawing,
+      rooms: sampleResult.rooms,
+      devices: sampleResult.devices,
+      findings: [],
+      auditStatus: "pending",
+    });
+    const pendingHtml = generateReportHtml(pending);
+    expect(pendingHtml).toContain("Очікується завершення аудиту");
+    expect(pendingHtml).not.toMatch(/Порушень[\s\S]*не виявлено/i);
+  });
+
+  function setupDownloadCapture() {
+    const downloads: { download: string; href: string }[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloads.push({ download: this.download, href: this.href });
+    });
+    const createdBlobs: Blob[] = [];
+    const createObjectURL = vi.fn((blob: Blob) => {
+      createdBlobs.push(blob);
+      return `blob:bim79-${createdBlobs.length}`;
+    });
+    vi.stubGlobal(
+      "URL",
+      Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("DXF RESULT CONTENT")),
+    );
+    return { downloads, createdBlobs };
+  }
+
+  it("quick export «Завантажити звіт» warns on HTTP 503 findings and only claims clean audit on 200 []", async () => {
+    const { downloads, createdBlobs } = setupDownloadCapture();
+    vi.mocked(fetchFindings).mockRejectedValue(new ApiHttpError(503));
+
+    const api = {
+      getDrawing: vi.fn(async () => sampleResult),
+      processDrawing: vi.fn(async () => sampleResult),
+    };
+
+    const view = render(<DrawingDetail id={drawingId} api={api} />, {
+      wrapper: createWrapper(),
+    });
+
+    const quickExportBtn = await screen.findByRole("button", {
+      name: "Завантажити звіт",
+    });
+    await waitFor(() => expect(fetchFindings).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(quickExportBtn);
+    await screen.findByText(
+      "Звіт та DXF результату передано браузеру для збереження.",
+    );
+
+    expect(downloads.map((d) => d.download)).toEqual([
+      "office-floor-01-processed.dxf",
+      "office-floor-01-report.html",
+    ]);
+    const html503 = await createdBlobs[1].text();
+    expect(html503).toContain("Неповний звіт: результати аудиту недоступні");
+    expect(html503).toContain("Аудит нормативних вимог недоступний — перевірку не виконано");
+    expect(html503).not.toMatch(/Порушень[\s\S]*не виявлено/i);
+
+    view.unmount();
+    cleanup();
+    downloads.length = 0;
+    createdBlobs.length = 0;
+
+    vi.mocked(fetchFindings).mockResolvedValue([]);
+    render(<DrawingDetail id={drawingId} api={api} />, {
+      wrapper: createWrapper(),
+    });
+
+    const quickExportBtn200 = await screen.findByRole("button", {
+      name: "Завантажити звіт",
+    });
+    await waitFor(() => expect(fetchFindings).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(quickExportBtn200);
+    await screen.findByText(
+      "Звіт та DXF результату передано браузеру для збереження.",
+    );
+
+    const html200 = await createdBlobs[1].text();
+    expect(html200).toContain("Порушень відповідності нормативним вимогам не виявлено.");
+    expect(html200).not.toContain("Неповний звіт");
+    expect(html200).not.toContain("Аудит нормативних вимог недоступний");
+  });
+
+  it("Report tab «Завантажити HTML-звіт» & printable DOM warn on HTTP 503 vs 200 []", async () => {
+    const { createdBlobs } = setupDownloadCapture();
+    vi.mocked(fetchFindings).mockRejectedValue(new ApiHttpError(503));
+
+    const api = {
+      getDrawing: vi.fn(async () => sampleResult),
+      processDrawing: vi.fn(async () => sampleResult),
+    };
+
+    const view = render(<DrawingDetail id={drawingId} api={api} />, {
+      wrapper: createWrapper(),
+    });
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Звіт" }));
+
+    const warningHeading = await screen.findByText(
+      "Неповний звіт: результати аудиту недоступні",
+    );
+    expect(warningHeading).toBeVisible();
+    expect(warningHeading.closest("[data-print-hide]")).toBeNull();
+    expect(
+      screen.queryByText(/Порушень.*не виявлено/i),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Завантажити HTML-звіт" }),
+    );
+    const html503 = await createdBlobs[0].text();
+    expect(html503).toContain("Неповний звіт: результати аудиту недоступні");
+    expect(html503).not.toMatch(/Порушень[\s\S]*не виявлено/i);
+
+    view.unmount();
+    cleanup();
+    createdBlobs.length = 0;
+
+    vi.mocked(fetchFindings).mockResolvedValue([]);
+    render(<DrawingDetail id={drawingId} api={api} />, {
+      wrapper: createWrapper(),
+    });
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Звіт" }));
+    expect(
+      await screen.findByText(
+        "Порушень відповідності нормативним вимогам не виявлено.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/Неповний звіт/)).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Завантажити HTML-звіт" }),
+    );
+    const html200 = await createdBlobs[0].text();
+    expect(html200).toContain("Порушень відповідності нормативним вимогам не виявлено.");
+    expect(html200).not.toContain("Неповний звіт");
+  });
+
+  it("Dedicated /drawings/[id]/report route warns in print DOM and HTML export on HTTP 503 vs 200 []", async () => {
+    const { createdBlobs } = setupDownloadCapture();
+    vi.mocked(fetchFindings).mockRejectedValue(new ApiHttpError(503));
+
+    const api = {
+      getDrawing: vi.fn(async () => sampleResult),
+      processDrawing: vi.fn(async () => sampleResult),
+    };
+
+    const view = render(<DrawingReportRoute id={drawingId} api={api} />, {
+      wrapper: createWrapper(),
+    });
+
+    const warningHeading = await screen.findByText(
+      "Неповний звіт: результати аудиту недоступні",
+    );
+    expect(warningHeading).toBeVisible();
+    expect(warningHeading.closest("[data-print-hide]")).toBeNull();
+    expect(
+      screen.queryByText(/Порушень.*не виявлено/i),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Завантажити HTML-звіт" }),
+    );
+    const html503 = await createdBlobs[0].text();
+    expect(html503).toContain("Неповний звіт: результати аудиту недоступні");
+    expect(html503).toContain("Аудит нормативних вимог недоступний — перевірку не виконано");
+    expect(html503).not.toMatch(/Порушень[\s\S]*не виявлено/i);
+
+    view.unmount();
+    cleanup();
+    createdBlobs.length = 0;
+
+    vi.mocked(fetchFindings).mockResolvedValue([]);
+    render(<DrawingReportRoute id={drawingId} api={api} />, {
+      wrapper: createWrapper(),
+    });
+
+    expect(
+      await screen.findByText(
+        "Порушень відповідності нормативним вимогам не виявлено.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/Неповний звіт/)).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Завантажити HTML-звіт" }),
+    );
+    const html200 = await createdBlobs[0].text();
+    expect(html200).toContain("Порушень відповідності нормативним вимогам не виявлено.");
+    expect(html200).not.toContain("Неповний звіт");
   });
 });
