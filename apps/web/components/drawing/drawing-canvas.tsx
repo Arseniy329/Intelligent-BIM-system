@@ -36,10 +36,13 @@ export default function DrawingCanvas({
     if (!host) return;
     let cancelled = false;
     let adapter: DrawingViewerAdapter | undefined;
+    let unsubscribeViewport: (() => void) | undefined;
 
     const onContextLost = (event: Event) => {
       event.preventDefault();
       cancelled = true;
+      unsubscribeViewport?.();
+      unsubscribeViewport = undefined;
       adapter?.dispose();
       setState({ status: "error", message: "Втрачено WebGL-контекст. Спробуйте відкрити креслення знову." });
     };
@@ -57,7 +60,17 @@ export default function DrawingCanvas({
         await adapter.load(url, measurement.progress);
         const timings = measurement.finish(rendererInitMs, cancelled ? "cancelled" : "ready");
         logDrawingLoadTimings(timings);
-        if (!cancelled) setState({ status: "ready", timings, controller: adapter });
+        if (!cancelled) {
+          // Subscribe and capture baseline fitWidth before flipping status to "ready"
+          // so zoom controls are never enabled before viewport updates are observed.
+          fitWidth.current = adapter.getViewport().width;
+          setZoomPercent(100);
+          unsubscribeViewport = adapter.subscribeViewportChange(() => {
+            const width = adapter!.getViewport().width;
+            if (width > 0 && fitWidth.current) setZoomPercent(Math.round(fitWidth.current / width * 100));
+          });
+          setState({ status: "ready", timings, controller: adapter });
+        }
       } catch (error) {
         const timings = measurement?.finish(rendererInitMs, cancelled ? "cancelled" : "error");
         logDrawingLoadTimings(timings);
@@ -81,21 +94,18 @@ export default function DrawingCanvas({
       cancelled = true;
       window.clearTimeout(loadTask);
       host.removeEventListener("webglcontextlost", onContextLost, true);
+      unsubscribeViewport?.();
+      unsubscribeViewport = undefined;
       adapter?.dispose();
       adapterRef.current = null;
+      fitWidth.current = null;
     };
   }, [url]);
 
   useLayoutEffect(() => {
     if (state.status !== "ready" || !adapterRef.current) return;
-    const controller = state.controller;
-    fitWidth.current = controller.getViewport().width;
-    const unsubscribe = controller.subscribeViewportChange(() => {
-      const width = controller.getViewport().width;
-      if (width > 0 && fitWidth.current) setZoomPercent(Math.round(fitWidth.current / width * 100));
-    });
     onReady?.(adapterRef.current);
-    return () => { unsubscribe(); onReady?.(null); };
+    return () => { onReady?.(null); };
   }, [state, onReady]);
 
   return (

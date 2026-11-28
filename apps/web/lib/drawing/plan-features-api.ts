@@ -10,7 +10,9 @@ export interface PlanExit {
   id: string; drawingId: string; roomId: string | null; name: string | null;
   position: Point; source: "dxf" | "manual";
 }
-export type ZoneInput = Pick<RoomZone, "name" | "height" | "polygon">;
+export type ZoneInput = Pick<RoomZone, "name" | "height"> & {
+  polygon?: Point[];
+};
 
 async function list<T>(path: string, signal?: AbortSignal): Promise<T[]> {
   const data: unknown = await request(path, "GET", undefined, signal);
