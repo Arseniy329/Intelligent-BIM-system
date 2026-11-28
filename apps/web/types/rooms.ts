@@ -42,6 +42,31 @@ export interface Room {
   isDirty?: boolean;
 }
 
+export const MISSING_ZONE_HEIGHT_TEXT = "недостатньо даних";
+
+/**
+ * A part of a room with its own ceiling height (BIM-73 / BIM-185).
+ * Zones are stored as children of the room; `height` is the zone ceiling
+ * height in metres and is empty until the engineer enters a valid value.
+ */
+export interface RoomZone {
+  id: string;
+  name: string;
+  height?: number | null;
+  roomId?: string;
+  drawingId?: string;
+  area?: number;
+  polygon?: RoomPoint[];
+}
+
+/**
+ * A room with its zones embedded, so the rooms table can render one row per
+ * zone directly under the parent room without a separate lookup.
+ */
+export interface RoomWithZones extends Room {
+  zones?: RoomZone[];
+}
+
 export const BLOCKING_REASONS = {
   UNSAVED_CHANGES: "Незбережені зміни",
   UNCONFIRMED_ROOMS: "! Не підтверджено",

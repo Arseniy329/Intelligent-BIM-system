@@ -11,7 +11,7 @@ const { adapter, listeners } = vi.hoisted(() => {
   const listeners = new Set<() => void>();
   let width = 100;
   return { listeners, adapter: {
-    load: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(),
+    load: vi.fn().mockImplementation(async () => { width = 100; }), dispose: vi.fn(),
     getViewport: () => ({ width, center: { x: 0, y: 0 } }),
     zoomBy: (factor: number) => { width /= factor; listeners.forEach(listener => listener()); },
     fitToDrawing: () => { width = 100; listeners.forEach(listener => listener()); },
@@ -47,4 +47,17 @@ it("toggles a device type and room mode without reloading the file or resetting 
   act(() => view.unmount());
   expect(listeners.size).toBe(0);
   expect(adapter.dispose).toHaveBeenCalledOnce();
+});
+
+it("keeps zoom percent accurate when parent re-renders with a new onReady callback", async () => {
+  function Parent({ tick }: { tick: number }) {
+    return <DrawingCanvas url="fixture.dxf" onRetry={() => {}} onReady={() => { void tick; }} rooms={DEMO_RESULT.rooms} devices={DEMO_RESULT.devices} />;
+  }
+  const view = render(<Parent tick={0} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Збільшити масштаб" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Збільшити масштаб" }));
+  expect(screen.getByLabelText("Масштаб")).toHaveTextContent("125%");
+  view.rerender(<Parent tick={1} />);
+  fireEvent.click(screen.getByRole("button", { name: "Зменшити масштаб" }));
+  expect(screen.getByLabelText("Масштаб")).toHaveTextContent("100%");
 });

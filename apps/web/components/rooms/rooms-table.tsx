@@ -1,12 +1,20 @@
 "use client";
 
 import * as React from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { RoomType } from "@bim/contracts";
-import type { RoomZone } from "@/lib/drawing/plan-features-api";
+import {
+  planFeaturesApi,
+  type RoomZone as PlanRoomZone,
+  type ZoneInput,
+} from "@/lib/drawing/plan-features-api";
 import type { PlanEditor } from "@/lib/drawing/use-plan-editor";
 import { cn } from "@/lib/utils";
 import {
   type Room,
+  type RoomZone,
+  type RoomWithZones,
+  MISSING_ZONE_HEIGHT_TEXT,
   isRoomDataComplete,
   getRoomBlockingReasons,
   pluralizeRooms,
@@ -29,9 +37,9 @@ import {
 
 export interface RoomsTableProps {
   zoneEditor?: PlanEditor;
-  onEditZone?: (zone: RoomZone) => void;
-  zones?: RoomZone[];
-  rooms: Room[];
+  onEditZone?: (zone: PlanRoomZone) => void;
+  zones?: PlanRoomZone[];
+  rooms: RoomWithZones[];
   roomTypes?: RoomType[];
   selectedRoomId?: string | null;
   hasUnsavedChanges?: boolean;
@@ -41,6 +49,7 @@ export interface RoomsTableProps {
   onVerifyRoom?: (room: Room) => void;
   onConfirmRoom?: (room: Room) => void;
   onConfirmAllRooms?: () => void;
+  onZoneSaved?: (zone: RoomZone, height: number) => void;
   className?: string;
 }
 
@@ -49,6 +58,126 @@ function formatHeight(height: number | null | undefined): string | null {
     return null;
   }
   return `${height.toLocaleString("uk-UA", { minimumFractionDigits: 1, maximumFractionDigits: 2 })} м`;
+}
+
+function isValidZoneHeight(
+  height: number | null | undefined
+): height is number {
+  return height != null && height > 0 && Number.isFinite(height);
+}
+
+const INVALID_ZONE_HEIGHT_MESSAGE = "Вкажіть висоту числом, більшим за 0.";
+
+function parseZoneHeight(value: string): number | null {
+  const normalized = value.trim().replace(",", ".");
+  if (!/^\d+(\.\d+)?$/.test(normalized)) return null;
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function ZoneHeightInput({
+  room,
+  zone,
+  onSave,
+}: {
+  room: RoomWithZones;
+  zone: RoomZone;
+  onSave: (zone: RoomZone, height: number) => void | Promise<unknown>;
+}) {
+  const toInputValue = React.useCallback(
+    (height: number | null | undefined) =>
+      isValidZoneHeight(height) ? String(height) : "",
+    []
+  );
+  const [value, setValue] = React.useState(() => toInputValue(zone.height));
+  const [error, setError] = React.useState<string | null>(null);
+  const saving = React.useRef(false);
+  const committed = React.useRef<number | null>(
+    isValidZoneHeight(zone.height) ? zone.height : null
+  );
+
+  const submit = async (height: number) => {
+    if (saving.current) return;
+    saving.current = true;
+    try {
+      await onSave(zone, height);
+      committed.current = height;
+      setError(null);
+    } catch {
+      setError("Не вдалося зберегти висоту. Спробуйте ще раз.");
+    } finally {
+      saving.current = false;
+    }
+  };
+
+  const commit = () => {
+    if (value.trim() === "") {
+      setError(null);
+      return;
+    }
+
+    const parsed = parseZoneHeight(value);
+    if (parsed == null) {
+      setError(INVALID_ZONE_HEIGHT_MESSAGE);
+      return;
+    }
+
+    if (parsed === committed.current) {
+      setError(null);
+      return;
+    }
+
+    setError(null);
+    void submit(parsed);
+  };
+
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setValue(event.target.value);
+    setError(null);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+    }
+  };
+
+  const showFallback = value.trim() === "";
+
+  return (
+    <div className="flex flex-col gap-1">
+      <input
+        type="number"
+        min="0.01"
+        step="0.1"
+        inputMode="decimal"
+        aria-label={`Висота зони ${zone.name} у ${room.name}`}
+        aria-invalid={Boolean(error)}
+        value={value}
+        placeholder="Введіть висоту"
+        onChange={handleChange}
+        onBlur={commit}
+        onKeyDown={handleKeyDown}
+        onWheel={(event) => event.currentTarget.blur()}
+        className="w-28 rounded-lg border border-slate-300 bg-white p-2 text-sm"
+      />
+      {showFallback && (
+        <span
+          data-slot="zone-height-missing"
+          data-testid="zone-height-missing"
+          className="text-xs text-muted-foreground"
+        >
+          {MISSING_ZONE_HEIGHT_TEXT}
+        </span>
+      )}
+      {error && (
+        <span role="alert" className="text-xs text-red-700">
+          {error}
+        </span>
+      )}
+    </div>
+  );
 }
 
 export function RoomsTable({
@@ -65,13 +194,43 @@ export function RoomsTable({
   onVerifyRoom,
   onConfirmRoom,
   onConfirmAllRooms,
+  onZoneSaved,
   className,
 }: RoomsTableProps) {
+  const queryClient = useQueryClient();
   const { data: fetchedRoomTypes } = useRoomTypes(propRoomTypes);
   const catalog = propRoomTypes ?? fetchedRoomTypes;
-  const roomDataComplete = (room: Room) => {
-    const roomZones = zones.filter(zone => zone.roomId === room.id);
-    return roomZones.length ? Boolean(room.roomType && room.roomType !== "unknown" && roomZones.every(zone => zone.height != null && zone.height > 0)) : isRoomDataComplete(room);
+  const roomDataComplete = (room: RoomWithZones) => {
+    const roomZones = zones.filter((zone) => zone.roomId === room.id);
+    const allZones: { height?: number | null }[] = [
+      ...roomZones,
+      ...(room.zones ?? []),
+    ];
+    return allZones.length
+      ? Boolean(
+          room.roomType &&
+            room.roomType !== "unknown" &&
+            allZones.every((zone) => isValidZoneHeight(zone.height))
+        )
+      : isRoomDataComplete(room);
+  };
+
+  const handleZoneHeightSave = async (
+    zone: RoomZone,
+    height: number
+  ) => {
+    const geometry = zone.polygon;
+    const payload: ZoneInput = {
+      name: zone.name,
+      height,
+      ...(Array.isArray(geometry) && geometry.length >= 3
+        ? { polygon: geometry }
+        : {}),
+    };
+
+    await planFeaturesApi.updateZone(zone.id, payload);
+    onZoneSaved?.(zone, height);
+    void queryClient.invalidateQueries({ queryKey: ["drawing-features"] });
   };
 
   // Dynamic counts for sub-header
@@ -287,14 +446,90 @@ export function RoomsTable({
                   </TableRow>
                   {zones.filter(zone => zone.roomId === room.id).map((zone, index) => {
                     const draft = zoneEditor?.draft?.kind === "zone" && zoneEditor.draft.id === zone.id ? zoneEditor.draft : null;
-                    return <TableRow key={zone.id} data-zone-id={zone.id} className="bg-slate-50/50">
-                      <TableCell className="pl-8 font-medium">↳ {zone.name || `Зона ${index + 1}`}</TableCell>
+                    const zoneLabel = zone.name || `Зона ${index + 1}`;
+                    return <TableRow key={`${room.id}:${zone.id}`} data-testid="room-zone-row" data-zone-id={zone.id} aria-label={`Зона ${zoneLabel} приміщення ${room.name}`} className="bg-slate-50/50">
+                      <TableCell className="pl-8 text-sm font-medium text-muted-foreground">↳ {zoneLabel}</TableCell>
                       <TableCell><span className="text-xs text-slate-600">Частина {room.name} · {zone.area.toLocaleString("uk-UA")} м²</span></TableCell>
-                      <TableCell>{draft ? <input aria-label={`Висота ${zone.name || `зони ${index + 1}`}, м`} type="number" min="0.01" max="100" step="any" placeholder="Введіть висоту" className="w-28 rounded-lg border border-slate-300 bg-white p-2 text-sm" onWheel={event => event.currentTarget.blur()} value={draft.height} disabled={zoneEditor?.busy || zoneEditor?.uncertain} onChange={event => zoneEditor?.setHeight(event.target.value)} /> : formatHeight(zone.height) || "Введіть висоту"}</TableCell>
-                      <TableCell colSpan={3}><span className={zone.height == null ? "rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800" : "text-xs text-slate-600"}>{zone.height == null ? "Недостатньо даних: немає висоти" : "Висоту задано"}</span></TableCell>
+                      <TableCell>
+                        {isValidZoneHeight(zone.height) ? (
+                          <span data-slot="zone-height-value" className="font-mono text-xs text-slate-800">
+                            {formatHeight(zone.height)}
+                          </span>
+                        ) : (
+                          <span data-testid="zone-height-missing" className="text-xs text-muted-foreground">
+                            {MISSING_ZONE_HEIGHT_TEXT}
+                          </span>
+                        )}
+                        {draft && <input aria-label={`Висота ${zoneLabel}, м`} type="number" min="0.01" max="100" step="any" placeholder="Введіть висоту" className="mt-1 w-28 rounded-lg border border-slate-300 bg-white p-2 text-sm" onWheel={event => event.currentTarget.blur()} value={draft.height} disabled={zoneEditor?.busy || zoneEditor?.uncertain} onChange={event => zoneEditor?.setHeight(event.target.value)} />}
+                      </TableCell>
+                      <TableCell colSpan={3}><span className={!isValidZoneHeight(zone.height) ? "rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800" : "text-xs text-slate-600"}>{!isValidZoneHeight(zone.height) ? "Висоту не задано" : "Висоту задано"}</span></TableCell>
                       <TableCell className="text-right">{draft ? <div className="flex gap-2"><button type="button" disabled={zoneEditor?.busy || zoneEditor?.uncertain} onClick={zoneEditor?.save} className="text-sm text-blue-600">Зберегти</button><button type="button" disabled={zoneEditor?.busy} onClick={zoneEditor?.cancel} className="text-sm text-slate-600">Скасувати</button></div> : <button type="button" disabled={zoneEditor?.blocked} onClick={() => onEditZone?.(zone)} className="text-sm text-blue-600">Змінити</button>}</TableCell>
                     </TableRow>;
                   })}
+                  {(room.zones ?? [])
+                    .filter(
+                      (zone) =>
+                        !zones.some((propZone) => propZone.id === zone.id)
+                    )
+                    .map((zone, index) => {
+                      const zoneLabel = zone.name || `Зона ${index + 1}`;
+                      return (
+                      <TableRow
+                        key={`${room.id}:${zone.id}`}
+                        data-testid="room-zone-row"
+                        data-zone-id={zone.id}
+                        data-zone-source="room"
+                        aria-label={`Зона ${zoneLabel} приміщення ${room.name}`}
+                        className="bg-slate-50/50"
+                      >
+                        <TableCell className="pl-8 text-sm font-medium text-muted-foreground">
+                          <span data-slot="zone-name">↳ {zoneLabel}</span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-xs text-slate-600">
+                            Частина {room.name}
+                            {typeof zone.area === "number"
+                              ? ` · ${zone.area.toLocaleString("uk-UA")} м²`
+                              : ""}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col gap-1">
+                            {isValidZoneHeight(zone.height) && (
+                              <span
+                                data-slot="zone-height-value"
+                                className="font-mono text-xs text-slate-800"
+                              >
+                                {formatHeight(zone.height)}
+                              </span>
+                            )}
+                            <ZoneHeightInput
+                              key={`zone-height-${zone.id}-${zone.height ?? "missing"}`}
+                              room={room}
+                              zone={zone}
+                              onSave={(targetZone, height) =>
+                                handleZoneHeightSave(targetZone, height)
+                              }
+                            />
+                          </div>
+                        </TableCell>
+                        <TableCell colSpan={3}>
+                          <span
+                            className={
+                              isValidZoneHeight(zone.height)
+                                ? "text-xs text-slate-600"
+                                : "rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800"
+                            }
+                          >
+                            {isValidZoneHeight(zone.height)
+                              ? "Висоту задано"
+                              : "Висоту не задано"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right" />
+                      </TableRow>
+                      );
+                    })}
                   </React.Fragment>
                 );
               })
