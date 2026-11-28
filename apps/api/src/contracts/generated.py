@@ -100,6 +100,10 @@ class Room(BaseModel):
     )
     source: Source | None = None
     confirmed: bool | None = None
+    rule_status: str | None = None
+    rule_reason: str | None = None
+    ruleStatus: str | None = None
+    ruleReason: str | None = None
 
 
 class RoomPolygon(RootModel[list[Point]]):

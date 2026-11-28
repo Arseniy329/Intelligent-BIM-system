@@ -18,7 +18,23 @@ export type RoomConfirmationStatus = "confirmed" | "unconfirmed";
 
 export type RoomCompletenessStatus = "sufficient" | "insufficient";
 
-export type RuleVerificationStatus = "verified" | "needs_review" | "review_needed";
+export type RuleVerificationStatus =
+  | "verified"
+  | "needs_review"
+  | "review_needed"
+  | "insufficient_data";
+
+export type RuleStatus = RuleVerificationStatus;
+
+/**
+ * Returns true when the given status represents a rule that could not be
+ * evaluated because required room data is missing.
+ */
+export function isInsufficientDataStatus(
+  status: string | null | undefined
+): boolean {
+  return status === "insufficient_data";
+}
 
 export interface RoomPoint {
   x: number;
@@ -40,7 +56,95 @@ export interface Room {
   polygon?: RoomPoint[];
   hasUnsavedChanges?: boolean;
   isDirty?: boolean;
+  ruleStatus?: RuleVerificationStatus | null;
+  rule_status?: RuleVerificationStatus | null;
+  ruleReason?: string | null;
+  rule_reason?: string | null;
+  reason?: string | null;
+  status_reason?: string | null;
 }
+
+export const RULE_STATUS_VALUES: readonly RuleVerificationStatus[] = [
+  "verified",
+  "needs_review",
+  "review_needed",
+  "insufficient_data",
+];
+
+/**
+ * Returns typed verification/placement status and explicit reason for a room.
+ * Distinctly separates local input completeness (e.g. missing height) from server
+ * evaluation results, and ensures complete input is NOT auto-marked verified.
+ */
+export function getRoomRuleStatusAndReason(room: Room): {
+  status: RuleVerificationStatus;
+  reason: string | null;
+} {
+  // 1. Local input completeness checks:
+  const heightMissing =
+    room.height == null || room.height <= 0 || !Number.isFinite(room.height);
+  const typeVal = room.roomType ?? room.type;
+  const typeMissing = !typeVal || typeVal.trim() === "" || typeVal === "unknown";
+
+  if (heightMissing && typeMissing) {
+    return { status: "insufficient_data", reason: "Не введено висоту та тип" };
+  }
+  if (heightMissing) {
+    return { status: "insufficient_data", reason: "Не введено висоту" };
+  }
+  if (typeMissing) {
+    return { status: "insufficient_data", reason: "Не обрано тип приміщення" };
+  }
+
+  // 2. Room input data is complete. Server status and reason are authoritative:
+  const rawRecord = room as unknown as Record<string, unknown>;
+  const rawStatus =
+    room.ruleStatus ??
+    room.rule_status ??
+    rawRecord.review_status ??
+    rawRecord.reviewStatus ??
+    null;
+
+  const rawReason =
+    room.ruleReason ??
+    room.rule_reason ??
+    room.reason ??
+    room.status_reason ??
+    rawRecord.statusReason ??
+    rawRecord.ruleReason ??
+    null;
+
+  if (
+    rawStatus &&
+    RULE_STATUS_VALUES.includes(rawStatus as RuleVerificationStatus)
+  ) {
+    return {
+      status: rawStatus as RuleVerificationStatus,
+      reason: typeof rawReason === "string" ? rawReason : null,
+    };
+  }
+
+  if (typeof rawReason === "string" && rawReason.trim().length > 0) {
+    return {
+      status: "insufficient_data",
+      reason: rawReason.trim(),
+    };
+  }
+
+  // 3. Complete input, but rule evaluation has not succeeded or been confirmed:
+  // MUST NOT automatically mark as verified!
+  return {
+    status: "needs_review",
+    reason: null,
+  };
+}
+
+/**
+ * Room row shape rendered in the rooms table and drawing detail panels.
+ */
+export type RoomListItem = Room;
+export type RoomRow = Room;
+export type RoomWithRules = Room;
 
 export const MISSING_ZONE_HEIGHT_TEXT = "недостатньо даних";
 
@@ -295,6 +399,24 @@ export function mapContractRoomToRoom(
     contractRoom.confirmed ?? contractRoom.isConfirmed ?? false
   );
 
+  const raw = contractRoom as unknown as Record<string, unknown>;
+  const rawStatus =
+    contractRoom.ruleStatus ??
+    contractRoom.rule_status ??
+    (raw.review_status as RuleVerificationStatus | undefined) ??
+    (raw.reviewStatus as RuleVerificationStatus | undefined) ??
+    (raw.status as RuleVerificationStatus | undefined) ??
+    null;
+
+  const rawReason =
+    contractRoom.ruleReason ??
+    contractRoom.rule_reason ??
+    (raw.reason as string | undefined) ??
+    (raw.status_reason as string | undefined) ??
+    (raw.statusReason as string | undefined) ??
+    (raw.ruleReason as string | undefined) ??
+    null;
+
   return {
     id: contractRoom.id,
     drawingId: contractRoom.drawingId,
@@ -308,5 +430,11 @@ export function mapContractRoomToRoom(
     isConfirmed,
     status: isConfirmed ? "confirmed" : "unconfirmed",
     polygon: contractRoom.polygon ?? [],
+    ruleStatus: rawStatus,
+    rule_status: rawStatus,
+    ruleReason: rawReason,
+    rule_reason: rawReason,
+    reason: rawReason,
+    status_reason: rawReason,
   };
 }

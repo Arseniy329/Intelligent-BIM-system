@@ -16,6 +16,8 @@ import {
   type RoomWithZones,
   MISSING_ZONE_HEIGHT_TEXT,
   isRoomDataComplete,
+  isInsufficientDataStatus,
+  getRoomRuleStatusAndReason,
   getRoomBlockingReasons,
   pluralizeRooms,
   formatBlockingActions,
@@ -24,6 +26,7 @@ import {
   SourceBadge,
   ConfirmationBadge,
   CompletenessBadge,
+  RuleStatusBadge,
 } from "@/components/rooms/badges";
 import { useRoomTypes, getRoomTypeName } from "@/lib/rooms/room-types-api";
 import {
@@ -59,6 +62,8 @@ function formatHeight(height: number | null | undefined): string | null {
   }
   return `${height.toLocaleString("uk-UA", { minimumFractionDigits: 1, maximumFractionDigits: 2 })} м`;
 }
+
+const MISSING_REASON_FALLBACK = "Причина не вказана";
 
 function isValidZoneHeight(
   height: number | null | undefined
@@ -238,7 +243,11 @@ export function RoomsTable({
   const unconfirmedCount = rooms.filter(
     (r) => r.isConfirmed === false || r.status === "unconfirmed"
   ).length;
-  const incompleteCount = rooms.filter((r) => !roomDataComplete(r)).length;
+  const incompleteCount = rooms.filter(
+    (r) =>
+      !roomDataComplete(r) ||
+      isInsufficientDataStatus(getRoomRuleStatusAndReason(r).status)
+  ).length;
 
   // Check blocking reasons for the bottom warning banner
   const blockingReasons = getRoomBlockingReasons(rooms, hasUnsavedChanges, new Set(zones.map(zone => zone.roomId)));
@@ -313,13 +322,31 @@ export function RoomsTable({
                 const isConfirmed = Boolean(room.isConfirmed);
                 const typeName = getRoomTypeName(room.roomType, catalog);
                 const heightStr = formatHeight(room.height);
+                const { status: ruleStatus, reason: ruleReason } =
+                  getRoomRuleStatusAndReason(room);
+                const isInsufficient = isInsufficientDataStatus(ruleStatus);
+                const rawRecord = room as unknown as Record<string, unknown>;
+                const hasExplicitRuleData = Boolean(
+                  room.ruleStatus ??
+                    room.rule_status ??
+                    rawRecord.review_status ??
+                    rawRecord.reviewStatus
+                );
+                const showRuleBadge =
+                  hasExplicitRuleData || isInsufficient || Boolean(ruleReason);
+                const displayReason =
+                  ruleReason ??
+                  (isInsufficient ? MISSING_REASON_FALLBACK : null);
 
                 return (
                   <React.Fragment key={room.id ?? room.name}><TableRow
                     key={room.id ?? room.name}
                     data-room-id={room.id}
                     data-selected={isSelected}
+                    data-rule-status={ruleStatus}
                     className={cn(
+                      isInsufficient &&
+                        "bg-slate-50/60 text-slate-500 opacity-80",
                       isSelected && "bg-blue-50/50 hover:bg-blue-50/70"
                     )}
                   >
@@ -379,7 +406,18 @@ export function RoomsTable({
 
                     {/* Column 6: Дані */}
                     <TableCell>
-                      {zones.some(zone => zone.roomId === room.id) ? <span className={isComplete ? "text-xs text-emerald-700" : "text-xs text-amber-800"}>{isComplete ? "Висоти зон задано" : "Недостатньо даних зон"}</span> : <CompletenessBadge room={room} />}
+                      {showRuleBadge ? (
+                        <RuleStatusBadge
+                          status={ruleStatus}
+                          reason={displayReason}
+                        />
+                      ) : zones.some(zone => zone.roomId === room.id) ? (
+                        <span className={isComplete ? "text-xs text-emerald-700" : "text-xs text-amber-800"}>
+                          {isComplete ? "Висоти зон задано" : "Недостатньо даних зон"}
+                        </span>
+                      ) : (
+                        <CompletenessBadge room={room} />
+                      )}
                     </TableCell>
 
                     {/* Column 7: Дія */}
@@ -394,48 +432,60 @@ export function RoomsTable({
                             Підтвердити
                           </button>
                         )}
+
+                        {onVerifyRoom && (
+                          <button
+                            type="button"
+                            onClick={() => onVerifyRoom(room)}
+                            className="text-xs font-semibold text-blue-700 hover:text-blue-900 hover:underline cursor-pointer"
+                          >
+                            Перевірити
+                          </button>
+                        )}
+
+                        {/* Direct action based on completeness & confirmation */}
                         {!isComplete ? (
                           <button
                             type="button"
                             onClick={() => onEditRoom?.(room)}
-                            className="text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                            className="text-xs font-semibold text-amber-700 hover:text-amber-900 hover:underline cursor-pointer"
                           >
                             Заповнити
                           </button>
-                        ) : !isConfirmed && !onConfirmRoom ? (
+                        ) : !isConfirmed ? (
                           <>
+                            {onEditRoom && (
+                              <button
+                                type="button"
+                                onClick={() => onEditRoom(room)}
+                                className="text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                              >
+                                Редагувати
+                              </button>
+                            )}
                             <button
                               type="button"
-                              onClick={() =>
-                                onVerifyRoom
-                                  ? onVerifyRoom(room)
-                                  : handleRoomClick(room)
-                              }
-                              className="text-xs font-semibold text-amber-700 hover:text-amber-900 hover:underline cursor-pointer"
+                              onClick={() => handleRoomClick(room)}
+                              className="text-xs font-semibold text-blue-700 hover:text-blue-900 hover:underline cursor-pointer"
                             >
                               Перевірити
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => onEditRoom?.(room)}
-                              className="text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
-                            >
-                              Редагувати
                             </button>
                           </>
                         ) : (
                           <>
-                            <button
-                              type="button"
-                              onClick={() => onEditRoom?.(room)}
-                              className="text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
-                            >
-                              Редагувати
-                            </button>
+                            {onEditRoom && (
+                              <button
+                                type="button"
+                                onClick={() => onEditRoom(room)}
+                                className="text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                              >
+                                Редагувати
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => handleRoomClick(room)}
-                              className="text-xs font-medium text-slate-600 hover:text-slate-900 hover:underline cursor-pointer"
+                              className="text-xs font-semibold text-slate-600 hover:text-slate-900 hover:underline cursor-pointer"
                             >
                               На плані
                             </button>
@@ -537,11 +587,12 @@ export function RoomsTable({
           </TableBody>
         </Table>
 
-        {/* Table footer hint */}
-        <div className="px-4 py-2.5 border-t border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-subtle)]/50">
-          <p className="text-xs text-[var(--bim-color-text-secondary)]">
-            Клік по назві виділяє те саме приміщення на плані.
-          </p>
+        {/* Footer Hint matching Figma 02-rooms */}
+        <div className="px-4 py-3 bg-[var(--bim-color-surface-subtle)] border-t border-[var(--bim-color-border-subtle)] text-xs text-[var(--bim-color-text-secondary)] flex items-center justify-between">
+          <span>Клік по назві виділяє те саме приміщення на плані.</span>
+          <span className="font-mono text-[11px] text-slate-600">
+            Всього {total}
+          </span>
         </div>
       </div>
 
@@ -550,32 +601,37 @@ export function RoomsTable({
       {zoneEditor?.draft?.kind === "zone" && zoneEditor.error && <p role="alert" className="rounded-lg bg-amber-50 p-3 text-amber-900">{zoneEditor.error}</p>}
       {zoneEditor?.uncertain && <button type="button" disabled={zoneEditor.busy} onClick={() => void zoneEditor.reconcile()}>Оновити дані після помилки</button>}
       {hasBlocking && (
-        <div
+        <section
           role="alert"
-          data-slot="blocking-banner"
-          className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 space-y-1.5 shadow-xs"
+          aria-live="polite"
+          data-slot="room-blocking-alert"
+          className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 shadow-2xs space-y-2"
         >
-          <div className="flex items-center gap-2">
-            <span
-              aria-hidden="true"
-              className="inline-flex size-5 items-center justify-center rounded-full bg-amber-200 text-amber-900 text-xs font-bold"
-            >
-              !
+          <div className="flex items-center gap-2 font-semibold text-amber-950">
+            <span aria-hidden="true" className="text-amber-600 font-bold">
+              ⚠
             </span>
-            <h3 className="font-semibold text-amber-900">
-              Є причини, що блокують розміщення
-            </h3>
+            <span>Є причини, що блокують розміщення</span>
           </div>
+
           <p
-            data-slot="blocking-description"
-            className="text-sm text-amber-900/90 pl-7"
+            data-slot="room-blocking-description"
+            className="text-xs text-amber-800 leading-relaxed"
           >
             {formatBlockingActions(rooms.filter(room => !zones.some(zone => zone.roomId === room.id)), { hasUnsavedChanges })}
             {zones.some(zone => zone.height == null) && " Для зон без висоти введіть висоту в окремому рядку. Решта зон обробляються незалежно."}
           </p>
-        </div>
+
+          <ul
+            data-slot="room-blocking-reasons"
+            className="list-disc list-inside text-xs text-amber-800 space-y-0.5"
+          >
+            {blockingReasons.map((reason, idx) => (
+              <li key={idx}>{reason}</li>
+            ))}
+          </ul>
+        </section>
       )}
     </div>
   );
 }
-
