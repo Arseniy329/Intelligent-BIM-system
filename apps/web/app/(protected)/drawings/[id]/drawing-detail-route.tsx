@@ -2,17 +2,22 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect } from "react";
 import { DrawingDetail } from "@/components/drawing/drawing-detail";
+import { RuleStatusBadge } from "@/components/rooms/badges";
 import {
-  ApiError,
-  getDrawing,
-  type DrawingDetail as DrawingDetailData,
-} from "@/lib/api/drawings";
+  getRoomRuleStatusAndReason,
+  isInsufficientDataStatus,
+  mapContractRoomToRoom,
+  pluralizeRooms,
+} from "@/types/rooms";
+import { isDrawingDemoEnabled } from "@/lib/drawing/demo-mode";
 import {
   drawingApi as legacyDrawingApi,
-  type DrawingResponse,
+  isDrawingResult,
 } from "@/lib/drawing/drawing-api";
+import { useDrawingDetail } from "@/lib/drawing/use-drawing-detail";
+import { ApiHttpError } from "@/lib/api";
 
 const secondaryButton =
   "inline-flex min-h-10 items-center justify-center rounded-lg border border-[var(--bim-color-button-secondary-border)] bg-[var(--bim-color-button-secondary-bg)] px-4 py-2 text-sm font-medium text-[var(--bim-color-button-secondary-text)] hover:bg-[var(--bim-color-button-secondary-hover-bg)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bim-color-border-focus)] disabled:cursor-not-allowed disabled:opacity-50";
@@ -23,100 +28,37 @@ const errorPanel =
 const panel =
   "space-y-4 rounded-xl border border-[var(--bim-color-border-default)] bg-[var(--bim-color-surface-default)] p-4 sm:p-6";
 
-type LoadState =
-  | { kind: "loading" }
-  | { kind: "ready"; drawing: DrawingDetailData; sourceUrl: string | null }
+type ErrorState =
   | { kind: "not-found" }
   | { kind: "forbidden" }
   | { kind: "unauthorized" }
   | { kind: "error"; message: string };
 
-function errorStatus(error: unknown): number | undefined {
-  if (error instanceof ApiError) return error.status;
-  if (error && typeof error === "object") {
+function toErrorState(error: unknown): ErrorState {
+  let status: number | undefined;
+  if (error instanceof ApiHttpError) {
+    status = error.statusCode;
+  } else if (error && typeof error === "object") {
     const record = error as Record<string, unknown>;
-    if (typeof record.status === "number") return record.status;
-    if (typeof record.statusCode === "number") return record.statusCode;
+    if (typeof record.status === "number") status = record.status;
+    else if (typeof record.statusCode === "number") status = record.statusCode;
   }
-  return undefined;
-}
 
-function toErrorState(error: unknown): LoadState {
-  const status = errorStatus(error);
-  if (status === 401 || (error instanceof Error && error.name === "ApiAuthenticationError")) {
+  if (
+    status === 401 ||
+    (error instanceof Error && error.name === "ApiAuthenticationError")
+  ) {
     return { kind: "unauthorized" };
   }
   if (status === 404) return { kind: "not-found" };
   if (status === 403) return { kind: "forbidden" };
-  return { kind: "error", message: "Не вдалося завантажити креслення. Спробуйте ще раз." };
-}
-
-function legacyMetadata(value: DrawingResponse) {
-  return "drawing" in value ? value.drawing : value;
-}
-
-function legacyStatus(value: DrawingResponse): DrawingDetailData["status"] | null {
-  const status = String(legacyMetadata(value).status);
-  if (status === "pending") return "uploaded";
-  if (status === "done") return "processed";
-  if (status === "error" || status === "failed") return "failed";
-  if (status === "uploaded" || status === "processing" || status === "processed") {
-    return status;
-  }
-  return null;
-}
-
-function legacyRooms(value: DrawingResponse) {
-  return "drawing" in value ? value.rooms : undefined;
-}
-
-function legacyDevices(value: DrawingResponse) {
-  return "drawing" in value ? value.devices : undefined;
-}
-
-function legacySourceUrl(value: DrawingResponse): string | null {
-  const url = value.sourceDownloadUrl;
-  return typeof url === "string" && url ? url : null;
-}
-
-function embeddedSourceUrl(value: DrawingDetailData): string | null {
-  const record = value as unknown as Record<string, unknown>;
-  for (const key of ["sourceDownloadUrl", "source_download_url"]) {
-    const url = record[key];
-    if (typeof url === "string" && url) return url;
-  }
-  return null;
-}
-
-function mergeDrawing(
-  primary: DrawingDetailData,
-  legacy: DrawingResponse | null,
-): DrawingDetailData {
-  if (!legacy) return primary;
-
-  const metadata = legacyMetadata(legacy);
-  const status = legacyStatus(legacy);
-  const rooms = primary.rooms?.length ? primary.rooms : legacyRooms(legacy);
-  const devices = primary.devices?.length ? primary.devices : legacyDevices(legacy);
-  const hasResult = primary.has_result || !!rooms?.length || !!devices?.length;
-  const effectiveStatus =
-    primary.status === "uploaded" && status && status !== "uploaded"
-      ? status
-      : primary.status;
-
   return {
-    ...primary,
-    filename: primary.filename || metadata.originalFileName,
-    uploaded_at: primary.uploaded_at || metadata.createdAt,
-    status: effectiveStatus,
-    error_message:
-      primary.error_message ??
-      ("errorMessage" in metadata ? metadata.errorMessage ?? null : null),
-    has_result: hasResult,
-    rooms,
-    devices,
+    kind: "error",
+    message: "Не вдалося завантажити креслення. Спробуйте ще раз.",
   };
 }
+
+const MISSING_REASON_FALLBACK = "Причина не вказана";
 
 function LoadingSkeleton() {
   return (
@@ -131,57 +73,38 @@ function LoadingSkeleton() {
 
 export function DrawingDetailRoute({ id }: { id: string }) {
   const router = useRouter();
-  const [attempt, setAttempt] = useState(0);
-  const [state, setState] = useState<LoadState>({ kind: "loading" });
-  const refresh = useCallback(() => {
-    setState({ kind: "loading" });
-    setAttempt((value) => value + 1);
-  }, []);
+  const demo = isDrawingDemoEnabled();
+  const liveDetail = useDrawingDetail(id, legacyDrawingApi, demo);
+
+  const isPending = liveDetail.detail.isPending;
+  const isError = liveDetail.detail.isError;
+  const errorState = isError ? toErrorState(liveDetail.detail.error) : null;
 
   useEffect(() => {
-    const controller = new AbortController();
-    let active = true;
+    if (errorState?.kind === "unauthorized") {
+      router.replace("/login");
+    }
+  }, [router, errorState?.kind]);
 
-    void (async () => {
-      let drawing: DrawingDetailData;
-      try {
-        drawing = await getDrawing(id, controller.signal);
-      } catch (error) {
-        if (!active || controller.signal.aborted) return;
-        setState(toErrorState(error));
-        return;
-      }
-      if (!active || controller.signal.aborted) return;
+  const detailData = liveDetail.detail.data;
+  const rawRooms: unknown[] =
+    detailData && isDrawingResult(detailData)
+      ? detailData.rooms
+      : Array.isArray((detailData as unknown as Record<string, unknown>)?.rooms)
+        ? ((detailData as unknown as Record<string, unknown>).rooms as unknown[])
+        : [];
 
-      const embeddedUrl = embeddedSourceUrl(drawing);
-      let legacyDrawing: DrawingResponse | null = null;
-      if (!embeddedUrl || drawing.status === "uploaded") {
-        try {
-          legacyDrawing = await legacyDrawingApi.getDrawing(id, controller.signal);
-        } catch {
-          legacyDrawing = null;
-        }
-      }
-      if (!active || controller.signal.aborted) return;
+  const mappedRooms = rawRooms.map((r, i) =>
+    mapContractRoomToRoom(r as Parameters<typeof mapContractRoomToRoom>[0], i)
+  );
 
-      setState({
-        kind: "ready",
-        drawing: mergeDrawing(drawing, legacyDrawing),
-        sourceUrl:
-          embeddedUrl ||
-          (legacyDrawing ? legacySourceUrl(legacyDrawing) : null),
-      });
-    })();
-
-    return () => {
-      active = false;
-      controller.abort();
-    };
-  }, [id, attempt]);
-
-  useEffect(() => {
-    if (state.kind === "unauthorized") router.replace("/login");
-  }, [router, state.kind]);
+  const insufficientRooms = mappedRooms
+    .map((room, index) => ({
+      room,
+      index,
+      evaluation: getRoomRuleStatusAndReason(room),
+    }))
+    .filter(({ evaluation }) => isInsufficientDataStatus(evaluation.status));
 
   return (
     <div className="min-w-0 space-y-5">
@@ -194,9 +117,7 @@ export function DrawingDetailRoute({ id }: { id: string }) {
         </Link>
       </nav>
 
-      {state.kind === "loading" && <LoadingSkeleton />}
-
-      {state.kind === "not-found" && (
+      {errorState?.kind === "not-found" && (
         <section role="alert" className={panel}>
           <h1 className="text-2xl font-semibold">Креслення не знайдено</h1>
           <p>Креслення з таким ідентифікатором не існує або недоступне.</p>
@@ -206,7 +127,7 @@ export function DrawingDetailRoute({ id }: { id: string }) {
         </section>
       )}
 
-      {state.kind === "forbidden" && (
+      {errorState?.kind === "forbidden" && (
         <section role="alert" className={panel}>
           <h1 className="text-2xl font-semibold">Немає доступу до креслення</h1>
           <p>У вас немає прав на перегляд цього креслення.</p>
@@ -216,7 +137,7 @@ export function DrawingDetailRoute({ id }: { id: string }) {
         </section>
       )}
 
-      {state.kind === "unauthorized" && (
+      {errorState?.kind === "unauthorized" && (
         <section role="status" className={panel}>
           <h1 className="text-2xl font-semibold">Потрібно увійти</h1>
           <p>Перенаправлення на сторінку входу…</p>
@@ -226,12 +147,16 @@ export function DrawingDetailRoute({ id }: { id: string }) {
         </section>
       )}
 
-      {state.kind === "error" && (
+      {errorState?.kind === "error" && (
         <section role="alert" className={errorPanel}>
           <h1 className="text-xl font-semibold">Помилка завантаження</h1>
-          <p>{state.message}</p>
+          <p>{errorState.message}</p>
           <div className="mt-4 flex flex-wrap gap-2">
-            <button type="button" className={primaryButton} onClick={refresh}>
+            <button
+              type="button"
+              className={primaryButton}
+              onClick={() => void liveDetail.detail.refetch()}
+            >
               Спробувати знову
             </button>
             <Link href="/drawings" className={secondaryButton}>
@@ -241,7 +166,49 @@ export function DrawingDetailRoute({ id }: { id: string }) {
         </section>
       )}
 
-      {state.kind === "ready" && <DrawingDetail id={id} />}
+      {isPending && <LoadingSkeleton />}
+
+      {!isPending && !errorState && (
+        <>
+          {insufficientRooms.length > 0 && (
+            <section
+              data-slot="insufficient-data-summary"
+              aria-label="Приміщення без достатніх даних"
+              className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-sm text-slate-700 shadow-xs"
+            >
+              <p
+                data-slot="insufficient-data-summary-text"
+                className="font-medium"
+              >
+                {pluralizeRooms(insufficientRooms.length)} без достатніх даних
+              </p>
+              <ul className="space-y-1.5">
+                {insufficientRooms.map(({ room, index, evaluation }) => {
+                  const key = room.id || `room-${index}`;
+                  const displayName = room.number
+                    ? `${room.number} · ${room.name}`
+                    : room.name || `Приміщення ${index + 1}`;
+                  const displayReason =
+                    evaluation.reason ?? MISSING_REASON_FALLBACK;
+                  return (
+                    <li
+                      key={key}
+                      className="flex flex-wrap items-center justify-between gap-2"
+                    >
+                      <span className="min-w-0 break-words">{displayName}</span>
+                      <RuleStatusBadge
+                        status="insufficient_data"
+                        reason={displayReason}
+                      />
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          )}
+          <DrawingDetail id={id} demo={demo} />
+        </>
+      )}
     </div>
   );
 }

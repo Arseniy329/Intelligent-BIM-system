@@ -109,7 +109,12 @@ def row_points(row: dict[str, Any]) -> list[Point]:
     return points
 
 
-def room_from_row(row: dict[str, Any]) -> Room:
+def room_from_row(
+    row: dict[str, Any],
+    *,
+    rule_status: str | None = None,
+    rule_reason: str | None = None,
+) -> Room:
     """Map a ``public.rooms`` row to the shared Room contract."""
     raw_height = row.get("height")
     height = float(raw_height) if raw_height is not None else None
@@ -119,6 +124,28 @@ def room_from_row(row: dict[str, Any]) -> Room:
         Source(raw_source) if raw_source in {item.value for item in Source} else None
     )
     raw_confirmed = row.get("confirmed")
+
+    status_val = (
+        rule_status
+        or row.get("rule_status")
+        or row.get("ruleStatus")
+        or row.get("verification_status")
+    )
+    reason_val = (
+        rule_reason
+        or row.get("rule_reason")
+        or row.get("ruleReason")
+        or row.get("reason")
+        or row.get("status_reason")
+    )
+
+    if status_val is None and reason_val is None:
+        if height is None or height <= 0:
+            status_val = "insufficient_data"
+            reason_val = "Не введено висоту"
+        elif not row.get("type") or str(row.get("type")).strip() in {"", "unknown"}:
+            status_val = "insufficient_data"
+            reason_val = "Не обрано тип приміщення"
 
     return Room(
         id=str(row["id"]),
@@ -130,6 +157,10 @@ def room_from_row(row: dict[str, Any]) -> Room:
         polygon=row_points(row),
         source=source,
         confirmed=bool(raw_confirmed) if raw_confirmed is not None else None,
+        rule_status=status_val,
+        rule_reason=reason_val,
+        ruleStatus=status_val,
+        ruleReason=reason_val,
     )
 
 

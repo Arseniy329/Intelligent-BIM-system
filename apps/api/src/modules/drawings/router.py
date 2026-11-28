@@ -52,9 +52,11 @@ from src.modules.placement.manual_call_points import (
     rooms_from_rows,
 )
 from src.modules.placement.service import (
+    RuleRecord,
     build_placement_targets,
     describe_outcome,
     place_targets,
+    select_rule_for_room,
     summarize_outcomes,
 )
 from src.modules.rooms.service import room_from_row, row_points
@@ -871,6 +873,27 @@ async def get_drawing_detail(
         download_url: AnyUrl | None = None
         download_url_expires_at: datetime | None = None
 
+        devices_res = (
+            supabase.table("devices").select("*").eq("drawing_id", drawing_id).execute()
+        )
+        devices_by_room: dict[str, list[dict[str, Any]]] = {}
+        if isinstance(devices_res.data, list):
+            for d in devices_res.data:
+                if isinstance(d, dict) and d.get("room_id"):
+                    devices_by_room.setdefault(str(d["room_id"]), []).append(d)
+
+        rules_rows: list[dict[str, Any]] = []
+        try:
+            rules_res = supabase.table("rules").select("*").execute()
+            if isinstance(rules_res.data, list):
+                rules_rows = [row for row in rules_res.data if isinstance(row, dict)]
+        except Exception:
+            rules_rows = []
+
+        rules_by_id: dict[str, dict[str, Any]] = {
+            str(rule["id"]): rule for rule in rules_rows if "id" in rule
+        }
+
         rooms_res = (
             supabase.table("rooms").select("*").eq("drawing_id", drawing_id).execute()
         )
@@ -878,11 +901,80 @@ async def get_drawing_detail(
             for r in rooms_res.data:
                 if not isinstance(r, dict) or len(row_points(r)) < 3:
                     continue
-                rooms.append(room_from_row(r))
 
-        devices_res = (
-            supabase.table("devices").select("*").eq("drawing_id", drawing_id).execute()
-        )
+                room_id_str = str(r["id"])
+                room_devices = devices_by_room.get(room_id_str, [])
+                rule_status: str | None = None
+                rule_reason: str | None = None
+
+                raw_h = r.get("height")
+                height_val: float | None = None
+                if raw_h is not None:
+                    try:
+                        height_val = float(raw_h)
+                    except (TypeError, ValueError):
+                        height_val = None
+
+                if room_devices:
+                    dev_rule_id = str(room_devices[0].get("rule_id") or "")
+                    matched_rule_dict = rules_by_id.get(dev_rule_id)
+                    rule_status = (
+                        str(
+                            matched_rule_dict.get("verification_status")
+                            or matched_rule_dict.get("status")
+                            or "verified"
+                        )
+                        if matched_rule_dict
+                        else "verified"
+                    )
+                    rule_reason = None
+                else:
+                    if height_val is None or height_val <= 0:
+                        rule_status = "insufficient_data"
+                        rule_reason = "Не введено висоту"
+                    elif (
+                        not r.get("type")
+                        or str(r.get("type")).strip() in {"", "unknown"}
+                    ):
+                        rule_status = "insufficient_data"
+                        rule_reason = "Не обрано тип приміщення"
+                    else:
+                        matched = select_rule_for_room(
+                            rules_rows,
+                            device_type="smoke_detector",
+                            room_type=r.get("type"),
+                            room_height_m=height_val,
+                        )
+                        if (
+                            matched is None
+                            and len(rules_rows) == 1
+                            and "threshold" in rules_rows[0]
+                            and "device_type" not in rules_rows[0]
+                        ):
+                            try:
+                                fallback_status = str(
+                                    rules_rows[0].get("status") or "needs_review"
+                                )
+                                matched = RuleRecord(
+                                    id=str(rules_rows[0]["id"]),
+                                    threshold=float(rules_rows[0]["threshold"]),
+                                    status=fallback_status,
+                                )
+                            except (ValueError, TypeError):
+                                matched = None
+
+                        if matched is None:
+                            rule_status = "insufficient_data"
+                            rule_reason = f"Немає правила для висоти {height_val:g} м"
+                        else:
+                            rule_status = "needs_review"
+                            rule_reason = None
+
+                rooms.append(
+                    room_from_row(
+                        r, rule_status=rule_status, rule_reason=rule_reason
+                    )
+                )
         if status_raw == "processed" and isinstance(devices_res.data, list):
             for d in devices_res.data:
                 if not isinstance(d, dict):

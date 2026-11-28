@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DrawingResult } from "@bim/contracts";
@@ -163,4 +163,236 @@ it("keeps process, place, saved result and export available from the drawing rou
   expect(calls).toContain(`POST /api/v1/drawings/${id}/process`);
   expect(calls).toContain(`POST /api/v1/drawings/${id}/place`);
   expect(calls).toContain(`GET /api/v1/drawings/${id}`);
+});
+
+it("displays clear completeness message ('Не введено висоту') in summary and table when height is null, not 'Причина не вказана' and not verified", async () => {
+  const drawingWithMissingHeight: DrawingResult = {
+    ...rooms,
+    rooms: [
+      {
+        id: "room-missing-h",
+        drawingId: id,
+        name: "Кабінет 101",
+        type: "office",
+        height: null,
+        area: 48,
+        source: "auto",
+        confirmed: true,
+        polygon: [
+          { x: 0, y: 0 },
+          { x: 8000, y: 0 },
+          { x: 8000, y: 6000 },
+          { x: 0, y: 6000 },
+        ],
+      },
+    ],
+  };
+
+  fetchMock.mockImplementation(async (input: URL | string) => {
+    const raw = String(input);
+    if (raw.startsWith("https://storage.example/")) {
+      return new Response("fixture dxf");
+    }
+    const url = new URL(raw);
+    if (url.pathname.endsWith(`/api/v1/drawings/${id}`)) {
+      return Response.json(drawingWithMissingHeight);
+    }
+    if (url.pathname.endsWith("/room-types")) {
+      return Response.json([]);
+    }
+    return Response.json(drawingWithMissingHeight);
+  });
+
+  mount();
+
+  // 1. Summary banner:
+  const summaryBanner = await screen.findByRole("region", {
+    name: "Приміщення без достатніх даних",
+  });
+  expect(summaryBanner).toBeInTheDocument();
+  expect(
+    within(summaryBanner).getByText("1 приміщення без достатніх даних")
+  ).toBeInTheDocument();
+  expect(
+    within(summaryBanner).getByText("Не введено висоту")
+  ).toBeInTheDocument();
+  expect(
+    within(summaryBanner).queryByText("Причина не вказана")
+  ).not.toBeInTheDocument();
+  expect(
+    within(summaryBanner).queryByText("Перевірено")
+  ).not.toBeInTheDocument();
+
+  // 2. Navigate to "Приміщення" tab and check table:
+  const roomsTab = screen.getByRole("tab", { name: /Приміщення/ });
+  fireEvent.click(roomsTab);
+
+  const tableRow = await screen.findByRole("row", {
+    name: /Кабінет 101/,
+  });
+  expect(tableRow).toHaveAttribute("data-rule-status", "insufficient_data");
+  expect(within(tableRow).getByText("Не введено висоту")).toBeInTheDocument();
+  expect(
+    within(tableRow).queryByText("Причина не вказана")
+  ).not.toBeInTheDocument();
+  expect(within(tableRow).queryByText("Перевірено")).not.toBeInTheDocument();
+});
+
+it("displays skipped/needs-review reason ('Немає правила для висоти 3.5 м') when type and height are present but no rule matches, not verified", async () => {
+  const drawingWithUnmatchedRule: DrawingResult = {
+    ...rooms,
+    rooms: [
+      {
+        id: "room-unmatched",
+        drawingId: id,
+        name: "Кабінет 102",
+        type: "office",
+        height: 3.5,
+        area: 50,
+        source: "auto",
+        confirmed: true,
+        rule_status: "insufficient_data",
+        rule_reason: "Немає правила для висоти 3.5 м",
+        polygon: [
+          { x: 0, y: 0 },
+          { x: 8000, y: 0 },
+          { x: 8000, y: 6000 },
+          { x: 0, y: 6000 },
+        ],
+      },
+    ],
+  };
+
+  fetchMock.mockImplementation(async (input: URL | string) => {
+    const raw = String(input);
+    if (raw.startsWith("https://storage.example/")) {
+      return new Response("fixture dxf");
+    }
+    const url = new URL(raw);
+    if (url.pathname.endsWith(`/api/v1/drawings/${id}`)) {
+      return Response.json(drawingWithUnmatchedRule);
+    }
+    if (url.pathname.endsWith("/room-types")) {
+      return Response.json([]);
+    }
+    return Response.json(drawingWithUnmatchedRule);
+  });
+
+  mount();
+
+  // 1. Summary banner:
+  const summaryBanner = await screen.findByRole("region", {
+    name: "Приміщення без достатніх даних",
+  });
+  expect(summaryBanner).toBeInTheDocument();
+  expect(
+    within(summaryBanner).getByText("Немає правила для висоти 3.5 м")
+  ).toBeInTheDocument();
+  expect(
+    within(summaryBanner).queryByText("Перевірено")
+  ).not.toBeInTheDocument();
+
+  // 2. Table:
+  const roomsTab = screen.getByRole("tab", { name: /Приміщення/ });
+  fireEvent.click(roomsTab);
+
+  const tableRow = await screen.findByRole("row", {
+    name: /Кабінет 102/,
+  });
+  expect(tableRow).toHaveAttribute("data-rule-status", "insufficient_data");
+  expect(
+    within(tableRow).getByText("Немає правила для висоти 3.5 м")
+  ).toBeInTheDocument();
+  expect(within(tableRow).queryByText("Перевірено")).not.toBeInTheDocument();
+});
+
+it("updates both Summary banner and Rooms Table simultaneously without page reload upon inline height update", async () => {
+  let currentRoom = {
+    id: "room-dynamic",
+    drawingId: id,
+    name: "Кабінет 103",
+    type: "office",
+    height: null as number | null,
+    area: 36,
+    source: "auto" as const,
+    confirmed: true,
+    rule_status: null as string | null,
+    rule_reason: null as string | null,
+    polygon: [
+      { x: 0, y: 0 },
+      { x: 6000, y: 0 },
+      { x: 6000, y: 6000 },
+      { x: 0, y: 6000 },
+    ],
+  };
+
+  fetchMock.mockImplementation(async (input: URL | string, init?: RequestInit) => {
+    const raw = String(input);
+    if (raw.startsWith("https://storage.example/")) {
+      return new Response("fixture dxf");
+    }
+    const url = new URL(raw);
+    const method = init?.method ?? "GET";
+
+    if (method === "PATCH" && url.pathname.includes("/api/v1/rooms/")) {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      currentRoom = {
+        ...currentRoom,
+        height: body.height ?? currentRoom.height,
+        rule_status: "needs_review",
+        rule_reason: null,
+      };
+      return Response.json(currentRoom);
+    }
+
+    if (url.pathname.endsWith(`/api/v1/drawings/${id}`)) {
+      return Response.json({
+        ...rooms,
+        rooms: [currentRoom],
+      });
+    }
+    if (url.pathname.endsWith("/room-types")) {
+      return Response.json([]);
+    }
+    return Response.json({
+      ...rooms,
+      rooms: [currentRoom],
+    });
+  });
+
+  mount();
+
+  // Initially height is null -> Summary banner is visible
+  expect(
+    await screen.findByRole("region", { name: "Приміщення без достатніх даних" })
+  ).toBeInTheDocument();
+  expect(screen.getByText("Не введено висоту")).toBeInTheDocument();
+
+  // Navigate to Rooms tab
+  const roomsTab = screen.getByRole("tab", { name: /Приміщення/ });
+  fireEvent.click(roomsTab);
+
+  // Click "Заповнити" to edit room
+  const fillBtn = await screen.findByRole("button", { name: "Заповнити" });
+  fireEvent.click(fillBtn);
+
+  // Enter height in form
+  const heightInput = await screen.findByLabelText("Висота, м");
+  fireEvent.change(heightInput, { target: { value: "3,0" } });
+
+  // Save data
+  const saveBtn = screen.getByRole("button", { name: "Зберегти дані" });
+  fireEvent.click(saveBtn);
+
+  // After save without page reload:
+  // 1. Summary banner should disappear (count 0)
+  await waitFor(() => {
+    expect(
+      screen.queryByRole("region", { name: "Приміщення без достатніх даних" })
+    ).not.toBeInTheDocument();
+  });
+
+  // 2. Rooms Table should simultaneously show "3,0 м" and updated completeness
+  expect(screen.getByText("3,0 м")).toBeInTheDocument();
+  expect(screen.queryByText("Не введено висоту")).not.toBeInTheDocument();
 });
