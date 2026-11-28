@@ -173,7 +173,8 @@ export function RoomsTable({
                     rawRecord.review_status ??
                     rawRecord.reviewStatus
                 );
-                const showRuleBadge = hasExplicitRuleData;
+                const showRuleBadge =
+                  hasExplicitRuleData || isInsufficient || Boolean(ruleReason);
                 const displayReason =
                   ruleReason ??
                   (isInsufficient ? MISSING_REASON_FALLBACK : null);
