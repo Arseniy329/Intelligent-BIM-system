@@ -27,6 +27,7 @@ from src.modules.exits.schemas import (
     Passage,
     PassageCreateRequest,
 )
+from src.modules.findings.service import sync_findings_after_mutation
 from src.modules.placement.manual_call_points import (
     passage_at_rooms,
     passage_room_pair,
@@ -111,6 +112,7 @@ async def create_exit(
         "created_at": datetime.now(UTC).isoformat(),
     }
     inserted = first_row(supabase.table("exits").insert(values).execute())
+    sync_findings_after_mutation(supabase, str(drawing_id), drawing_row=drawing)
     return exit_from_row(inserted if inserted is not None else values)
 
 
@@ -128,9 +130,11 @@ async def delete_exit(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Exit not found"
         )
-    get_drawing_for_user(supabase, str(exit_row["drawing_id"]), current_user)
+    drawing_id = str(exit_row["drawing_id"])
+    drawing = get_drawing_for_user(supabase, drawing_id, current_user)
 
     supabase.table("exits").delete().eq("id", str(exit_id)).execute()
+    sync_findings_after_mutation(supabase, drawing_id, drawing_row=drawing)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -228,6 +232,7 @@ async def create_passage(
         "created_at": datetime.now(UTC).isoformat(),
     }
     inserted = first_row(supabase.table("passages").insert(values).execute())
+    sync_findings_after_mutation(supabase, str(drawing_id), drawing_row=drawing)
     return passage_from_row(inserted if inserted is not None else values)
 
 
@@ -249,7 +254,9 @@ async def delete_passage(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Passage not found"
         )
-    get_drawing_for_user(supabase, str(row["drawing_id"]), current_user)
+    drawing_id = str(row["drawing_id"])
+    drawing = get_drawing_for_user(supabase, drawing_id, current_user)
 
     supabase.table("passages").delete().eq("id", str(passage_id)).execute()
+    sync_findings_after_mutation(supabase, drawing_id, drawing_row=drawing)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

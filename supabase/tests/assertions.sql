@@ -325,3 +325,218 @@ begin
   end if;
 end
 $$;
+
+-- ── BIM-77: findings, RLS (тільки SELECT) та replace_drawing_findings ─────────
+do $$
+begin
+  if to_regclass('public.findings') is null then
+    raise exception 'public.findings is missing';
+  end if;
+  if not (select relrowsecurity from pg_class where oid = 'public.findings'::regclass) then
+    raise exception 'RLS must be enabled on public.findings';
+  end if;
+  if has_table_privilege('anon', 'public.findings', 'SELECT')
+     or has_table_privilege('anon', 'public.findings', 'INSERT')
+     or has_table_privilege('anon', 'public.findings', 'UPDATE')
+     or has_table_privilege('anon', 'public.findings', 'DELETE') then
+    raise exception 'anon must have zero table privileges on public.findings';
+  end if;
+  if not has_table_privilege('authenticated', 'public.findings', 'SELECT')
+     or has_table_privilege('authenticated', 'public.findings', 'INSERT')
+     or has_table_privilege('authenticated', 'public.findings', 'UPDATE')
+     or has_table_privilege('authenticated', 'public.findings', 'DELETE') then
+    raise exception 'authenticated must have ONLY SELECT privilege on public.findings';
+  end if;
+  if not has_table_privilege('service_role', 'public.findings', 'SELECT,INSERT,UPDATE,DELETE') then
+    raise exception 'service_role must have full privileges on public.findings';
+  end if;
+  if has_function_privilege('anon', 'public.replace_drawing_findings(uuid, jsonb)', 'EXECUTE')
+     or has_function_privilege('authenticated', 'public.replace_drawing_findings(uuid, jsonb)', 'EXECUTE')
+     or not has_function_privilege('service_role', 'public.replace_drawing_findings(uuid, jsonb)', 'EXECUTE') then
+    raise exception 'replace_drawing_findings EXECUTE privilege must be restricted to service_role';
+  end if;
+end
+$$;
+
+begin;
+insert into auth.users (id, email) values
+  ('44444444-0000-0000-0000-000000000001', 'findings-owner@example.com'),
+  ('44444444-0000-0000-0000-000000000002', 'findings-second@example.com'),
+  ('44444444-0000-0000-0000-000000000003', 'findings-other@example.com'),
+  ('44444444-0000-0000-0000-000000000004', 'findings-admin@example.com');
+
+update public.profiles
+set role = 'admin'
+where id = '44444444-0000-0000-0000-000000000004';
+
+insert into public.drawings (id, owner_id, original_file_name, storage_path, units) values
+  ('44444444-0000-0000-0000-0000000000d1', '44444444-0000-0000-0000-000000000001', 'f1.dxf', 'assert/f1.dxf', 'mm'),
+  ('44444444-0000-0000-0000-0000000000d2', '44444444-0000-0000-0000-000000000002', 'f2.dxf', 'assert/f2.dxf', 'mm');
+
+do $$
+declare
+  inserted_count int;
+  owner_cnt int;
+  other_cnt int;
+  admin_cnt int;
+  denied boolean;
+begin
+  -- a) service_role викликає replace_drawing_findings й атомарно замінює знімок.
+  set local role service_role;
+  select public.replace_drawing_findings(
+    '44444444-0000-0000-0000-0000000000d1',
+    '[{"id": "44444444-0000-0000-0000-000000000f01", "severity": "critical", "message": "Old finding"}]'::jsonb
+  ) into inserted_count;
+  if inserted_count <> 1 then
+    raise exception 'expected 1 inserted row on initial snapshot, got %', inserted_count;
+  end if;
+
+  select public.replace_drawing_findings(
+    '44444444-0000-0000-0000-0000000000d1',
+    '[{"id": "44444444-0000-0000-0000-000000000f11", "severity": "warning", "message": "Owner finding"}]'::jsonb
+  ) into inserted_count;
+  if inserted_count <> 1 then
+    raise exception 'expected 1 inserted row on replacement snapshot, got %', inserted_count;
+  end if;
+
+  select public.replace_drawing_findings(
+    '44444444-0000-0000-0000-0000000000d2',
+    '[{"id": "44444444-0000-0000-0000-000000000f02", "severity": "critical", "message": "Second owner finding"}]'::jsonb
+  ) into inserted_count;
+  if inserted_count <> 1 then
+    raise exception 'expected 1 inserted row for second drawing, got %', inserted_count;
+  end if;
+
+  -- b) authenticated як власник креслення -> бачить лише свої знахідки (1 рядок).
+  reset role;
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', '44444444-0000-0000-0000-000000000001', true);
+  select count(*) into owner_cnt from public.findings;
+  if owner_cnt <> 1 then
+    raise exception 'owner expected 1 finding, got %', owner_cnt;
+  end if;
+  if not exists (
+    select 1 from public.findings
+    where id = '44444444-0000-0000-0000-000000000f11'
+      and message = 'Owner finding'
+  ) then
+    raise exception 'owner did not observe atomically replaced finding';
+  end if;
+
+  -- c) authenticated як інший не-адмін користувач -> 0 рядків.
+  perform set_config('request.jwt.claim.sub', '44444444-0000-0000-0000-000000000003', true);
+  select count(*) into other_cnt from public.findings;
+  if other_cnt <> 0 then
+    raise exception 'other non-admin user expected 0 findings, got %', other_cnt;
+  end if;
+
+  -- d) authenticated як admin -> бачить знахідки всіх користувачів (2 рядки).
+  perform set_config('request.jwt.claim.sub', '44444444-0000-0000-0000-000000000004', true);
+  select count(*) into admin_cnt from public.findings;
+  if admin_cnt <> 2 then
+    raise exception 'admin expected 2 findings across users, got %', admin_cnt;
+  end if;
+
+  -- e) authenticated не може виконувати INSERT / UPDATE / DELETE або RPC replace_drawing_findings.
+  perform set_config('request.jwt.claim.sub', '44444444-0000-0000-0000-000000000001', true);
+
+  denied := false;
+  begin
+    insert into public.findings (drawing_id, severity, message)
+    values ('44444444-0000-0000-0000-0000000000d1', 'warning', 'unauthorized insert');
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'authenticated INSERT on public.findings must fail with insufficient_privilege';
+  end if;
+
+  denied := false;
+  begin
+    update public.findings set message = 'unauthorized update';
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'authenticated UPDATE on public.findings must fail with insufficient_privilege';
+  end if;
+
+  denied := false;
+  begin
+    delete from public.findings;
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'authenticated DELETE on public.findings must fail with insufficient_privilege';
+  end if;
+
+  denied := false;
+  begin
+    perform public.replace_drawing_findings('44444444-0000-0000-0000-0000000000d1', '[]'::jsonb);
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'authenticated EXECUTE on replace_drawing_findings must fail with insufficient_privilege';
+  end if;
+
+  -- e) anon не може виконувати SELECT / INSERT / UPDATE / DELETE або RPC replace_drawing_findings.
+  reset role;
+  set local role anon;
+
+  denied := false;
+  begin
+    perform count(*) from public.findings;
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'anon SELECT on public.findings must fail with insufficient_privilege';
+  end if;
+
+  denied := false;
+  begin
+    insert into public.findings (drawing_id, severity, message)
+    values ('44444444-0000-0000-0000-0000000000d1', 'warning', 'anon insert');
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'anon INSERT on public.findings must fail with insufficient_privilege';
+  end if;
+
+  denied := false;
+  begin
+    update public.findings set message = 'anon update';
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'anon UPDATE on public.findings must fail with insufficient_privilege';
+  end if;
+
+  denied := false;
+  begin
+    delete from public.findings;
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'anon DELETE on public.findings must fail with insufficient_privilege';
+  end if;
+
+  denied := false;
+  begin
+    perform public.replace_drawing_findings('44444444-0000-0000-0000-0000000000d1', '[]'::jsonb);
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'anon EXECUTE on replace_drawing_findings must fail with insufficient_privilege';
+  end if;
+
+  reset role;
+end
+$$;
+rollback;

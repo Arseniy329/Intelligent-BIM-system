@@ -8,6 +8,9 @@ import tokens from "../../../../tokens.json";
 import styles from "./drawing-viewer.module.css";
 
 export type DrawingViewerProps = {
+  findings?: import("@bim/contracts").Finding[];
+  selectedFindingId?: string | null;
+  onSelectFinding?: (finding: import("@bim/contracts").Finding) => void;
   zones?: import("@/lib/drawing/plan-features-api").RoomZone[];
   exits?: import("@/lib/drawing/plan-features-api").PlanExit[];
   layers?: import("./plan-layers").PlanLayers;

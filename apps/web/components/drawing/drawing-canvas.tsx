@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createDrawingViewerAdapter, type DrawingViewerAdapter } from "@/lib/drawing/viewer-adapter";
 import { LOAD_PHASE_LABELS, logDrawingLoadTimings, measureDrawingLoad, type DrawingLoadTimings } from "@/lib/drawing/load-timings";
 import type { DrawingViewerProps } from "./drawing-viewer";
 import { DrawingToolbar } from "./drawing-toolbar";
 import { PlanEditOverlay } from "./plan-edit-overlay";
 import { DrawingOverlay } from "./drawing-overlay";
+import { FindingsOverlay } from "./findings-overlay";
 import { DeviceLegend } from "./device-legend";
 import { DEVICE_LABELS } from "./device-symbol";
 import styles from "./drawing-viewer.module.css";
@@ -19,6 +20,7 @@ type LoadState =
 export default function DrawingCanvas({
   url, onReady, onRetry, retryPending = false, rooms, devices, initialRoomLabelsVisible = true,
   selectedRoomId, editor, onSelectRoom, onSelectDevice, zones, exits, rules, layers, mode, onModeChange, workPanel,
+  findings, selectedFindingId, onSelectFinding,
 }: DrawingViewerProps & { onRetry: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const adapterRef = useRef<DrawingViewerAdapter | null>(null);
@@ -100,7 +102,7 @@ export default function DrawingCanvas({
     };
   }, [url]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (state.status !== "ready" || !adapterRef.current) return;
     onReady?.(adapterRef.current);
     return () => { onReady?.(null); };
@@ -123,6 +125,8 @@ export default function DrawingCanvas({
       {workPanel && <div className={styles.workPanel}>{workPanel}</div>}
       <div className={styles.stage} aria-busy={state.status === "loading"}>
         <div ref={hostRef} className={styles.canvas} aria-label="Полотно DXF" />
+        {state.status === "ready" && !editor?.draft && !!findings?.length && layers?.findings !== false && <FindingsOverlay controller={state.controller}
+          findings={findings} rooms={rooms ?? []} devices={devices ?? []} selectedId={selectedFindingId} onSelect={onSelectFinding} blocked={editor?.blocked} />}
         {state.status === "ready" && (rooms?.length || devices?.length || zones?.length || exits?.length) ? (
           <DrawingOverlay controller={state.controller}
             zones={zones?.filter(zone => editor?.draft?.kind !== "zone" || editor.draft.id !== zone.id)} exits={exits}

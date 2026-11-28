@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from enum import Enum, StrEnum
+from typing import Any
 from uuid import UUID
 
 from pydantic import (
@@ -138,9 +139,9 @@ class RoomUpdateRequest(BaseModel):
     )
     type: constr(min_length=1) | None = None
     height: confloat(le=100.0, gt=0.0) | None = None
-    is_confirmed: bool | None = None
     polygon: RoomPolygon | None = None
     confirmed: bool | None = None
+    is_confirmed: bool | None = Field(None, description="Аліас для confirmed")
 
 
 class Type(Enum):
@@ -309,6 +310,42 @@ class Rule(BaseModel):
     verificationStatus: VerificationStatus
 
 
+class FindingSeverity(Enum):
+    critical = "critical"
+    warning = "warning"
+    insufficient_data = "insufficient_data"
+    rule_conflict = "rule_conflict"
+
+
+class FindingRuleStatus(Enum):
+    verified = "verified"
+    needs_review = "needs_review"
+
+
+class Finding(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    id: constr(min_length=1)
+    drawingId: UUID
+    roomId: constr(min_length=1) | None
+    deviceId: constr(min_length=1) | None
+    ruleId: constr(min_length=1) | None = Field(
+        ...,
+        description="Ідентифікатор правила (public.rules.id), на яке посилається знахідка, або null.",
+    )
+    severity: FindingSeverity
+    message: constr(min_length=1)
+    document: str | None
+    clause: str | None = Field(
+        ...,
+        description="Пункт нормативного документа; null, якщо правило не звірено або відсутнє.",
+    )
+    ruleStatus: FindingRuleStatus | None
+    conflictDetails: dict[str, Any] | None = None
+    details: dict[str, Any] | None = None
+
+
 class BimContracts(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -327,3 +364,4 @@ class BimContracts(BaseModel):
     drawingResult: DrawingResult | None = None
     processingJob: ProcessingJob | None = None
     rule: Rule | None = None
+    finding: Finding | None = None

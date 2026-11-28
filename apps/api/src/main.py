@@ -12,6 +12,7 @@ from src.modules.cad.router import router as cad_router
 from src.modules.devices.router import router as devices_router
 from src.modules.drawings.router import router as drawings_router
 from src.modules.exits.router import router as exits_router
+from src.modules.findings.router import router as findings_router
 from src.modules.norms.router import router as norms_router
 from src.modules.placement.router import router as placement_router
 from src.modules.rooms.router import router as rooms_router
@@ -50,6 +51,7 @@ app.include_router(norms_router, prefix="/api/v1")
 app.include_router(norms_router)
 app.include_router(devices_router, prefix="/api/v1")
 app.include_router(exits_router, prefix="/api/v1")
+app.include_router(findings_router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["system"])

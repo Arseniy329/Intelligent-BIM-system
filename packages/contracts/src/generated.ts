@@ -17,6 +17,8 @@ export type RoomPolygon = [Point, Point, Point, ...Point[]];
  */
 export type RequestedDrawingUnits = "mm" | "m" | "from_file";
 export type ProcessingJobStatus = "queued" | "processing" | "completed" | "failed";
+export type FindingSeverity = "critical" | "warning" | "insufficient_data" | "rule_conflict";
+export type FindingRuleStatus = "verified" | "needs_review";
 
 /**
  * Спільні контракти вебклієнта й API
@@ -36,6 +38,7 @@ export interface BimContracts {
   drawingResult?: DrawingResult;
   processingJob?: ProcessingJob;
   rule?: Rule;
+  finding?: Finding;
 }
 export interface Drawing {
   id: string;
@@ -229,4 +232,31 @@ export interface Rule {
   clause: string | null;
   sourceUrl: string | null;
   verificationStatus: "verified" | "needs_review";
+}
+/**
+ * Порушення або попередження за результатами перевірки розміщення приладів пожежної безпеки.
+ */
+export interface Finding {
+  id: string;
+  drawingId: string;
+  roomId: string | null;
+  deviceId: string | null;
+  /**
+   * Ідентифікатор правила (public.rules.id), на яке посилається знахідка, або null.
+   */
+  ruleId: string | null;
+  severity: FindingSeverity;
+  message: string;
+  document: string | null;
+  /**
+   * Пункт нормативного документа; null, якщо правило не звірено або відсутнє.
+   */
+  clause: string | null;
+  ruleStatus: FindingRuleStatus | null;
+  conflictDetails?: {
+    [k: string]: unknown;
+  } | null;
+  details?: {
+    [k: string]: unknown;
+  } | null;
 }
