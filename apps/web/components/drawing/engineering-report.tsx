@@ -86,6 +86,19 @@ export function EngineeringReport({
         </div>
       )}
 
+      {data.auditStatus === "demo" && !findingsError && (
+        <div
+          role="status"
+          className={cn(styles.auditBanner, styles.auditBannerDemo)}
+        >
+          <strong>Демонстраційний звіт: аудит не проводився</strong>
+          <p>
+            Локальний демонстраційний режим містить ілюстративні дані; перевірку
+            відповідності нормативним вимогам не виконано.
+          </p>
+        </div>
+      )}
+
       {data.auditStatus === "pending" && !findingsError && (
         <div
           role="status"
@@ -122,16 +135,20 @@ export function EngineeringReport({
           <span className={styles.summaryValue}>
             {data.auditStatus === "unavailable" || !!findingsError
               ? "Недоступно"
-              : data.auditStatus === "pending" || findingsLoading
-                ? "Очікується"
-                : data.summary.findingCount}
+              : data.auditStatus === "demo"
+                ? "Деморежим"
+                : data.auditStatus === "pending" || findingsLoading
+                  ? "Очікується"
+                  : data.summary.findingCount}
           </span>
           <span className={styles.summarySub}>
             {data.auditStatus === "unavailable" || !!findingsError
               ? "Аудит не виконано — звіт неповний"
-              : data.auditStatus === "pending" || findingsLoading
-                ? "Очікується завершення аудиту"
-                : `Критичних: ${data.summary.criticalCount} · Попереджень: ${data.summary.warningCount} · Конфліктів: ${data.summary.conflictCount}`}
+              : data.auditStatus === "demo"
+                ? "Аудит не проводився"
+                : data.auditStatus === "pending" || findingsLoading
+                  ? "Очікується завершення аудиту"
+                  : `Критичних: ${data.summary.criticalCount} · Попереджень: ${data.summary.warningCount} · Конфліктів: ${data.summary.conflictCount}`}
           </span>
         </div>
         <div className={styles.summaryCard}>
@@ -277,6 +294,17 @@ export function EngineeringReport({
                 </Button>
               </div>
             )}
+          </div>
+        ) : data.auditStatus === "demo" ? (
+          <div
+            role="status"
+            className={cn(styles.auditBanner, styles.auditBannerDemo)}
+          >
+            <strong>Демонстраційний звіт: аудит не проводився.</strong>
+            <p>
+              Для отримання реального аудиту завантажте власне креслення та
+              виконайте перевірку.
+            </p>
           </div>
         ) : data.auditStatus === "pending" || findingsLoading ? (
           <div

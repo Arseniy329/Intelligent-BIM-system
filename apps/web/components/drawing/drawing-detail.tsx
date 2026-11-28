@@ -27,7 +27,7 @@ import { FindingsPanel } from "./findings-panel";
 import { EngineeringReport } from "./engineering-report";
 import { useFindings } from "@/lib/drawing/use-findings";
 import { fetchFindings, findingTarget } from "@/lib/drawing/findings";
-import { buildEngineeringReportData, downloadHtmlReport, resolveFindingsAuditState, triggerBlobDownload, type ReportAuditStatus } from "@/lib/drawing/report";
+import { buildEngineeringReportData, downloadHtmlReport, isDemoDrawing, resolveFindingsAuditState, triggerBlobDownload, type ReportAuditStatus } from "@/lib/drawing/report";
 import type { DrawingPoint, DrawingViewportController } from "@/lib/drawing/viewer-adapter";
 
 export type DrawingTab = "plan" | "rooms" | "rules" | "findings" | "report";
@@ -174,8 +174,8 @@ function DrawingDetailContent({
         let reportFindings: Finding[] = [];
         let auditStatus: ReportAuditStatus = "pending";
         let auditError: string | null = null;
-        if (demo) {
-          auditStatus = snapshot.drawing.status === "processed" ? "completed" : "pending";
+        if (isDemoDrawing(snapshot.drawing, demo)) {
+          auditStatus = "demo";
         } else if (snapshot.drawing.status !== "processed") {
           auditStatus = "pending";
         } else if (findings.isError) {
@@ -685,7 +685,7 @@ function DrawingDetailContent({
       {activeTab === "report" && (() => {
         const auditState = resolveFindingsAuditState({
           drawingStatus: metadata.status,
-          demo,
+          isDemo: isDemoDrawing(metadata, demo),
           suspended: findingsSuspended,
           isPending: findings.isPending,
           isFetching: findings.isFetching,

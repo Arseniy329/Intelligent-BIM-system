@@ -18,6 +18,7 @@ import type { DrawingViewerProps } from "@/components/drawing/drawing-viewer";
 import { fetchFindings } from "@/lib/drawing/findings";
 import { fetchRules } from "@/lib/api/rules";
 import { ApiHttpError } from "@/lib/api";
+import { DEMO_RESULT } from "@/lib/drawing/demo-drawing";
 
 vi.mock("@/lib/drawing/findings", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/drawing/findings")>()),
@@ -821,5 +822,87 @@ describe("BIM-79 blocker: unavailable or pending audit never reports zero violat
     const html200 = await createdBlobs[0].text();
     expect(html200).toContain("Порушень відповідності нормативним вимогам не виявлено.");
     expect(html200).not.toContain("Неповний звіт");
+    expect(html200).not.toContain("Демонстраційний звіт: аудит не проводився");
+  });
+
+  it("Demo processed drawing marks report as «Демонстраційний звіт: аудит не проводився» across exports and print DOM", async () => {
+    const { createdBlobs } = setupDownloadCapture();
+    const demoResultWithUrl: DrawingResult = {
+      ...DEMO_RESULT,
+      sourceDownloadUrl: "https://storage.example/demo-source.dxf",
+      sourceDownloadUrlExpiresAt: "2099-01-01T00:00:00Z",
+      downloadUrl: "https://storage.example/demo-result.dxf",
+      downloadUrlExpiresAt: "2099-01-01T00:00:00Z",
+    };
+    const demoApi = {
+      getDrawing: vi.fn(async () => demoResultWithUrl),
+      processDrawing: vi.fn(async () => demoResultWithUrl),
+    };
+
+    const detailView = render(
+      <DrawingDetail id={DEMO_RESULT.drawing.id} api={demoApi} demo />,
+      { wrapper: createWrapper() },
+    );
+
+    // 1. Quick export «Завантажити звіт» on processed demo drawing
+    const quickExportBtn = await screen.findByRole("button", {
+      name: "Завантажити звіт",
+    });
+    fireEvent.click(quickExportBtn);
+    await screen.findByText(
+      "Звіт та DXF результату передано браузеру для збереження.",
+    );
+    const quickHtml = await createdBlobs[1].text();
+    expect(quickHtml).toContain("Демонстраційний звіт: аудит не проводився");
+    expect(quickHtml).not.toMatch(/Порушень[\s\S]*не виявлено/i);
+
+    // 2. Report tab printable DOM and «Завантажити HTML-звіт»
+    createdBlobs.length = 0;
+    fireEvent.click(screen.getByRole("tab", { name: "Звіт" }));
+    const tabDemoLabels = await screen.findAllByText(
+      /Демонстраційний звіт: аудит не проводився/,
+    );
+    expect(tabDemoLabels.length).toBeGreaterThan(0);
+    for (const node of tabDemoLabels) {
+      expect(node.closest("[data-print-hide]")).toBeNull();
+    }
+    expect(
+      screen.queryByText(/Порушень.*не виявлено/i),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Завантажити HTML-звіт" }),
+    );
+    const tabHtml = await createdBlobs[0].text();
+    expect(tabHtml).toContain("Демонстраційний звіт: аудит не проводився");
+    expect(tabHtml).not.toMatch(/Порушень[\s\S]*не виявлено/i);
+
+    detailView.unmount();
+    cleanup();
+    createdBlobs.length = 0;
+
+    // 3. Dedicated /drawings/[id]/report route with demo drawing
+    render(
+      <DrawingReportRoute id={DEMO_RESULT.drawing.id} api={demoApi} demo />,
+      { wrapper: createWrapper() },
+    );
+    const routeDemoLabels = await screen.findAllByText(
+      /Демонстраційний звіт: аудит не проводився/,
+    );
+    expect(routeDemoLabels.length).toBeGreaterThan(0);
+    for (const node of routeDemoLabels) {
+      expect(node.closest("[data-print-hide]")).toBeNull();
+    }
+    expect(
+      screen.queryByText(/Порушень.*не виявлено/i),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Завантажити HTML-звіт" }),
+    );
+    const routeHtml = await createdBlobs[0].text();
+    expect(routeHtml).toContain("Демонстраційний звіт: аудит не проводився");
+    expect(routeHtml).not.toMatch(/Порушень[\s\S]*не виявлено/i);
+    expect(fetchFindings).not.toHaveBeenCalled();
   });
 });

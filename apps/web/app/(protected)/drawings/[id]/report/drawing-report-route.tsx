@@ -23,6 +23,7 @@ import { ApiHttpError } from "@/lib/api";
 import {
   buildEngineeringReportData,
   downloadHtmlReport,
+  isDemoDrawing,
   resolveFindingsAuditState,
   triggerBlobDownload,
 } from "@/lib/drawing/report";
@@ -37,17 +38,24 @@ const errorPanel =
 export function DrawingReportRoute({
   id,
   api = drawingApi,
+  demo = false,
 }: {
   id: string;
   api?: DrawingApi;
+  demo?: boolean;
 }) {
   const router = useRouter();
-  const state = useDrawingDetail(id, api, false);
+  const state = useDrawingDetail(id, api, demo);
   const loadedResult =
     state.detail.data && isDrawingResult(state.detail.data)
       ? state.detail.data
       : null;
-  const findingsApplicable = loadedResult?.drawing.status === "processed";
+  const currentMeta = state.detail.data
+    ? drawingMetadata(state.detail.data)
+    : null;
+  const isDemo = isDemoDrawing(currentMeta, demo);
+  const findingsApplicable =
+    !isDemo && loadedResult?.drawing.status === "processed";
   const findings = useFindings(
     id,
     state.detail.dataUpdatedAt,
@@ -56,7 +64,7 @@ export function DrawingReportRoute({
   const rules = useQuery({
     queryKey: ["drawing-rules", id, state.detail.dataUpdatedAt],
     queryFn: ({ signal }) => fetchRules(signal),
-    enabled: !!loadedResult,
+    enabled: !isDemo && !!loadedResult,
     retry: false,
     refetchOnWindowFocus: false,
   });
@@ -84,6 +92,7 @@ export function DrawingReportRoute({
     const placement = placementReport(state.detail.data);
     const auditState = resolveFindingsAuditState({
       drawingStatus: metadata.status,
+      isDemo: isDemoDrawing(metadata, demo),
       suspended: state.detail.isFetching || state.detail.isError,
       isPending: findings.isPending,
       isFetching: findings.isFetching,
@@ -106,6 +115,7 @@ export function DrawingReportRoute({
     state.detail.data,
     state.detail.isFetching,
     state.detail.isError,
+    demo,
     loadedResult,
     findings.data,
     findings.isPending,

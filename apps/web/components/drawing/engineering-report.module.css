@@ -371,6 +371,12 @@
   color: #92400e;
 }
 
+.auditBannerDemo {
+  border: 1px solid #93c5fd;
+  background: #eff6ff;
+  color: #1e3a8a;
+}
+
 .warningsList {
   margin: 0;
   padding-left: 20px;
